@@ -1,6 +1,7 @@
 use vietc_engine::{
-    BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, SpellingValidity,
-    TransformIdentity, TransformKind, TransitionKind, UndoPolicy,
+    BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, Replacement,
+    ReplacementReason, SpellingValidity, TransformIdentity, TransformKind, TransitionKind,
+    UndoPolicy,
 };
 
 #[test]
@@ -332,13 +333,14 @@ fn word_boundary_commits_and_auto_restores_invalid_composition() {
 
     let event = engine.reduce(PhysicalEvent::WordBoundary(' '));
 
-    assert_eq!(
-        event,
-        Some(EngineEvent::Replace {
-            backspaces: 4,
-            insert: "cargo".to_string(),
-        })
-    );
+    let replacement = match event {
+        Some(EngineEvent::Replace(replacement)) => replacement,
+        other => panic!("expected semantic replacement, got {other:?}"),
+    };
+    assert_eq!(replacement.version, Replacement::VERSION);
+    assert_eq!(replacement.delete_before_cursor, 4);
+    assert_eq!(replacement.insert, "cargo");
+    assert_eq!(replacement.reason, ReplacementReason::AutoRestore);
     let state = engine.state();
     assert!(state.raw_keys.is_empty());
     assert!(state.visible.is_empty());
@@ -375,4 +377,22 @@ fn empty_word_boundary_does_not_create_a_commit_transition() {
     let state = engine.state();
     assert_eq!(state.boundary, BoundaryState::Committed);
     assert_eq!(state.last_transition, None);
+}
+
+#[test]
+fn replacement_failure_rolls_back_expected_visible_revision() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    engine.process_key('a');
+    let first = match engine.process_key('s') {
+        Some(EngineEvent::Replace(replacement)) => replacement,
+        other => panic!("expected replacement, got {other:?}"),
+    };
+    assert_eq!(first.expected_visible_revision, 0);
+
+    engine.reduce(PhysicalEvent::ReplacementFailed);
+    let retry = match engine.process_key('f') {
+        Some(EngineEvent::Replace(replacement)) => replacement,
+        other => panic!("expected replacement retry, got {other:?}"),
+    };
+    assert_eq!(retry.expected_visible_revision, 0);
 }

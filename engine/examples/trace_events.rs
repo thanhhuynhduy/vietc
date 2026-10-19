@@ -11,8 +11,11 @@ fn trace(input: &str, method: InputMethod) {
         let curr = e.buffer().to_string();
         let expected = format!("{}{}", prev, ch);
         let event_str = match &event {
-            Some(EngineEvent::Replace { backspaces, insert }) => {
-                format!("Replace({}, {:?})", backspaces, insert)
+            Some(EngineEvent::Replace(replacement)) => {
+                format!(
+                    "Replace({}, {:?})",
+                    replacement.delete_before_cursor, replacement.insert
+                )
             }
             Some(EngineEvent::Insert(t)) => format!("Insert({:?})", t),
             Some(EngineEvent::Flush(t)) => format!("Flush({:?})", t),
@@ -28,13 +31,14 @@ fn trace(input: &str, method: InputMethod) {
             "'{}' | {:<9} → {:<9} | {:<19} | {}",
             ch, prev, curr, expected, event_str
         );
-        if let Some(EngineEvent::Replace { backspaces, insert }) = &event {
-            // In grab mode, backspace - 1 (key consumed)
-            let grab_bs = backspaces.saturating_sub(1);
-            // In non-grab mode, full backspace
+        if let Some(EngineEvent::Replace(replacement)) = &event {
             eprintln!(
-                "    |           |           | grab_bs={} non_grab_bs={} insert={:?}",
-                grab_bs, backspaces, insert
+                "    |           |           | delete_before_cursor={} insert={:?} revision={} generation={} reason={:?}",
+                replacement.delete_before_cursor,
+                replacement.insert,
+                replacement.expected_visible_revision,
+                replacement.transform_generation,
+                replacement.reason,
             );
         }
     }

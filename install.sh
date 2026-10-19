@@ -283,7 +283,6 @@ install_deps() {
                   libwayland-client0 xclip wl-clipboard wtype curl
                 ;;
             fedora|rhel|centos)
-                dnf groupinstall -y "Development Tools"
                 dnf install -y libX11-devel libXtst-devel dbus-devel libevdev-devel wayland-devel git \
                   libevdev libX11 libXtst dbus-libs libwayland-client xclip wl-clipboard wtype curl
                 ;;

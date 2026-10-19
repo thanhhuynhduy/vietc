@@ -182,9 +182,9 @@ mod tests {
                     commands.push(OutputCommand::Backspace(word.chars().count()));
                     commands.push(OutputCommand::Type(word));
                 }
-                EngineEvent::Replace { backspaces, insert } => {
-                    commands.push(OutputCommand::Backspace(backspaces));
-                    commands.push(OutputCommand::Type(insert));
+                EngineEvent::Replace(replacement) => {
+                    commands.push(OutputCommand::Backspace(replacement.delete_before_cursor));
+                    commands.push(OutputCommand::Type(replacement.insert));
                 }
                 EngineEvent::UndoTones {
                     backspaces,
@@ -220,6 +220,12 @@ mod tests {
                             }
                         }
                         OutputCommand::Type(text) => screen.extend(text.chars()),
+                        OutputCommand::Replace(replacement) => {
+                            for _ in 0..replacement.delete_before_cursor {
+                                screen.pop();
+                            }
+                            screen.extend(replacement.insert.chars());
+                        }
                     }
                 }
                 if is_flush_char(ch) {

@@ -43,7 +43,9 @@ mod tests {
         assert!(is_vietc_virtual_device_name("VietC"));
         assert!(!is_vietc_virtual_device_name("vietc-test-vni-word"));
         assert!(!is_vietc_virtual_device_name("vietc-vk"));
-        assert!(!is_vietc_virtual_device_name("AT Translated Set 2 keyboard"));
+        assert!(!is_vietc_virtual_device_name(
+            "AT Translated Set 2 keyboard"
+        ));
     }
 }
 

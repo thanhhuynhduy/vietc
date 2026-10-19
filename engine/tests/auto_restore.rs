@@ -85,8 +85,8 @@ fn process_key_restores_on_flush() {
     // On flush the engine should emit a Replace back to the raw English word.
     let event = engine.process_key(' ');
     match event {
-        Some(vietc_engine::EngineEvent::Replace { insert, .. }) => {
-            assert_eq!(insert, "cargo");
+        Some(vietc_engine::EngineEvent::Replace(replacement)) => {
+            assert_eq!(replacement.insert, "cargo");
         }
         other => panic!("expected Replace to 'cargo', got {other:?}"),
     }

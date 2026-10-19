@@ -1057,8 +1057,8 @@ fn handle_process_key_event(
 
     if is_flush_char(ch) {
         let word = if !ctx.preedit.is_empty() {
-            if let Some(EngineEvent::Replace { insert, .. }) = ctx.engine.process_key(ch) {
-                insert
+            if let Some(EngineEvent::Replace(replacement)) = ctx.engine.process_key(ch) {
+                replacement.insert
             } else {
                 ctx.preedit.clone()
             }

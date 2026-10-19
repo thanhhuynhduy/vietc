@@ -57,13 +57,7 @@ impl KeyInjector for UinputClient {
     }
 
     fn inject_replacement(&self, backspaces: usize, text: &str) -> InjectResult {
-        if backspaces > 0 {
-            let _ = Self::send_command(&format!("BACKSPACE:{}", backspaces));
-        }
-        if !text.is_empty() {
-            let _ = Self::send_command(&format!("TYPE:{}", text));
-        }
-        InjectResult::Success
+        Self::send_command(&format!("REPLACE:{}:{}", backspaces, text))
     }
 
     fn flush(&self) -> InjectResult {

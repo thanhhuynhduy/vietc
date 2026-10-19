@@ -144,7 +144,10 @@ pub fn run_with_x11_keymap(
                 let commands = daemon.replay_backspace();
                 if !commands.is_empty() {
                     set_keymap_suppress(true);
-                    if !execute_commands(&*injector, &commands).is_ok() {
+                    if !matches!(
+                        execute_commands(&*injector, &commands, &mut daemon.visible_revision),
+                        crate::commands::TransactionOutcome::Applied { .. }
+                    ) {
                         log_info("[vietc] X11 keymap backspace injection failed");
                     }
                     // Keep suppressing while our injected keystrokes play out,
@@ -167,7 +170,10 @@ pub fn run_with_x11_keymap(
                     // we generate (backspace + typed result), which would feed
                     // back into the engine and corrupt the text.
                     set_keymap_suppress(true);
-                    if !execute_commands(&*injector, &commands).is_ok() {
+                    if !matches!(
+                        execute_commands(&*injector, &commands, &mut daemon.visible_revision),
+                        crate::commands::TransactionOutcome::Applied { .. }
+                    ) {
                         log_info("[vietc] X11 keymap injection failed");
                     }
                     // Resync the keymap baseline so the injected keystrokes are

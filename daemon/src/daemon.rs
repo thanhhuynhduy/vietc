@@ -41,6 +41,7 @@ pub struct Daemon {
     pub keymap_mode: bool,
     pub event_store: EventStore,
     pub screen_output: String,
+    pub visible_revision: u64,
 }
 
 impl Daemon {
@@ -91,6 +92,7 @@ impl Daemon {
             keymap_mode: false,
             event_store: EventStore::new(),
             screen_output: String::new(),
+            visible_revision: 0,
         }
     }
 
@@ -278,9 +280,8 @@ impl Daemon {
                     commands.push(OutputCommand::Backspace(len));
                     commands.push(OutputCommand::Type(word));
                 }
-                EngineEvent::Replace { backspaces, insert } => {
-                    commands.push(OutputCommand::Backspace(backspaces));
-                    commands.push(OutputCommand::Type(insert));
+                EngineEvent::Replace(replacement) => {
+                    commands.push(OutputCommand::Replace(replacement));
                 }
                 EngineEvent::UndoTones {
                     backspaces,
@@ -297,6 +298,25 @@ impl Daemon {
         }
 
         commands
+    }
+
+    pub fn handle_transaction_outcome(
+        &mut self,
+        outcome: crate::commands::TransactionOutcome,
+    ) -> bool {
+        match outcome {
+            crate::commands::TransactionOutcome::Applied { .. } => true,
+            crate::commands::TransactionOutcome::Failed => {
+                self.engine
+                    .reduce(vietc_engine::PhysicalEvent::ReplacementFailed);
+                false
+            }
+            crate::commands::TransactionOutcome::Stale { .. } => {
+                self.engine.invalidate_composition();
+                self.replay_reset();
+                false
+            }
+        }
     }
 
     pub fn is_current_app_bypassed(&self) -> bool {
@@ -454,6 +474,7 @@ impl Daemon {
     pub fn replay_reset(&mut self) {
         self.event_store.clear();
         self.screen_output.clear();
+        self.visible_revision = 0;
     }
 
     pub fn check_app_change_with(&mut self, new_class: String) {
@@ -491,6 +512,14 @@ mod tests {
                     *screen = screen.chars().take(keep).collect();
                 }
                 OutputCommand::Type(s) => screen.push_str(s),
+                OutputCommand::Replace(replacement) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(replacement.delete_before_cursor);
+                    *screen = screen.chars().take(keep).collect();
+                    screen.push_str(&replacement.insert);
+                }
             }
         }
     }

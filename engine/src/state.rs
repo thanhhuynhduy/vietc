@@ -46,7 +46,7 @@ pub enum TransformKind {
     StrokeDd,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum TransitionKind {
     Apply,
     ReplaceActive,
@@ -55,6 +55,30 @@ pub enum TransitionKind {
     Invalidate,
     Commit,
     Recover,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ReplacementReason {
+    ApplyTransform,
+    ReplaceTransform,
+    UndoTransform,
+    Macro,
+    AutoRestore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Replacement {
+    pub version: u8,
+    /// Number of Unicode scalar values immediately before the cursor to delete.
+    pub delete_before_cursor: usize,
+    pub insert: String,
+    pub expected_visible_revision: u64,
+    pub transform_generation: u64,
+    pub reason: ReplacementReason,
+}
+
+impl Replacement {
+    pub const VERSION: u8 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

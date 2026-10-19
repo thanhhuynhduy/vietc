@@ -85,11 +85,11 @@ fn main() {
                         EngineEvent::Paste(text) => {
                             output.push_str(text);
                         }
-                        EngineEvent::Replace { backspaces, insert } => {
-                            for _ in 0..*backspaces {
+                        EngineEvent::Replace(replacement) => {
+                            for _ in 0..replacement.delete_before_cursor {
                                 output.push('\x08');
                             }
-                            output.push_str(insert);
+                            output.push_str(&replacement.insert);
                             if is_flush_char(ch) {
                                 output.push(ch);
                             }

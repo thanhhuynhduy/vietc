@@ -428,6 +428,25 @@ fn handle_client(stream: UnixStream, uinput: &UinputDevice) {
         } else if line == "QUIT" {
             let _ = writeln!(writer, "BYE");
             break;
+        } else if let Some(payload) = line.strip_prefix("REPLACE:") {
+            let Some((count, text)) = payload.split_once(':') else {
+                let _ = writeln!(writer, "ERR malformed replacement");
+                continue;
+            };
+            let Ok(count) = count.parse::<usize>() else {
+                let _ = writeln!(writer, "ERR bad count");
+                continue;
+            };
+            uinput.backspace_n(count);
+            let is_ascii = text
+                .bytes()
+                .all(|byte| UinputDevice::char_to_keycode(byte).is_some());
+            if is_ascii {
+                uinput.type_ascii(text);
+            } else {
+                uinput.paste_unicode(text);
+            }
+            let _ = writeln!(writer, "OK");
         } else if let Some(n_str) = line.strip_prefix("BACKSPACE:") {
             if let Ok(n) = n_str.parse::<usize>() {
                 uinput.backspace_n(n);

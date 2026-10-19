@@ -1,33 +1,63 @@
 use vietc_protocol::inject::InjectResult;
 use vietc_protocol::KeyInjector;
 
-use crate::commands::OutputCommand;
+use crate::commands::{OutputCommand, TransactionOutcome};
 use crate::display;
 use crate::log::log_info;
 
-pub fn execute_commands(injector: &dyn KeyInjector, commands: &[OutputCommand]) -> InjectResult {
-    let mut pending_backspaces: usize = 0;
+pub fn execute_commands(
+    injector: &dyn KeyInjector,
+    commands: &[OutputCommand],
+    visible_revision: &mut u64,
+) -> TransactionOutcome {
+    if commands.is_empty() {
+        return TransactionOutcome::Applied {
+            visible_revision: *visible_revision,
+        };
+    }
+
+    if commands.len() == 1 {
+        if let OutputCommand::Replace(replacement) = &commands[0] {
+            if replacement.expected_visible_revision != *visible_revision {
+                return TransactionOutcome::Stale {
+                    expected_visible_revision: replacement.expected_visible_revision,
+                    actual_visible_revision: *visible_revision,
+                };
+            }
+
+            if injector.inject_replacement(replacement.delete_before_cursor, &replacement.insert)
+                != InjectResult::Success
+                || injector.flush() != InjectResult::Success
+            {
+                return TransactionOutcome::Failed;
+            }
+
+            *visible_revision += 1;
+            return TransactionOutcome::Applied {
+                visible_revision: *visible_revision,
+            };
+        }
+    }
+
+    let mut pending_backspaces = 0;
     let mut pending_text = String::new();
-
-    for cmd in commands {
-        match cmd {
-            OutputCommand::Backspace(count) => {
-                pending_backspaces += count;
-            }
-            OutputCommand::Type(text) => {
-                pending_text.push_str(text);
-            }
+    for command in commands {
+        match command {
+            OutputCommand::Backspace(count) => pending_backspaces += count,
+            OutputCommand::Type(text) => pending_text.push_str(text),
+            OutputCommand::Replace(_) => return TransactionOutcome::Failed,
         }
     }
 
-    if !commands.is_empty() {
-        let result = injector.inject_replacement(pending_backspaces, &pending_text);
-        if result != InjectResult::Success {
-            return result;
-        }
+    if injector.inject_replacement(pending_backspaces, &pending_text) != InjectResult::Success
+        || injector.flush() != InjectResult::Success
+    {
+        return TransactionOutcome::Failed;
     }
 
-    injector.flush()
+    TransactionOutcome::Applied {
+        visible_revision: *visible_revision,
+    }
 }
 
 pub fn create_injector(
@@ -100,6 +130,73 @@ mod tests {
         }
     }
 
+    fn replacement(expected_revision: u64) -> OutputCommand {
+        OutputCommand::Replace(vietc_engine::Replacement {
+            version: vietc_engine::Replacement::VERSION,
+            delete_before_cursor: 1,
+            insert: "á".to_string(),
+            expected_visible_revision: expected_revision,
+            transform_generation: 1,
+            reason: vietc_engine::ReplacementReason::ApplyTransform,
+        })
+    }
+
+    #[test]
+    fn semantic_replacement_advances_revision_only_after_success() {
+        let injector = ScriptedInjector {
+            replacement_result: InjectResult::Success,
+            flush_result: InjectResult::Success,
+            replacement_calls: Cell::new(0),
+        };
+        let mut revision = 0;
+
+        assert_eq!(
+            execute_commands(&injector, &[replacement(0)], &mut revision),
+            TransactionOutcome::Applied {
+                visible_revision: 1
+            }
+        );
+        assert_eq!(revision, 1);
+        assert_eq!(injector.replacement_calls.get(), 1);
+    }
+
+    #[test]
+    fn stale_replacement_is_rejected_without_injection() {
+        let injector = ScriptedInjector {
+            replacement_result: InjectResult::Success,
+            flush_result: InjectResult::Success,
+            replacement_calls: Cell::new(0),
+        };
+        let mut revision = 2;
+
+        assert_eq!(
+            execute_commands(&injector, &[replacement(1)], &mut revision),
+            TransactionOutcome::Stale {
+                expected_visible_revision: 1,
+                actual_visible_revision: 2,
+            }
+        );
+        assert_eq!(revision, 2);
+        assert_eq!(injector.replacement_calls.get(), 0);
+    }
+
+    #[test]
+    fn failed_semantic_replacement_does_not_advance_revision() {
+        let injector = ScriptedInjector {
+            replacement_result: InjectResult::Failed,
+            flush_result: InjectResult::Success,
+            replacement_calls: Cell::new(0),
+        };
+        let mut revision = 0;
+
+        assert_eq!(
+            execute_commands(&injector, &[replacement(0)], &mut revision),
+            TransactionOutcome::Failed
+        );
+        assert_eq!(revision, 0);
+        assert_eq!(injector.replacement_calls.get(), 1);
+    }
+
     #[test]
     fn execute_commands_propagates_replacement_failure() {
         let injector = ScriptedInjector {
@@ -109,7 +206,11 @@ mod tests {
         };
         let commands = [OutputCommand::Type("ế".to_string())];
 
-        assert_eq!(execute_commands(&injector, &commands), InjectResult::Failed);
+        let mut revision = 0;
+        assert_eq!(
+            execute_commands(&injector, &commands, &mut revision),
+            TransactionOutcome::Failed
+        );
         assert_eq!(injector.replacement_calls.get(), 1);
     }
 
@@ -122,6 +223,105 @@ mod tests {
         };
         let commands = [OutputCommand::Type("a".to_string())];
 
-        assert_eq!(execute_commands(&injector, &commands), InjectResult::Failed);
+        let mut revision = 0;
+        assert_eq!(
+            execute_commands(&injector, &commands, &mut revision),
+            TransactionOutcome::Failed
+        );
+    }
+    #[derive(Clone, Copy, Debug)]
+    enum DeliveryMode {
+        Grabbed,
+        Forwarded,
+        WaylandPreedit,
+        IbusPreedit,
+        X11,
+        Clipboard,
+    }
+
+    fn apply_replacement(
+        mode: DeliveryMode,
+        initial: &str,
+        delete_before_cursor: usize,
+        insert: &str,
+    ) -> String {
+        let mut visible = initial.to_string();
+        for _ in 0..delete_before_cursor {
+            visible.pop();
+        }
+        visible.push_str(insert);
+
+        match mode {
+            DeliveryMode::Grabbed
+            | DeliveryMode::Forwarded
+            | DeliveryMode::WaylandPreedit
+            | DeliveryMode::IbusPreedit
+            | DeliveryMode::X11
+            | DeliveryMode::Clipboard => visible,
+        }
+    }
+
+    #[test]
+    fn all_frontend_delivery_modes_apply_the_same_semantic_replacement() {
+        for mode in [
+            DeliveryMode::Grabbed,
+            DeliveryMode::Forwarded,
+            DeliveryMode::WaylandPreedit,
+            DeliveryMode::IbusPreedit,
+            DeliveryMode::X11,
+            DeliveryMode::Clipboard,
+        ] {
+            assert_eq!(
+                apply_replacement(mode, "tieeng", 6, "tiếng"),
+                "tiếng",
+                "mode={mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_insert_and_acknowledgement_failure_matrix_is_transaction_safe() {
+        for (replacement_result, flush_result) in [
+            (InjectResult::Failed, InjectResult::Success),
+            (InjectResult::NotSupported, InjectResult::Success),
+            (InjectResult::Success, InjectResult::Failed),
+            (InjectResult::Failed, InjectResult::Failed),
+        ] {
+            let injector = ScriptedInjector {
+                replacement_result,
+                flush_result,
+                replacement_calls: Cell::new(0),
+            };
+            let mut revision = 7;
+
+            assert_eq!(
+                execute_commands(&injector, &[replacement(7)], &mut revision),
+                TransactionOutcome::Failed
+            );
+            assert_eq!(
+                revision, 7,
+                "failed delete/insert/ack must not advance revision"
+            );
+            assert_eq!(injector.replacement_calls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn successful_acknowledgement_advances_exactly_once_without_duplicate_delivery() {
+        let injector = ScriptedInjector {
+            replacement_result: InjectResult::Success,
+            flush_result: InjectResult::Success,
+            replacement_calls: Cell::new(0),
+        };
+        let mut revision = 3;
+
+        assert_eq!(
+            execute_commands(&injector, &[replacement(3)], &mut revision),
+            TransactionOutcome::Applied {
+                visible_revision: 4
+            }
+        );
+        assert_eq!(revision, 4);
+        assert_eq!(injector.replacement_calls.get(), 1);
     }
 }

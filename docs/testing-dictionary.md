@@ -38,6 +38,37 @@ Collection commands must have bounded timeouts. Missing `journalctl` or
 `coredumpctl` capability is recorded as unavailable, not interpreted as proof
 that no crash occurred.
 
+## Chromium crash evidence and isolation workflow
+
+The bounded collector writes one privacy-safe artifact bundle per controlled reproduction:
+
+- `evidence.json`: schema version, reproduction/transaction IDs, visible revision, deterministic classification, UTC window, redacted exact command line, application version, distro, kernel, session, compositor, active backend, configuration summary, PID/process-type mapping, parent PID, and artifact paths.
+- `replay.json`: only the controlled physical press/release sequence and fixed inter-key delay.
+- `daemon.stdout.log`, `daemon.stderr.log`, `application.stdout.log`, and `application.stderr.log`.
+- `journal.txt`, `coredump-list.txt`, `coredump-info.txt`, `process-tree.txt`, and `core-debug-workflow.txt`.
+
+Every command has a finite timeout. Missing system tools produce an `.unavailable.txt` artifact. Browser crash reporting is recorded as available-dependent, command-line-disabled, or unavailable. Missing capabilities and applications are `UNAVAILABLE` or `SKIPPED` with a reason, never `PASS`.
+
+Classification uses exit status, signal, process type, related core metadata, and observed protocol errors:
+
+- daemon failure: `daemon_crash`
+- renderer failure: `renderer_crash`
+- browser parent failure: `browser_process_crash`
+- application exit correlated with a protocol error: `protocol_triggered_exit`
+- healthy observed processes: `no_crash_observed`
+- insufficient evidence: `unknown`
+
+Investigation runs one variable at a time with paired control and treatment artifacts. Required hypotheses cover Shift prefix and ownership, forced modifier release, clipboard fallback and restore ownership, malformed/timing input, X11 selection target/property/timeout, injection feedback, concurrent revision writes, lifecycle cleanup, and Wayland/X11 protocol misuse. A root-cause claim is allowed only when the control does not crash, the treatment reproducibly crashes, and both runs retain crash evidence. Otherwise the result remains unknown or unavailable.
+
+Run deterministic evidence and investigation tests:
+
+```bash
+cargo test -p vietc-daemon --test daemon_suite evidence -- --test-threads=1
+cargo test -p vietc-daemon --test daemon_suite runtime:: -- --test-threads=1
+```
+
+Do not launch real browsers through this workflow unless the explicit privileged runtime fixture and all prerequisites are available.
+
 ## Test Suites
 
 | Suite | Prefix | Requires | Purpose |
@@ -500,14 +531,17 @@ cargo test -p vietc-daemon --test daemon_suite -- --test-threads=1
 
 ### Privileged runtime matrix
 
-Privileged tests are marked `#[ignore]` and require explicit opt-in with `VIETC_RUNTIME_TESTS=1`. They must run inside the desktop session being verified. Every scenario has a finite timeout, prerequisite detection, and an observable assertion. An unavailable prerequisite is recorded as `SKIPPED` with its exact reason and is not counted as a pass.
+Privileged tests are marked `#[ignore]` and require explicit opt-in with `VIETC_RUNTIME_TESTS=1`. They must run inside the desktop session being verified. Every scenario has a finite timeout, prerequisite detection, and an observable assertion. Every capability result is one of `PASS`, `SKIPPED`, `UNAVAILABLE`, or `FAILED` and includes a non-empty reason and owner. Missing tools or infrastructure are `UNAVAILABLE`; a mismatched session is `SKIPPED`; neither counts as `PASS`.
 
 Required matrix targets:
 
 - X11
+- COSMIC Wayland
 - GNOME Wayland
 - KDE Wayland
-- Chromium or Electron
+- Chromium
+- Google Chrome
+- Electron
 - GTK
 - Qt
 - Terminal
@@ -515,7 +549,7 @@ Required matrix targets:
 Record prerequisite evidence for the current session:
 
 ```bash
-VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite \
+VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test runtime \
 	privileged_runtime_matrix_records_exact_ready_and_skip_evidence \
 	-- --ignored --nocapture --test-threads=1
 ```
@@ -532,10 +566,53 @@ Runtime artifacts are written under `target/runtime-artifacts/` and include:
 
 - Display server and compositor or desktop name.
 - Versions or availability of runtime tools.
-- Per-scenario `READY`, `SKIPPED`, or `FAILED` status.
-- Failure logs and observed-versus-expected text for executed scenarios.
+- Per-capability `PASS`, `SKIPPED`, `UNAVAILABLE`, or `FAILED` status with reason and owner.
+- Controlled fixture marker, expected text, isolated profile path, PID-role map, exit classification, timing, versions, flags, backend, logs, and observed-versus-expected text for executed scenarios.
+
+
+Real Chromium, Google Chrome, Electron, GTK, Qt, terminal, or desktop scenarios must not launch until both runtime opt-ins and display capabilities validate successfully. Profiles and artifacts are isolated below `target/runtime-fixtures/<run-id>/`; fixture text is fixed, paths cannot escape that root, startup, scenario, and teardown are bounded, and teardown terminates and reaps the owned process group including descendants. Readiness or executable presence alone remains `UNAVAILABLE`, never `PASS`.
+
+Run deterministic fixture, PID-role, timeout, reap, classification, and matrix-contract coverage with:
+
+```bash
+cargo test -p vietc-daemon --test runtime deterministic_ -- --test-threads=1
+cargo test -p vietc-daemon --test runtime runtime_matrix -- --test-threads=1
+```
+
+Required environment for real targets:
+
+- `VIETC_RUNTIME_TESTS=1` explicitly enables privileged tests.
+- `VIETC_CONTROLLED_DISPLAY=1` confirms that the current X11 or Wayland session is disposable and automation-controlled.
+- `DISPLAY` or `WAYLAND_DISPLAY`, `XDG_SESSION_TYPE`, and `XDG_CURRENT_DESKTOP` identify the exact matrix cell.
+- Writable `/dev/uinput` and the selected target executable are mandatory.
+
+Run `make test-runtime-targets` only inside that controlled session. Chromium or Chromium Browser, Google Chrome, Electron, GTK `zenity`, Qt Assistant, and one detected supported terminal (`gnome-terminal`, `konsole`, `kitty`, or `xterm`) are target prerequisites. A target cannot report `PASS` until its adapter proves observable text equality, clipboard restoration, modifier-state cleanup, process health, and complete process-tree teardown. Each run writes isolated profiles and evidence below `target/runtime-fixtures/<run-id>/`, including exact version, flags, backend, controlled sequence, stdout, stderr, process tree, PID-role map, timings, and expected-versus-observed checks. Browser ownership is `runtime-browser-runner`; GTK, Qt, and terminal ownership is `runtime-toolkit-runner`; compositor ownership is `runtime-desktop-runner`.
+
+`PASS` requires observable text equality, healthy daemon/browser/renderer processes, preserved clipboard content, released synthesized modifiers, and complete child reaping. `FAILED` means an executed check failed. `SKIPPED` means the current session does not match the requested matrix cell. `UNAVAILABLE` means a dependency or controlled capability is absent. Neither `SKIPPED` nor `UNAVAILABLE` is a pass.
 
 Run the matrix separately in each target desktop session. Do not infer GNOME, KDE, or X11 success from a different compositor, and do not convert a prerequisite skip into a pass.
+
+### Deterministic Phase 6 CI harness
+
+The regular headless smoke gate uses eight fixed seeds, 64 generated events per seed, fake-clock frontend conformance, deterministic failure injection, and bounded helper-process tests:
+
+```bash
+make test-ci-smoke
+```
+
+The smoke gate explicitly removes `DISPLAY` and `WAYLAND_DISPLAY`. It covers delete, insert, flush, acknowledgement, and clipboard-restore failures across grabbed, forwarded, Wayland preedit, IBus preedit, X11, and clipboard delivery modes. Assertions reject duplicated or dropped characters, stuck modifiers, partial clipboard restoration, and stale visible revisions.
+
+The exhaustive property profile is opt-in because this repository has no existing CI workflow structure for scheduled jobs:
+
+```bash
+make test-properties-exhaustive
+```
+
+`VIETC_PROPERTY_PROFILE=exhaustive` runs 256 reproducible seeds with 4,096 generated events per seed. `VIETC_PROPERTY_CASES` may override the per-seed budget while preserving deterministic seed selection.
+
+Deterministic failure artifacts use stable filenames under the caller-provided CI output directory and contain only controlled fixture data: schema version, seed, minimized trace, delivery mode, failure point, expected and actual results, transaction ID, and expected/actual visible revisions. Uncontrolled user input, clipboard contents, credentials, and absolute profile paths must never be persisted.
+
+Missing display servers, writable `/dev/uinput`, browsers, desktop sessions, or probe tools are reported as `SKIPPED` or `UNAVAILABLE` with a concrete reason and owner. Such results never count as `PASS`. Real matrix cells remain unchecked until evidence is collected in each controlled environment.
 
 ### Pull request quality gates
 

@@ -91,12 +91,12 @@ pub fn plan_char(
         Some(EngineEvent::Insert(_)) => {
             actions.push(ImAction::ForwardKey(key));
         }
-        Some(EngineEvent::Replace { insert, .. }) => {
+        Some(EngineEvent::Replace(replacement)) => {
             if is_flush {
-                actions.push(ImAction::Commit(insert));
+                actions.push(ImAction::Commit(replacement.insert));
                 actions.push(ImAction::ForwardKey(key));
             } else {
-                actions.push(ImAction::SetPreedit(insert));
+                actions.push(ImAction::SetPreedit(replacement.insert));
             }
         }
         Some(EngineEvent::AutoRestore(s))
@@ -120,4 +120,50 @@ pub fn plan_char(
         }
     }
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vietc_engine::InputMethod;
+
+    fn render(actions: Vec<ImAction>, preedit: &mut String, committed: &mut String) {
+        for action in actions {
+            match action {
+                ImAction::SetPreedit(value) => *preedit = value,
+                ImAction::Commit(value) => {
+                    committed.push_str(&value);
+                    preedit.clear();
+                }
+                ImAction::ForwardKey(key) => {
+                    if key == 57 {
+                        committed.push(' ');
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wayland_and_ibus_shared_plan_preserves_text_without_duplicate_or_drop() {
+        for input in ["tieengs ", "ATXX ", "dduwowngf ", "cargo "] {
+            let mut outputs = Vec::new();
+            for _frontend in ["wayland", "ibus"] {
+                let mut engine = Engine::new(InputMethod::Telex);
+                engine.set_auto_restore(false);
+                let mut preedit = String::new();
+                let mut committed = String::new();
+
+                for ch in input.chars() {
+                    let key = if ch == ' ' { 57 } else { ch as u32 };
+                    let actions = plan_char(true, &mut engine, &preedit, ch, key);
+                    render(actions, &mut preedit, &mut committed);
+                }
+                committed.push_str(&preedit);
+                outputs.push(committed);
+            }
+
+            assert_eq!(outputs[0], outputs[1], "input={input}");
+        }
+    }
 }

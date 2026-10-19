@@ -14,7 +14,7 @@ sudo apt update -y
 sudo apt install -y build-essential pkg-config libx11-dev libxtst-dev \
   libdbus-1-dev libevdev-dev libwayland-dev curl git \
   libevdev2 libdbus-1-3 libx11-6 libxtst6 libwayland-client0 \
-  wl-clipboard xclip wtype zenity qdbus-qt5 xterm
+  wl-clipboard xclip wtype xdotool zenity qttools5-dev-tools xterm
 
 # 2. Install Rust if missing
 echo -e "${YELLOW}[2/5] Installing Rust...${NC}"
@@ -51,16 +51,21 @@ echo "Deterministic Phase 6 integration harness:"
 echo "  cargo test -p vietc-daemon --test daemon_suite -- --test-threads=1"
 echo ""
 echo "Privileged runtime verification (run inside the target desktop session):"
-echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test runtime \\"
 echo "    privileged_runtime_matrix_records_exact_ready_and_skip_evidence \\"
 echo "    -- --ignored --nocapture --test-threads=1"
-echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "  VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test runtime \\"
+echo "    privileged_runtime_targets_execute_controlled_scenarios \\"
+echo "    -- --ignored --nocapture --test-threads=1"
+echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test runtime \\"
 echo "    wayland_wtype_success_is_observable_at_runtime \\"
 echo "    -- --ignored --nocapture --test-threads=1"
 echo ""
-echo "Run the privileged matrix separately in X11, GNOME Wayland, and KDE Wayland."
-echo "Unavailable targets are recorded as SKIPPED with an exact prerequisite reason;"
-echo "a skipped target is not a runtime pass."
+echo "Run the privileged matrix separately in X11, COSMIC Wayland, GNOME Wayland, and KDE Wayland."
+echo "Each Chromium, Google Chrome, Electron, GTK, Qt, terminal, and desktop capability"
+echo "is recorded as PASS, SKIPPED, UNAVAILABLE, or FAILED with a reason and owner."
+echo "Real desktop apps are never launched until the controlled fixture is validated."
+echo "Profiles and artifacts stay isolated under target/runtime-fixtures/."
 echo "Artifacts are written under target/runtime-artifacts/."
 echo ""
 echo "Terminal typing (VNI mode auto-enabled in terminals):"

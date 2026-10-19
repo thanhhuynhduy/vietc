@@ -15,6 +15,6 @@ pub use engine::EngineEvent;
 pub use event::{Command, EventStore, InputEvent};
 pub use input_method::InputMethod;
 pub use state::{
-    BoundaryState, CaseShape, CompositionState, PhysicalEvent, SpellingValidity, TransformIdentity,
-    TransformKind, TransitionKind, UndoPolicy,
+    BoundaryState, CaseShape, CompositionState, PhysicalEvent, Replacement, ReplacementReason,
+    SpellingValidity, TransformIdentity, TransformKind, TransitionKind, UndoPolicy,
 };

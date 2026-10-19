@@ -106,7 +106,8 @@ pub fn run_stdin_mode(
             Ok(_) => {
                 let ch = buffer[0] as char;
                 let commands = daemon.process_key(ch);
-                if !execute_commands(&*injector, &commands).is_ok() {
+                let outcome = execute_commands(&*injector, &commands, &mut daemon.visible_revision);
+                if !daemon.handle_transaction_outcome(outcome) {
                     log_info("[vietc] stdin injection failed");
                 }
             }

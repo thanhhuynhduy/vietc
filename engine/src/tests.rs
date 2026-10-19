@@ -4,7 +4,7 @@ fn process_input(engine: &mut Engine, input: &str) -> Vec<EngineEvent> {
     let mut events = Vec::new();
     for ch in input.chars() {
         if let Some(event) = engine.process_key(ch) {
-            let is_replace = matches!(&event, EngineEvent::Replace { .. });
+            let is_replace = matches!(&event, EngineEvent::Replace(_));
             let fl = is_flush_char(ch);
             events.push(event);
             if is_replace && fl {
@@ -31,11 +31,11 @@ fn get_display(events: &[EngineEvent]) -> String {
             EngineEvent::Insert(text) => {
                 display.push_str(text);
             }
-            EngineEvent::Replace { backspaces, insert } => {
-                for _ in 0..*backspaces {
+            EngineEvent::Replace(replacement) => {
+                for _ in 0..replacement.delete_before_cursor {
                     display.pop();
                 }
-                display.push_str(insert);
+                display.push_str(&replacement.insert);
             }
             EngineEvent::AutoRestore(word) => {
                 for _ in 0..word.len() {

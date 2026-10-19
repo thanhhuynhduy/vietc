@@ -38,7 +38,9 @@ pub struct MinimizedSequence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessEvidence {
     pub pid: u32,
+    pub parent_pid: Option<u32>,
     pub process_type: String,
+    pub command_line: Vec<String>,
     pub exit_status: Option<i32>,
     pub signal: Option<i32>,
 }
@@ -105,6 +107,9 @@ pub struct CrashEvidence {
     pub journal_path: Option<String>,
     pub coredump_list_path: Option<String>,
     pub coredump_info_path: Option<String>,
+    pub core_debug_workflow_path: Option<String>,
+    pub process_tree_path: Option<String>,
+    pub browser_crash_reporting: String,
     pub application_name: String,
     pub application_version: String,
     pub application_command: Vec<String>,
@@ -276,6 +281,14 @@ pub fn collect_evidence_bundle_with_tools(
         request.command_timeout,
     )?;
 
+    let process_tree_path = collect_optional_command(
+        &request.bundle_dir,
+        Path::new("ps"),
+        &["-eo", "pid=,ppid=,comm=,args="],
+        "process-tree",
+        request.command_timeout,
+    )?;
+    let core_debug_workflow_path = write_core_debug_workflow(&request.bundle_dir)?;
     let application_version = collect_version(
         request.application_command.first().map(String::as_str),
         request.command_timeout,
@@ -302,6 +315,9 @@ pub fn collect_evidence_bundle_with_tools(
         journal_path: Some(journal_path),
         coredump_list_path: Some(coredump_list_path),
         coredump_info_path: Some(coredump_info_path),
+        core_debug_workflow_path: Some(core_debug_workflow_path),
+        process_tree_path: Some(process_tree_path),
+        browser_crash_reporting: detect_browser_crash_reporting(&request.application_command),
         application_name: request.application_name.clone(),
         application_version,
         application_command: redacted_command,
@@ -314,19 +330,25 @@ pub fn collect_evidence_bundle_with_tools(
         processes: vec![
             ProcessEvidence {
                 pid: std::process::id(),
+                parent_pid: parent_pid(std::process::id()),
                 process_type: "collector".to_string(),
+                command_line: std::env::args().collect(),
                 exit_status: Some(0),
                 signal: None,
             },
             ProcessEvidence {
                 pid: daemon_output.pid,
+                parent_pid: Some(std::process::id()),
                 process_type: "daemon_command".to_string(),
+                command_line: redact_command(&request.daemon_command),
                 exit_status: daemon_output.exit_status,
                 signal: daemon_output.signal,
             },
             ProcessEvidence {
                 pid: application_output.pid,
-                process_type: "application_command".to_string(),
+                parent_pid: Some(std::process::id()),
+                process_type: application_process_type(&request.application_command).to_string(),
+                command_line: redact_command(&request.application_command),
                 exit_status: application_output.exit_status,
                 signal: application_output.signal,
             },
@@ -347,6 +369,109 @@ pub fn collect_evidence_bundle_with_tools(
         bundle_dir: request.bundle_dir.clone(),
         classification: ProcessClassification::Unknown,
     })
+}
+
+fn redact_command(command: &[String]) -> Vec<String> {
+    command
+        .iter()
+        .map(|argument| {
+            if argument.starts_with("--user-data-dir=") {
+                "--user-data-dir=<redacted>".to_string()
+            } else {
+                argument.clone()
+            }
+        })
+        .collect()
+}
+
+fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, fields) = stat.rsplit_once(')')?;
+    fields.split_whitespace().nth(1)?.parse().ok()
+}
+
+fn application_process_type(command: &[String]) -> &'static str {
+    if command
+        .iter()
+        .any(|argument| argument == "--type=renderer" || argument.starts_with("--type=renderer"))
+    {
+        "renderer"
+    } else {
+        "browser_process"
+    }
+}
+
+fn detect_browser_crash_reporting(command: &[String]) -> String {
+    if command
+        .iter()
+        .any(|argument| argument == "--disable-breakpad" || argument == "--disable-crash-reporter")
+    {
+        "DISABLED_BY_COMMAND_LINE".to_string()
+    } else if command.first().is_some_and(|program| {
+        let name = Path::new(program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        name.contains("chromium") || name.contains("chrome") || name.contains("electron")
+    }) {
+        "AVAILABLE_APPLICATION_DEPENDENT".to_string()
+    } else {
+        "UNAVAILABLE_NOT_A_SUPPORTED_BROWSER".to_string()
+    }
+}
+
+fn write_core_debug_workflow(bundle_dir: &Path) -> std::io::Result<String> {
+    let file_name = "core-debug-workflow.txt";
+    std::fs::write(
+        bundle_dir.join(file_name),
+        "Core debug workflow (run only when coredump-list/info identifies a related PID):\n\
+         1. Match PID, executable, timestamp, and reproduction window.\n\
+         2. Run: coredumpctl info PID --no-pager\n\
+         3. Run interactively: coredumpctl debug PID\n\
+         4. In gdb run: set pagination off; thread apply all bt full\n\
+         5. Save symbols, executable version, stack trace, and matching evidence.json.\n\
+         Never claim a root cause from an unrelated or missing core.\n",
+    )?;
+    Ok(file_name.to_string())
+}
+
+pub fn classify_process_outcome(
+    daemon: &ProcessEvidence,
+    application: &ProcessEvidence,
+    related_core_process_types: &[String],
+    protocol_error_observed: bool,
+) -> ProcessClassification {
+    let crashed = |process: &ProcessEvidence| {
+        process.signal.is_some() || process.exit_status.is_some_and(|status| status != 0)
+    };
+
+    if crashed(daemon) {
+        return ProcessClassification::DaemonCrash;
+    }
+    if crashed(application) {
+        if related_core_process_types
+            .iter()
+            .any(|kind| kind == "renderer")
+            || application.process_type == "renderer"
+        {
+            return ProcessClassification::RendererCrash;
+        }
+        if related_core_process_types
+            .iter()
+            .any(|kind| kind == "browser_process")
+            || application.process_type == "browser_process"
+        {
+            return ProcessClassification::BrowserProcessCrash;
+        }
+        if protocol_error_observed {
+            return ProcessClassification::ProtocolTriggeredExit;
+        }
+    }
+    if !crashed(daemon) && !crashed(application) {
+        ProcessClassification::NoCrashObserved
+    } else {
+        ProcessClassification::Unknown
+    }
 }
 
 fn run_requested_command(
@@ -474,6 +599,9 @@ mod tests {
             journal_path: Some("journal.log".to_string()),
             coredump_list_path: Some("coredump-list.txt".to_string()),
             coredump_info_path: Some("coredump-info.txt".to_string()),
+            core_debug_workflow_path: Some("core-debug-workflow.txt".to_string()),
+            process_tree_path: Some("process-tree.txt".to_string()),
+            browser_crash_reporting: "AVAILABLE_APPLICATION_DEPENDENT".to_string(),
             application_name: "chromium".to_string(),
             application_version: "fixture-version".to_string(),
             application_command: vec![
@@ -491,7 +619,9 @@ mod tests {
             ],
             processes: vec![ProcessEvidence {
                 pid: 1234,
+                parent_pid: Some(1000),
                 process_type: "renderer".to_string(),
+                command_line: vec!["chromium".to_string(), "--type=renderer".to_string()],
                 exit_status: None,
                 signal: Some(11),
             }],
@@ -681,7 +811,7 @@ mod tests {
         let application_process = evidence
             .processes
             .iter()
-            .find(|process| process.process_type == "application_command")
+            .find(|process| process.process_type == "browser_process")
             .unwrap();
         assert_ne!(daemon_process.pid, std::process::id());
         assert_ne!(application_process.pid, std::process::id());
@@ -693,6 +823,91 @@ mod tests {
             serde_json::from_slice(&std::fs::read(result.bundle_dir.join("replay.json")).unwrap())
                 .unwrap();
         assert_eq!(replay, request.minimized_sequence);
+    }
+
+    fn process(
+        process_type: &str,
+        exit_status: Option<i32>,
+        signal: Option<i32>,
+    ) -> ProcessEvidence {
+        ProcessEvidence {
+            pid: 1234,
+            parent_pid: Some(1000),
+            process_type: process_type.to_string(),
+            command_line: vec!["fixture".to_string()],
+            exit_status,
+            signal,
+        }
+    }
+
+    #[test]
+    fn classification_distinguishes_daemon_renderer_browser_and_protocol_exits() {
+        let healthy_daemon = process("daemon_command", Some(0), None);
+        let healthy_browser = process("browser_process", Some(0), None);
+
+        assert_eq!(
+            classify_process_outcome(
+                &process("daemon_command", None, Some(11)),
+                &healthy_browser,
+                &[],
+                false,
+            ),
+            ProcessClassification::DaemonCrash
+        );
+        assert_eq!(
+            classify_process_outcome(
+                &healthy_daemon,
+                &process("renderer", None, Some(11)),
+                &["renderer".to_string()],
+                false,
+            ),
+            ProcessClassification::RendererCrash
+        );
+        assert_eq!(
+            classify_process_outcome(
+                &healthy_daemon,
+                &process("browser_process", Some(1), None),
+                &["browser_process".to_string()],
+                false,
+            ),
+            ProcessClassification::BrowserProcessCrash
+        );
+        assert_eq!(
+            classify_process_outcome(
+                &healthy_daemon,
+                &process("application_command", Some(1), None),
+                &[],
+                true,
+            ),
+            ProcessClassification::ProtocolTriggeredExit
+        );
+        assert_eq!(
+            classify_process_outcome(&healthy_daemon, &healthy_browser, &[], false),
+            ProcessClassification::NoCrashObserved
+        );
+    }
+
+    #[test]
+    fn process_type_and_browser_crash_reporting_are_capability_aware() {
+        assert_eq!(
+            application_process_type(&["chromium".to_string(), "--type=renderer".to_string(),]),
+            "renderer"
+        );
+        assert_eq!(
+            application_process_type(&["google-chrome".to_string()]),
+            "browser_process"
+        );
+        assert_eq!(
+            detect_browser_crash_reporting(&[
+                "electron".to_string(),
+                "--disable-crash-reporter".to_string(),
+            ]),
+            "DISABLED_BY_COMMAND_LINE"
+        );
+        assert_eq!(
+            detect_browser_crash_reporting(&["fixture-app".to_string()]),
+            "UNAVAILABLE_NOT_A_SUPPORTED_BROWSER"
+        );
     }
 
     #[test]

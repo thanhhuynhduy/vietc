@@ -4,7 +4,6 @@ use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use crate::commands::OutputCommand;
 use crate::daemon::Daemon;
 use crate::display;
 #[cfg(feature = "x11")]
@@ -282,34 +281,7 @@ pub fn run_with_evdev(
                         continue;
                     }
                     if let Some(ch) = key_to_char(key) {
-                        let buf_before = daemon.engine.buffer();
-                        let mut commands = daemon.process_key(ch);
-                        if commands.is_empty()
-                            && daemon.engine.is_enabled()
-                            && is_vn_control_key(daemon.app_state.effective_method(), ch)
-                        {
-                            let buf_after = daemon.engine.buffer();
-                            if buf_after != buf_before && !buf_before.is_empty() {
-                                let len = buf_before.chars().count();
-                                commands.push(OutputCommand::Backspace(len + 1));
-                                commands.push(OutputCommand::Type(buf_after));
-                            }
-                        }
-                        // Non-grabbed fix: the VNI/Telex control key character reached
-                        // the app directly. Add 1 extra backspace to remove it.
-                        if !commands.is_empty()
-                            && is_vn_control_key(daemon.app_state.effective_method(), ch)
-                        {
-                            for cmd in &mut commands {
-                                if let OutputCommand::Backspace(ref mut n) = cmd {
-                                    *n += 1;
-                                }
-                            }
-                            log_info(&format!(
-                                "[vietc] non-grabbed: ch='{}' adjusted backspace+1",
-                                ch.escape_default()
-                            ));
-                        }
+                        let commands = daemon.process_key(ch);
                         if !commands.is_empty() {
                             log_info(&format!(
                                 "[vietc] non-grabbed inject: ch='{}' cmds={:?}",
@@ -317,7 +289,9 @@ pub fn run_with_evdev(
                                 commands
                             ));
                         }
-                        if !execute_commands(&*injector, &commands).is_ok() {
+                        let outcome =
+                            execute_commands(&*injector, &commands, &mut daemon.visible_revision);
+                        if !daemon.handle_transaction_outcome(outcome) {
                             log_info("[vietc] non-grabbed injection failed");
                         }
                     }
@@ -455,7 +429,14 @@ pub fn run_with_evdev(
                                     ));
                                 }
                                 consumed_keys.insert(keycode);
-                                if !execute_commands(&*injector, &commands).is_ok() {
+                                if !matches!(
+                                    execute_commands(
+                                        &*injector,
+                                        &commands,
+                                        &mut daemon.visible_revision
+                                    ),
+                                    crate::commands::TransactionOutcome::Applied { .. }
+                                ) {
                                     log_info("[vietc] grabbed injection failed");
                                 }
                                 if is_flush_char(ch) && daemon.engine.is_enabled() {
@@ -541,6 +522,7 @@ fn dev_path_of(label: &str) -> String {
 #[cfg(test)]
 mod grabbed_event_stream_tests {
     use super::*;
+    use crate::commands::OutputCommand;
 
     #[derive(Clone, Copy)]
     enum TestEvent {
@@ -561,6 +543,14 @@ mod grabbed_event_stream_tests {
                     *screen = screen.chars().take(keep).collect();
                 }
                 OutputCommand::Type(text) => screen.push_str(text),
+                OutputCommand::Replace(replacement) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(replacement.delete_before_cursor);
+                    *screen = screen.chars().take(keep).collect();
+                    screen.push_str(&replacement.insert);
+                }
             }
         }
     }

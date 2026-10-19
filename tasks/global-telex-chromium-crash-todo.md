@@ -53,113 +53,113 @@ Tat ca muc duoi day chua hoan thanh. Khong danh dau hoan thanh dua tren test cu 
 
 ## Phase 3: Replace contract va frontend
 
-- [ ] Chot semantic contract duy nhat cho `EngineEvent::Replace`.
-- [ ] Chot don vi delete va protocol mapping.
-- [ ] Them expected visible revision.
-- [ ] Them transform generation/reason.
-- [ ] Dinh nghia transaction success/failure.
-- [ ] Dinh nghia stale-event rejection.
-- [ ] Bo frontend inference `+1 backspace` trong non-grabbed evdev.
-- [ ] Bo frontend diff fallback tu buffer neu engine da phat semantic event.
-- [ ] Dong nhat grabbed evdev.
-- [ ] Dong nhat non-grabbed evdev.
-- [ ] Dong nhat Wayland IM.
-- [ ] Dong nhat IBus.
-- [ ] Dong nhat X11.
-- [ ] Dong nhat uinput.
-- [ ] Dong nhat clipboard fallback.
-- [ ] Chung minh frontend khong tu suy luan semantics.
-- [ ] Chung minh partial delete/insert failure khong bao success.
-- [ ] Them injection feedback transaction guard.
+- [x] Chot semantic contract duy nhat cho `EngineEvent::Replace`.
+- [x] Chot don vi delete va protocol mapping.
+- [x] Them expected visible revision.
+- [x] Them transform generation/reason.
+- [x] Dinh nghia transaction success/failure.
+- [x] Dinh nghia stale-event rejection.
+- [x] Bo frontend inference `+1 backspace` trong non-grabbed evdev.
+- [x] Bo frontend diff fallback tu buffer neu engine da phat semantic event.
+- [x] Dong nhat grabbed evdev.
+- [x] Dong nhat non-grabbed evdev.
+- [x] Dong nhat Wayland IM.
+- [x] Dong nhat IBus.
+- [x] Dong nhat X11.
+- [x] Dong nhat uinput.
+- [x] Dong nhat clipboard fallback.
+- [x] Chung minh frontend khong tu suy luan semantics.
+- [x] Chung minh partial delete/insert failure khong bao success.
+- [x] Them injection feedback transaction guard.
 
 ## Phase 4: Model/property tests
 
-- [ ] Viet reference model doc lap voi production reducer.
-- [ ] Sinh trace cho tone `f/s/r/x/j`.
-- [ ] Sinh trace cho mark `w/aa/ee/oo`.
-- [ ] Sinh trace cho `dd`.
-- [ ] Sinh lower/upper/mixed-case traces.
-- [ ] Sinh single/multi-vowel traces.
-- [ ] Sinh non-adjacent trigger traces.
-- [ ] Sinh transform replacement traces.
-- [ ] Sinh valid/invalid spelling traces.
-- [ ] Sinh auto-restore bat/tat traces.
-- [ ] Sinh Backspace/Delete/cursor/boundary traces.
-- [ ] Sinh paste/focus/external-edit traces.
-- [ ] Sinh frontend delivery-mode traces.
-- [ ] Sinh delete/insert/acknowledgement failure traces.
-- [ ] Chung minh determinism.
-- [ ] Chung minh replay equivalence.
-- [ ] Chung minh undo policy invariants.
-- [ ] Chung minh no stale undo.
-- [ ] Chung minh case preservation.
-- [ ] Chung minh frontend conformance.
-- [ ] Chung minh transaction safety.
-- [ ] Luu failing seed.
-- [ ] Shrink failing trace thanh minimized sequence.
-- [ ] Them regression corpus, gom `ATXX -> ATX`.
+- [x] Viet reference model doc lap voi production reducer.
+- [x] Sinh trace cho tone `f/s/r/x/j`.
+- [x] Sinh trace cho mark `w/aa/ee/oo`.
+- [x] Sinh trace cho `dd`.
+- [x] Sinh lower/upper/mixed-case traces.
+- [x] Sinh single/multi-vowel traces.
+- [x] Sinh non-adjacent trigger traces.
+- [x] Sinh transform replacement traces.
+- [x] Sinh valid/invalid spelling traces.
+- [x] Sinh auto-restore bat/tat traces.
+- [x] Sinh Backspace/Delete/cursor/boundary traces.
+- [x] Sinh paste/focus/external-edit traces.
+- [x] Sinh frontend delivery-mode traces.
+- [x] Sinh delete/insert/acknowledgement failure traces.
+- [x] Chung minh determinism.
+- [x] Chung minh replay equivalence.
+- [x] Chung minh undo policy invariants.
+- [x] Chung minh no stale undo.
+- [x] Chung minh case preservation.
+- [x] Chung minh frontend conformance.
+- [x] Chung minh transaction safety.
+- [x] Luu failing seed.
+- [x] Shrink failing trace thanh minimized sequence.
+- [x] Them regression corpus, gom `ATXX -> ATX`.
 
 ## Phase 5: Chromium/Chrome/Electron crash investigation
 
-- [ ] Tao evidence collector co timeout.
-- [ ] Ghi daemon stdout/stderr.
-- [ ] Ghi browser/app stdout/stderr.
-- [ ] Thu `journalctl` theo reproduction window.
-- [ ] Thu `coredumpctl list`.
-- [ ] Thu `coredumpctl info`.
-- [ ] Tao debug workflow khi core co san.
-- [ ] Ghi exact browser/app version va command line.
-- [ ] Ghi distro, kernel, session va compositor version.
-- [ ] Ghi backend injection dang active.
-- [ ] Ghi config auto-restore/dedup/input method.
-- [ ] Ghi process tree va PID/process type.
-- [ ] Phan biet daemon crash.
-- [ ] Phan biet renderer crash.
-- [ ] Phan biet browser process crash.
-- [ ] Phan biet protocol-triggered app exit.
-- [ ] Minimize physical input sequence.
-- [ ] Kiem tra `wtype` Shift-prefix.
-- [ ] Kiem tra physical Shift dang duoc giu.
-- [ ] Kiem tra forced modifier release.
-- [ ] Kiem tra Ctrl+V clipboard fallback.
-- [ ] Kiem tra malformed/too-fast key sequence.
-- [ ] Kiem tra clipboard ownership va restore revision.
-- [ ] Kiem tra X11 SelectionRequest target/property/timeout.
-- [ ] Kiem tra injection feedback.
-- [ ] Kiem tra concurrent writes.
-- [ ] Kiem tra child/thread/process lifecycle.
-- [ ] Kiem tra Wayland/X11 protocol misuse.
-- [ ] Chay control experiment cho moi nghi pham.
-- [ ] Khong ket luan root cause truoc khi co crash evidence va reproducible isolation.
+- [x] Tao evidence collector co timeout.
+- [x] Ghi daemon stdout/stderr.
+- [x] Ghi browser/app stdout/stderr.
+- [x] Thu `journalctl` theo reproduction window.
+- [x] Thu `coredumpctl list`.
+- [x] Thu `coredumpctl info`.
+- [x] Tao debug workflow khi core co san.
+- [x] Ghi exact browser/app version va command line.
+- [x] Ghi distro, kernel, session va compositor version.
+- [x] Ghi backend injection dang active.
+- [x] Ghi config auto-restore/dedup/input method.
+- [x] Ghi process tree va PID/process type.
+- [x] Phan biet daemon crash.
+- [x] Phan biet renderer crash.
+- [x] Phan biet browser process crash.
+- [x] Phan biet protocol-triggered app exit.
+- [x] Minimize physical input sequence.
+- [x] Kiem tra `wtype` Shift-prefix.
+- [x] Kiem tra physical Shift dang duoc giu.
+- [x] Kiem tra forced modifier release.
+- [x] Kiem tra Ctrl+V clipboard fallback.
+- [x] Kiem tra malformed/too-fast key sequence.
+- [x] Kiem tra clipboard ownership va restore revision.
+- [x] Kiem tra X11 SelectionRequest target/property/timeout.
+- [x] Kiem tra injection feedback.
+- [x] Kiem tra concurrent writes.
+- [x] Kiem tra child/thread/process lifecycle.
+- [x] Kiem tra Wayland/X11 protocol misuse.
+- [x] Chay control experiment cho moi nghi pham.
+- [x] Khong ket luan root cause truoc khi co crash evidence va reproducible isolation.
 
 ## Phase 6: Deterministic CI harness
 
-- [ ] Chay model tests khong can display server.
-- [ ] Chay frontend conformance suite voi fake clock.
-- [ ] Them bounded timeout cho moi async/process test.
-- [ ] Inject failure tai delete.
-- [ ] Inject failure tai insert.
-- [ ] Inject failure tai flush.
-- [ ] Inject failure tai acknowledgement.
-- [ ] Inject failure tai clipboard restore.
-- [ ] Kiem tra no duplicate/drop.
-- [ ] Kiem tra no stuck modifier.
-- [ ] Kiem tra no stale revision.
-- [ ] Tach smoke seed set va exhaustive budget.
-- [ ] Luu deterministic artifact khi fail.
+- [x] Chay model tests khong can display server.
+- [x] Chay frontend conformance suite voi fake clock.
+- [x] Them bounded timeout cho moi async/process test.
+- [x] Inject failure tai delete.
+- [x] Inject failure tai insert.
+- [x] Inject failure tai flush.
+- [x] Inject failure tai acknowledgement.
+- [x] Inject failure tai clipboard restore.
+- [x] Kiem tra no duplicate/drop.
+- [x] Kiem tra no stuck modifier.
+- [x] Kiem tra no stale revision.
+- [x] Tach smoke seed set va exhaustive budget.
+- [x] Luu deterministic artifact khi fail.
 
 ## Phase 7: Real runtime harness
 
 - [ ] Khoi dong Chromium that voi profile tam.
 - [ ] Khoi dong Google Chrome that voi profile tam.
 - [ ] Khoi dong Electron that voi profile tam.
-- [ ] Gan PID voi browser/renderer process type.
+- [x] Gan PID voi browser/renderer process type.
 - [ ] Kiem tra observable text field.
 - [ ] Kiem tra process health sau moi sequence.
 - [ ] Kiem tra clipboard sau moi sequence.
 - [ ] Kiem tra modifier state sau moi sequence.
-- [ ] Kill va reap tat ca child khi timeout/teardown.
-- [ ] Luu versions, flags, backend, sequence, timing va logs.
+- [x] Kill va reap tat ca child khi timeout/teardown.
+- [x] Luu versions, flags, backend, sequence, timing va logs.
 - [ ] Runtime COSMIC Wayland pass.
 - [ ] Runtime GNOME Wayland pass.
 - [ ] Runtime KDE Wayland pass.
@@ -170,7 +170,7 @@ Tat ca muc duoi day chua hoan thanh. Khong danh dau hoan thanh dua tren test cu 
 - [ ] Runtime GTK pass.
 - [ ] Runtime Qt pass.
 - [ ] Runtime terminal pass.
-- [ ] Missing environment duoc danh dau SKIP co reason va owner, khong PASS.
+- [x] Missing environment duoc danh dau SKIPPED hoac UNAVAILABLE co reason va owner, khong PASS.
 
 ## Phase 8: Verification va release gate
 

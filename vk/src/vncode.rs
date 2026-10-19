@@ -240,9 +240,9 @@ mod tests {
         };
         for ch in seq.chars() {
             match engine.process_key(ch) {
-                Some(EngineEvent::Replace { backspaces, insert }) => {
-                    trunc(&mut screen, backspaces);
-                    screen.push_str(&insert);
+                Some(EngineEvent::Replace(replacement)) => {
+                    trunc(&mut screen, replacement.delete_before_cursor);
+                    screen.push_str(&replacement.insert);
                 }
                 Some(EngineEvent::Insert(s)) => screen.push_str(&s),
                 Some(EngineEvent::Flush(s)) => screen.push_str(&s),

@@ -1,4 +1,4 @@
-.PHONY: build build-x11 build-wayland build-all build-ui test test-cli run run-x11 run-wayland clean install install-x11 install-wayland install-ui install-config deb tarball aur ppa arch-repo push-arch release release-ppa fmt lint tree
+.PHONY: build build-x11 build-wayland build-all build-ui test test-ci-smoke test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli run run-x11 run-wayland clean install install-x11 install-wayland install-ui install-config deb tarball aur ppa arch-repo push-arch release release-ppa fmt lint tree
 
 # Master release build
 release:
@@ -72,6 +72,25 @@ build-dev:
 # Run all tests
 test:
 	cargo test
+
+# Headless deterministic CI smoke suite
+test-ci-smoke:
+	env -u DISPLAY -u WAYLAND_DISPLAY VIETC_PROPERTY_PROFILE=smoke cargo test -p vietc-engine --test state_machine_properties
+	env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p vietc-daemon --test deterministic_ci -- --test-threads=1
+	env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p vietc-daemon --test runtime deterministic_ -- --test-threads=1
+	cargo test -p vietc-protocol
+
+# Opt-in controlled runtime targets; requires a disposable GUI session and target dependencies
+test-runtime-targets:
+	VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test runtime privileged_runtime_targets_execute_controlled_scenarios -- --ignored --nocapture --test-threads=1
+
+# Opt-in privileged runtime capability evidence; does not launch unvalidated desktop fixtures
+test-runtime-matrix:
+	VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test runtime privileged_runtime_matrix_records_exact_ready_and_skip_evidence -- --ignored --nocapture --test-threads=1
+
+# Opt-in exhaustive deterministic property budget
+test-properties-exhaustive:
+	env -u DISPLAY -u WAYLAND_DISPLAY VIETC_PROPERTY_PROFILE=exhaustive cargo test -p vietc-engine --test state_machine_properties -- --nocapture
 
 # Run the interactive CLI test harness
 test-cli:

@@ -4,8 +4,8 @@ use crate::english::EnglishDict;
 use crate::event::{Command, EventStore};
 use crate::input_method::InputMethod;
 use crate::state::{
-    BoundaryState, CaseShape, CompositionState, PhysicalEvent, SpellingValidity, TransformIdentity,
-    TransformKind, TransitionKind, UndoPolicy,
+    BoundaryState, CaseShape, CompositionState, PhysicalEvent, Replacement, ReplacementReason,
+    SpellingValidity, TransformIdentity, TransformKind, TransitionKind, UndoPolicy,
 };
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -17,7 +17,7 @@ fn english_dict() -> &'static EnglishDict {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum EngineEvent {
-    Replace { backspaces: usize, insert: String },
+    Replace(Replacement),
     Insert(String),
     Flush(String),
     AutoRestore(String),
@@ -33,6 +33,7 @@ pub struct Engine {
     auto_restore: bool,
     active_transform: Option<TransformIdentity>,
     generation: u64,
+    visible_revision: u64,
     boundary: BoundaryState,
     last_transition: Option<TransitionKind>,
 }
@@ -47,6 +48,7 @@ impl Engine {
             auto_restore: true,
             active_transform: None,
             generation: 0,
+            visible_revision: 0,
             boundary: BoundaryState::Committed,
             last_transition: None,
         }
@@ -282,6 +284,7 @@ impl Engine {
     }
 
     pub fn recover_composition(&mut self) {
+        self.visible_revision = self.visible_revision.saturating_sub(1);
         self.last_transition = Some(TransitionKind::Recover);
     }
 
@@ -343,6 +346,24 @@ impl Engine {
         }
     }
 
+    fn replacement(
+        &mut self,
+        delete_before_cursor: usize,
+        insert: String,
+        reason: ReplacementReason,
+    ) -> EngineEvent {
+        let replacement = Replacement {
+            version: Replacement::VERSION,
+            delete_before_cursor,
+            insert,
+            expected_visible_revision: self.visible_revision,
+            transform_generation: self.generation,
+            reason,
+        };
+        self.visible_revision += 1;
+        EngineEvent::Replace(replacement)
+    }
+
     pub fn process_key(&mut self, ch: char) -> Option<EngineEvent> {
         if !self.bamboo.is_enabled() {
             return Some(EngineEvent::Insert(ch.to_string()));
@@ -376,10 +397,7 @@ impl Engine {
             let macro_expansion = self.macros.get(&self.raw_buffer.to_lowercase()).cloned();
             if let Some(expansion) = macro_expansion {
                 self.reset();
-                return Some(EngineEvent::Replace {
-                    backspaces: prev_len,
-                    insert: expansion,
-                });
+                return Some(self.replacement(prev_len, expansion, ReplacementReason::Macro));
             }
 
             let raw = self.raw_buffer.clone();
@@ -390,10 +408,7 @@ impl Engine {
                 // Vietnamese, revert to the raw keystrokes the user typed. This
                 // genuinely changes the on-screen word, so a Replace is needed.
                 if self.auto_restore && Engine::should_restore_word(&previous, &raw) {
-                    return Some(EngineEvent::Replace {
-                        backspaces: prev_len,
-                        insert: raw,
-                    });
+                    return Some(self.replacement(prev_len, raw, ReplacementReason::AutoRestore));
                 }
                 // Normal case: the composed word is already correctly on screen.
                 // Re-typing it would trigger a redundant backspace + retype that
@@ -426,10 +441,11 @@ impl Engine {
             self.boundary = BoundaryState::Composing;
             self.last_transition = Some(TransitionKind::UndoActive);
             let output = self.bamboo.get_output();
-            return Some(EngineEvent::Replace {
-                backspaces: prev_len,
-                insert: match_casing(&self.raw_buffer, &output),
-            });
+            return Some(self.replacement(
+                prev_len,
+                match_casing(&self.raw_buffer, &output),
+                ReplacementReason::UndoTransform,
+            ));
         }
 
         self.raw_buffer.push(ch);
@@ -458,10 +474,11 @@ impl Engine {
                 }
                 self.boundary = BoundaryState::Composing;
                 let cased = match_casing(&self.raw_buffer, &new_output);
-                return Some(EngineEvent::Replace {
-                    backspaces: prev_len,
-                    insert: cased,
-                });
+                let reason = match self.last_transition {
+                    Some(TransitionKind::ReplaceActive) => ReplacementReason::ReplaceTransform,
+                    _ => ReplacementReason::ApplyTransform,
+                };
+                return Some(self.replacement(prev_len, cased, reason));
             }
         }
 
