@@ -92,9 +92,17 @@ fn telex_reverts_tone_for_english_continuation() {
 }
 
 #[test]
+fn regression_uppercase_atxx_restores_atx() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    let events = process_input(&mut engine, "ATXX");
+
+    assert_eq!(get_display(&events), "ATX");
+}
+
+#[test]
 fn telex_reverts_double_d_for_english_continuation() {
     let mut e = Engine::new(InputMethod::Telex);
-    assert_eq!(get_display(&process_input(&mut e, "addd")), "ad");
+    assert_eq!(get_display(&process_input(&mut e, "addd")), "add");
 }
 
 #[test]

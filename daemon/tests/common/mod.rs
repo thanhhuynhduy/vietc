@@ -2,6 +2,7 @@
 //! Viet+ integration test harness.
 
 pub mod clipboard;
+pub mod evidence;
 pub mod virtual_keyboard;
 
 use std::io::{BufRead, BufReader};

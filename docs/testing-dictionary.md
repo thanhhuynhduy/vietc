@@ -11,6 +11,33 @@ This document defines every test scenario, its purpose, setup, expected behavior
 - **EXPECTED**: Side effects and final state after processing.
 - **CHECKS**: Specific assertions that pass or fail the test.
 
+## Reproduction and crash-evidence contract
+
+Every controlled crash reproduction uses three independent identifiers:
+
+- `reproduction_id`: stable ID for one complete reproduction attempt and its artifact bundle.
+- `transaction_id`: ID for one logical replacement/injection transaction within that attempt.
+- `visible_revision`: monotonic revision of text the engine believes the frontend has acknowledged.
+
+Crash evidence uses schema version `1` and records UTC timestamps, application
+version and command, environment metadata, active backend, stderr and journal
+paths, coredump metadata, process observations, configuration summary, and a
+replayable minimized physical-key sequence.
+
+Each run has one classification: `daemon_crash`, `renderer_crash`,
+`browser_process_crash`, `protocol_triggered_exit`, `no_crash_observed`, or
+`unknown`. An `unknown` result must not be promoted to a root-cause claim.
+
+The minimized-sequence format is a versioned list of physical transitions such
+as `KEY_A:press` and `KEY_A:release`, plus a fixed inter-key delay in
+milliseconds. It records only controlled fixture input. Uncontrolled user
+text, clipboard contents, profile paths, tokens, and passwords must not be
+stored. Every removed field is listed in `redacted_fields`.
+
+Collection commands must have bounded timeouts. Missing `journalctl` or
+`coredumpctl` capability is recorded as unavailable, not interpreted as proof
+that no crash occurred.
+
 ## Test Suites
 
 | Suite | Prefix | Requires | Purpose |
@@ -430,6 +457,15 @@ Every bug that has been fixed in Viet+ history, preserved as a test.
 | SETUP | Virtual keyboard created, daemon in grabbed VNI mode |
 | INPUT | Type 10 VNI words rapidly |
 | EXPECTED | No stuck modifier keys, all words typed correctly |
+
+### R-007: `uppercase_atxx_restores_atx`
+| Field | Value |
+|-------|-------|
+| BUG | Repeated uppercase Telex tone trigger could retain stale transform state |
+| SETUP | engine=Telex, buffer="" |
+| INPUT | Type `ATXX` |
+| EXPECTED | Observable text is exactly `ATX` |
+| CHECKS | No duplicate `X`; replayed output equals direct engine output |
 
 ---
 

@@ -245,14 +245,6 @@ impl BambooEngine {
         self.flatten()
     }
 
-    pub fn pop_last(&mut self) -> Option<String> {
-        if self.composition.pop().is_some() {
-            Some(self.flatten())
-        } else {
-            None
-        }
-    }
-
     pub fn undo_telex_transform(&mut self, trigger: char, raw: &str) -> Option<TelexUndo> {
         if self.rules.method != InputMethod::Telex {
             return None;
@@ -446,7 +438,7 @@ impl BambooEngine {
             };
 
             if t.is_upper && !ch.is_uppercase() {
-                ch = ch.to_ascii_uppercase();
+                ch = ch.to_uppercase().next().unwrap_or(ch);
             }
 
             output.push(ch);

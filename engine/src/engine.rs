@@ -3,6 +3,10 @@ use crate::bamboo::{BambooEngine, TelexUndo};
 use crate::english::EnglishDict;
 use crate::event::{Command, EventStore};
 use crate::input_method::InputMethod;
+use crate::state::{
+    BoundaryState, CaseShape, CompositionState, PhysicalEvent, SpellingValidity, TransformIdentity,
+    TransformKind, TransitionKind, UndoPolicy,
+};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -27,6 +31,10 @@ pub struct Engine {
     raw_buffer: String,
     paste_mode: bool,
     auto_restore: bool,
+    active_transform: Option<TransformIdentity>,
+    generation: u64,
+    boundary: BoundaryState,
+    last_transition: Option<TransitionKind>,
 }
 
 impl Engine {
@@ -37,6 +45,21 @@ impl Engine {
             raw_buffer: String::new(),
             paste_mode: false,
             auto_restore: true,
+            active_transform: None,
+            generation: 0,
+            boundary: BoundaryState::Committed,
+            last_transition: None,
+        }
+    }
+
+    pub fn telex_undo_policy(kind: TransformKind) -> Option<UndoPolicy> {
+        match kind {
+            TransformKind::Tone('f' | 's' | 'r' | 'x' | 'j') => Some(UndoPolicy::AppendTrigger),
+            TransformKind::Mark("aw" | "ow" | "uw" | "uo+w" | "ua+w" | "aa" | "ee" | "oo") => {
+                Some(UndoPolicy::AppendTrigger)
+            }
+            TransformKind::StrokeDd => Some(UndoPolicy::ConsumeTrigger),
+            _ => None,
         }
     }
 
@@ -246,6 +269,20 @@ impl Engine {
     pub fn reset(&mut self) {
         self.bamboo.reset();
         self.raw_buffer.clear();
+        self.active_transform = None;
+        self.boundary = BoundaryState::Committed;
+    }
+
+    pub fn invalidate_composition(&mut self) {
+        self.bamboo.reset();
+        self.raw_buffer.clear();
+        self.active_transform = None;
+        self.boundary = BoundaryState::Invalidated;
+        self.last_transition = Some(TransitionKind::Invalidate);
+    }
+
+    pub fn recover_composition(&mut self) {
+        self.last_transition = Some(TransitionKind::Recover);
     }
 
     pub fn flush(&mut self) -> Option<EngineEvent> {
@@ -272,14 +309,58 @@ impl Engine {
         self.bamboo.clear_macros();
     }
 
+    pub fn reduce(&mut self, event: PhysicalEvent) -> Option<EngineEvent> {
+        match event {
+            PhysicalEvent::Printable(ch) => self.process_key(ch),
+            PhysicalEvent::Backspace => self.process_key('\x08'),
+            PhysicalEvent::WordBoundary(ch) => {
+                if is_flush_char(ch) {
+                    self.process_key(ch)
+                } else {
+                    None
+                }
+            }
+            PhysicalEvent::Delete
+            | PhysicalEvent::Navigate
+            | PhysicalEvent::SelectionChanged
+            | PhysicalEvent::ExternalEdit
+            | PhysicalEvent::FocusChanged => {
+                self.invalidate_composition();
+                None
+            }
+            PhysicalEvent::Paste(text) => {
+                self.invalidate_composition();
+                self.raw_buffer.push_str(&text);
+                for ch in text.chars() {
+                    self.bamboo.append_literal(ch);
+                }
+                None
+            }
+            PhysicalEvent::ReplacementFailed => {
+                self.recover_composition();
+                None
+            }
+        }
+    }
+
     pub fn process_key(&mut self, ch: char) -> Option<EngineEvent> {
         if !self.bamboo.is_enabled() {
             return Some(EngineEvent::Insert(ch.to_string()));
         }
 
         if ch == '\x08' {
-            self.bamboo.pop_last();
             let _ = self.raw_buffer.pop();
+            self.bamboo.reset();
+            for raw_key in self.raw_buffer.chars() {
+                let _ = self.bamboo.process_key(raw_key);
+            }
+            self.active_transform = None;
+            self.boundary = if self.raw_buffer.is_empty() {
+                BoundaryState::Committed
+            } else {
+                BoundaryState::Composing
+            };
+            self.last_transition = Some(TransitionKind::Edit);
             return None;
         }
 
@@ -303,6 +384,7 @@ impl Engine {
 
             let raw = self.raw_buffer.clone();
             self.reset();
+            self.last_transition = Some(TransitionKind::Commit);
             if prev_len > 0 {
                 // Auto-restore: if the committed word is English / not valid
                 // Vietnamese, revert to the raw keystrokes the user typed. This
@@ -326,10 +408,23 @@ impl Engine {
         let prev_len = previous.chars().count();
 
         if let Some(undo) = self.bamboo.undo_telex_transform(ch, &self.raw_buffer) {
+            let consumed_stroke_literal = if undo == TelexUndo::ConsumeTrigger {
+                self.raw_buffer.chars().last()
+            } else {
+                None
+            };
             self.raw_buffer.push(ch);
-            if undo == TelexUndo::AppendTrigger {
-                self.bamboo.append_literal(ch);
+            match undo {
+                TelexUndo::AppendTrigger => self.bamboo.append_literal(ch),
+                TelexUndo::ConsumeTrigger => {
+                    if let Some(literal) = consumed_stroke_literal {
+                        self.bamboo.append_literal(literal);
+                    }
+                }
             }
+            self.active_transform = None;
+            self.boundary = BoundaryState::Composing;
+            self.last_transition = Some(TransitionKind::UndoActive);
             let output = self.bamboo.get_output();
             return Some(EngineEvent::Replace {
                 backspaces: prev_len,
@@ -344,6 +439,24 @@ impl Engine {
             // (tone/mark keys). For simple appends, let the raw key go through.
             let expected = format!("{}{}", previous, ch);
             if new_output != expected && new_output != previous {
+                if let Some((kind, trigger, policy)) =
+                    active_telex_transform(&self.raw_buffer, ch, &new_output)
+                {
+                    let transition = if self.active_transform.is_some() {
+                        TransitionKind::ReplaceActive
+                    } else {
+                        TransitionKind::Apply
+                    };
+                    self.generation += 1;
+                    self.active_transform = Some(TransformIdentity {
+                        kind,
+                        trigger,
+                        generation: self.generation,
+                        undo_policy: policy,
+                    });
+                    self.last_transition = Some(transition);
+                }
+                self.boundary = BoundaryState::Composing;
                 let cased = match_casing(&self.raw_buffer, &new_output);
                 return Some(EngineEvent::Replace {
                     backspaces: prev_len,
@@ -358,6 +471,79 @@ impl Engine {
     pub fn buffer(&self) -> String {
         self.bamboo.get_output()
     }
+
+    pub fn state(&self) -> CompositionState {
+        let visible = self.bamboo.get_output();
+        CompositionState {
+            raw_keys: self.raw_buffer.clone(),
+            case_shape: case_shape(&self.raw_buffer),
+            validity: if visible.is_empty() {
+                SpellingValidity::Unknown
+            } else if crate::spelling::is_valid_vietnamese_syllable(&visible) {
+                SpellingValidity::Valid
+            } else {
+                SpellingValidity::Invalid
+            },
+            visible,
+            active_transform: self.active_transform.clone(),
+            boundary: self.boundary,
+            generation: self.generation,
+            last_transition: self.last_transition,
+        }
+    }
+}
+
+fn case_shape(raw: &str) -> CaseShape {
+    let has_lower = raw.chars().any(char::is_lowercase);
+    let has_upper = raw.chars().any(char::is_uppercase);
+    match (has_lower, has_upper) {
+        (false, true) => CaseShape::Upper,
+        (true, true) => CaseShape::Mixed,
+        _ => CaseShape::Lower,
+    }
+}
+
+fn active_telex_transform(
+    raw: &str,
+    ch: char,
+    visible: &str,
+) -> Option<(TransformKind, char, UndoPolicy)> {
+    let trigger = ch.to_ascii_lowercase();
+    if matches!(trigger, 'f' | 's' | 'r' | 'x' | 'j') {
+        return Some((
+            TransformKind::Tone(trigger),
+            trigger,
+            UndoPolicy::AppendTrigger,
+        ));
+    }
+
+    let lower = raw.to_ascii_lowercase();
+    let mark = if lower.ends_with("dd") {
+        Some((TransformKind::StrokeDd, UndoPolicy::ConsumeTrigger))
+    } else if lower.ends_with("aa") {
+        Some((TransformKind::Mark("aa"), UndoPolicy::AppendTrigger))
+    } else if lower.ends_with("ee") {
+        Some((TransformKind::Mark("ee"), UndoPolicy::AppendTrigger))
+    } else if lower.ends_with("oo") {
+        Some((TransformKind::Mark("oo"), UndoPolicy::AppendTrigger))
+    } else if trigger == 'w' && visible.contains('ư') && visible.contains('ơ') {
+        Some((TransformKind::Mark("uo+w"), UndoPolicy::AppendTrigger))
+    } else if trigger == 'w' && visible.contains('ư') && lower.contains("ua") {
+        Some((TransformKind::Mark("ua+w"), UndoPolicy::AppendTrigger))
+    } else if trigger == 'w' {
+        let kind = if lower.contains("aw") {
+            "aw"
+        } else if lower.contains("ow") {
+            "ow"
+        } else {
+            "uw"
+        };
+        Some((TransformKind::Mark(kind), UndoPolicy::AppendTrigger))
+    } else {
+        None
+    };
+
+    mark.map(|(kind, policy)| (kind, trigger, policy))
 }
 
 fn is_flush_char(ch: char) -> bool {
