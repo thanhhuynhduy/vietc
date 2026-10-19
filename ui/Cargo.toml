@@ -1,0 +1,19 @@
+[workspace]
+
+[package]
+name = "vietc-tray"
+version = "0.1.19"
+edition = "2021"
+description = "Viet+ system tray icon"
+
+[[bin]]
+name = "vietc-tray"
+path = "src/main.rs"
+
+[dependencies]
+ksni = "0.2"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+dirs = "5"
+libc = "0.2.186"

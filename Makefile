@@ -1,0 +1,150 @@
+.PHONY: build build-x11 build-wayland build-all build-ui test test-cli run run-x11 run-wayland clean install install-x11 install-wayland install-ui install-config deb tarball aur ppa arch-repo push-arch release release-ppa fmt lint tree
+
+# Master release build
+release:
+	bash packaging/release.sh
+
+# Master release build and upload to Launchpad PPA
+release-ppa:
+	bash packaging/release.sh --upload-ppa
+
+# Build .deb package
+deb:
+	VERSION=$$(grep '^version' engine/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
+	bash packaging/deb/build-deb.sh "$$VERSION"
+
+# Build generic Linux tarball
+tarball:
+	bash packaging/build-tarball.sh
+
+# Update AUR PKGBUILD & .SRCINFO
+aur:
+	bash packaging/aur/update-aur.sh
+
+# Build Debian source package for Launchpad PPA (both Noble 24.04 + Jammy 22.04)
+ppa:
+	bash packaging/ppa/build-source-package.sh noble
+	bash packaging/ppa/build-source-package.sh jammy
+	@echo "PPA source packages ready in /tmp/vietc_ppa_build_*/ (shared orig /tmp/vietc_\$$(grep '^version' engine/Cargo.toml | head -1 | sed 's/.*\"\(.*\)\"/\1/').orig.tar.gz)"
+
+ppa-noble:
+	bash packaging/ppa/build-source-package.sh noble
+
+ppa-jammy:
+	bash packaging/ppa/build-source-package.sh jammy
+
+# Build Arch Linux Pacman repository locally
+arch-repo:
+	bash packaging/arch-repo/build-repo.sh
+
+# Push Arch Linux Pacman repository directly to GitHub Pages
+push-arch:
+	bash packaging/arch-repo/push-to-gh-pages.sh
+
+# Build core crates
+build:
+	cargo build --release
+
+# Build with X11 support
+build-x11:
+	cargo build --release --features x11
+
+# Build with Wayland IM protocol
+build-wayland:
+	cargo build --release --features wayland
+
+# Build with all backends
+build-all:
+	cargo build --release --features "x11,wayland"
+
+# Build tray icon UI (requires libdbus-1-dev)
+build-ui:
+	cd ui && cargo build --release
+
+# Build virtual-keyboard test tool (requires libwayland/libx11 dev for winit)
+build-vk:
+	cd vk && cargo build --release
+
+# Build debug
+build-dev:
+	cargo build
+
+# Run all tests
+test:
+	cargo test
+
+# Run the interactive CLI test harness
+test-cli:
+	cargo run --bin vietc-cli
+
+# Run the daemon (needs root for evdev/uinput)
+run: build-dev
+	sudo cargo run --bin vietc
+
+# Run daemon with X11 support
+run-x11: build-dev
+	cargo build --features x11
+	sudo cargo run --bin vietc --features x11
+
+# Run daemon with Wayland IM protocol
+run-wayland: build-dev
+	cargo build --features wayland
+	sudo cargo run --bin vietc --features wayland
+
+# Run daemon in release mode
+run-release: build
+	sudo target/release/vietc
+
+# Install to /usr/local/bin
+install: build
+	sudo cp target/release/vietc /usr/local/bin/vietc
+	@echo "Installed vietc to /usr/local/bin/"
+
+# Install with X11 support
+install-x11: build-x11
+	sudo cp target/release/vietc /usr/local/bin/vietc
+	@echo "Installed vietc (with X11) to /usr/local/bin/"
+
+# Install with Wayland IM protocol
+install-wayland: build-wayland
+	sudo cp target/release/vietc /usr/local/bin/vietc
+	@echo "Installed vietc (with Wayland IM) to /usr/local/bin/"
+
+# Install tray icon UI
+install-ui: build-ui
+	sudo cp ui/target/release/vietc-tray /usr/local/bin/vietc-tray
+	@echo "Installed vietc-tray to /usr/local/bin/"
+
+# Install virtual-keyboard test tool
+install-vk: build-vk
+	sudo cp vk/target/release/vietc-vk /usr/local/bin/vietc-vk
+	sudo setcap cap_dac_override+ep /usr/local/bin/vietc-vk
+	@echo "Installed vietc-vk to /usr/local/bin/"
+
+# Install config to user dir
+install-config:
+	mkdir -p ~/.config/vietc
+	cp vietc.toml ~/.config/vietc/config.toml
+	@echo "Config installed to ~/.config/vietc/config.toml"
+
+# Clean build artifacts
+clean:
+	cargo clean
+	@if [ -d ui ]; then (cd ui && cargo clean); fi
+	@if [ -d vk ]; then (cd vk && cargo clean); fi
+
+# Format code
+fmt:
+	cargo fmt
+	cd ui && cargo fmt
+	cd vk && cargo fmt
+
+# Lint
+lint:
+	cargo clippy -- -D warnings
+	cd ui && cargo clippy -- -D warnings
+	cd vk && cargo clippy -- -D warnings
+
+# Show project structure
+tree:
+	@find . -type f \( -name "*.rs" -o -name "*.toml" \) | grep -v target | sort

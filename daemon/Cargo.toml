@@ -1,0 +1,31 @@
+[package]
+name = "vietc-daemon"
+version = "0.1.24"
+edition = "2021"
+description = "Viet+ background daemon"
+
+[[bin]]
+name = "vietc"
+path = "src/main.rs"
+
+[features]
+default = ["x11", "wayland"]
+x11 = ["vietc-protocol/x11"]
+wayland = ["vietc-protocol/wayland-protocol", "dep:wayland-client", "dep:wayland-protocols-misc", "dep:xkbcommon"]
+
+[dependencies]
+vietc-engine = { path = "../engine" }
+vietc-protocol = { path = "../protocol" }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+evdev = "0.12"
+libc = "0.2"
+dirs = "5"
+dbus = "0.9"
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols-misc = { version = "0.3", optional = true, features = ["client"] }
+xkbcommon = { version = "0.7", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,292 @@
+// SPDX-License-Identifier: MIT
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicI32, Ordering};
+
+mod config;
+mod tray;
+
+static DAEMON_PID: AtomicI32 = AtomicI32::new(0);
+
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("/usr/bin"))
+}
+
+fn find_sibling_binary(name: &str) -> String {
+    let dir = exe_dir();
+    // Try exact name (e.g. "vietc" outside Flatpak)
+    let sibling = dir.join(name);
+    if sibling.exists() {
+        return sibling.to_string_lossy().into_owned();
+    }
+    // Try name-daemon (e.g. "vietc-daemon" inside Flatpak)
+    let daemon = dir.join(format!("{}-daemon", name));
+    if daemon.exists() {
+        return daemon.to_string_lossy().into_owned();
+    }
+    name.to_string()
+}
+
+fn is_daemon_running() -> bool {
+    // Check both "vietc" (outside Flatpak) and "vietc-daemon" (inside Flatpak)
+    let check = |name: &str| -> bool {
+        std::process::Command::new("pgrep")
+            .arg("-x")
+            .arg(name)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    check("vietc") || check("vietc-daemon")
+}
+
+fn is_flatpak() -> bool {
+    std::env::var("FLATPAK_ID").is_ok()
+        || std::path::Path::new("/app/bin").exists()
+}
+
+fn needs_root() -> bool {
+    if is_flatpak() {
+        // Inside Flatpak the sandbox already has device access; sudo won't work.
+        return false;
+    }
+    // Check if we can access /dev/uinput directly (user in input group or has ACL)
+    let uinput = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/uinput");
+    if uinput.is_ok() {
+        return false; // Can grab + inject without root
+    }
+    let cfg = config::Config::load();
+    cfg.grab
+}
+
+/// Show a password prompt using available desktop tools.
+/// Returns the password, or empty string if cancelled.
+fn prompt_password() -> String {
+    let title = "Viet+";
+    let msg = "Viet+ needs root privileges to capture keyboard input.\nPlease enter your password:";
+
+    // Try zenity (GNOME)
+    if let Ok(output) = std::process::Command::new("zenity")
+        .args(["--password", "--title", title, "--text", msg])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let pw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !pw.is_empty() {
+                return pw;
+            }
+        }
+    }
+
+    // Try kdialog (KDE)
+    if let Ok(output) = std::process::Command::new("kdialog")
+        .args(["--password", msg])
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let pw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !pw.is_empty() {
+                return pw;
+            }
+        }
+    }
+
+    // Try ssh-askpass (X11 fallback)
+    if let Ok(output) = std::process::Command::new("ssh-askpass")
+        .arg(msg)
+        .stderr(std::process::Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let pw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !pw.is_empty() {
+                return pw;
+            }
+        }
+    }
+
+    // Last resort: terminal prompt
+    eprintln!("{}", msg);
+    if let Ok(child) = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("read -s -p 'Password: ' pw && echo \"$pw\"")
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Ok(output) = child.wait_with_output() {
+            if output.status.success() {
+                return String::from_utf8_lossy(&output.stdout).trim().to_string();
+            }
+        }
+    }
+
+    String::new()
+}
+
+fn start_daemon() {
+    let daemon_bin = find_sibling_binary("vietc");
+
+    let flag_path = config_path().join(".first-launch-done");
+
+    if needs_root() && !is_daemon_running() && !flag_path.exists() {
+        let password = prompt_password();
+        if password.is_empty() {
+            eprintln!("[vietc-tray] No password provided, starting daemon without root");
+            if let Ok(child) = std::process::Command::new(&daemon_bin).spawn() {
+                DAEMON_PID.store(child.id() as i32, Ordering::SeqCst);
+            }
+        } else {
+            // Start daemon with sudo, explicitly passing display/auth environment variables
+            let display = std::env::var("DISPLAY").unwrap_or_default();
+            let xauthority = std::env::var("XAUTHORITY").unwrap_or_default();
+            let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+
+            let mut args = vec!["-S".to_string()];
+            if !display.is_empty() {
+                args.push(format!("DISPLAY={}", display));
+            }
+            if !xauthority.is_empty() {
+                args.push(format!("XAUTHORITY={}", xauthority));
+            }
+            if !wayland_display.is_empty() {
+                args.push(format!("WAYLAND_DISPLAY={}", wayland_display));
+            }
+            args.push(daemon_bin.clone());
+
+            let mut child = match std::process::Command::new("sudo")
+                .args(&args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[vietc-tray] Failed to start daemon with sudo: {}", e);
+                    eprintln!("[vietc-tray] Try: sudo setcap cap_sys_admin+ep $(which vietc-daemon)");
+                    eprintln!("[vietc-tray] Or start manually: sudo vietc-daemon &");
+                    if let Ok(child) = std::process::Command::new(&daemon_bin).spawn() {
+                        DAEMON_PID.store(child.id() as i32, Ordering::SeqCst);
+                    }
+                    return;
+                }
+            };
+
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(format!("{}\n", password).as_bytes());
+            }
+            let status = child.wait();
+
+            // Only suppress future password prompts if sudo actually succeeded
+            if let Ok(exit) = status {
+                if exit.success() {
+                    let _ = std::fs::write(&flag_path, "1");
+                    eprintln!("[vietc-tray] Daemon started with root privileges");
+                    // After sudo execs the daemon, wait briefly and read PID from lock file
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    for uid in &[0usize, unsafe { libc::getuid() as usize }] {
+                        let lock_path = format!("/tmp/vietc-daemon-{}.lock", uid);
+                        if let Ok(pid_str) = std::fs::read_to_string(&lock_path) {
+                            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                                if pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
+                                    DAEMON_PID.store(pid, Ordering::SeqCst);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!("[vietc-tray] sudo failed (wrong password?), starting daemon without root");
+                    eprintln!("[vietc-tray] Try: sudo setcap cap_sys_admin+ep $(which vietc-daemon)");
+                    if let Ok(child) = std::process::Command::new(&daemon_bin).spawn() {
+                        DAEMON_PID.store(child.id() as i32, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    if !is_daemon_running() {
+        eprintln!("[vietc-tray] Starting daemon: {}", daemon_bin);
+        if let Ok(child) = std::process::Command::new(&daemon_bin).spawn() {
+            DAEMON_PID.store(child.id() as i32, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn stop_daemon() {
+    let pid = DAEMON_PID.load(Ordering::SeqCst);
+    if pid > 0 {
+        eprintln!("[vietc-tray] Stopping daemon (PID {})", pid);
+        unsafe { libc::kill(pid, libc::SIGTERM); }
+        // Wait up to 2s for graceful exit
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                eprintln!("[vietc-tray] Daemon exited");
+                return;
+            }
+        }
+        // Force kill if still alive
+        eprintln!("[vietc-tray] Daemon still alive, sending SIGKILL");
+        unsafe { libc::kill(pid, libc::SIGKILL); }
+        return;
+    }
+
+    // Fallback: pkill both possible names
+    eprintln!("[vietc-tray] Stopping daemon via pkill");
+    for name in &["vietc-daemon", "vietc"] {
+        let _ = std::process::Command::new("pkill")
+            .arg("-x")
+            .arg(name)
+            .status();
+    }
+}
+
+fn config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vietc")
+}
+
+fn ensure_single_instance(name: &str) {
+    let uid = unsafe { libc::getuid() };
+    let path = format!("/tmp/{}-{}.lock", name, uid);
+    let path_c = std::ffi::CString::new(path).unwrap();
+    let fd = unsafe { libc::open(path_c.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600) };
+    if fd < 0 {
+        eprintln!("[{}] Failed to open lock file", name);
+        std::process::exit(1);
+    }
+    let res = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    if res < 0 {
+        eprintln!("[{}] Another instance is already running. Exiting.", name);
+        std::process::exit(0);
+    }
+}
+
+fn main() {
+    // Ensure single instance to avoid duplicate tray icons
+    ensure_single_instance("vietc-tray");
+
+    eprintln!("[vietc-tray] Starting");
+
+    // Start daemon (with password prompt if first launch)
+    start_daemon();
+
+    // Run the tray
+    tray::run();
+
+    // Tray exited normally — stop the daemon
+    stop_daemon();
+}

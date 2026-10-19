@@ -1,0 +1,261 @@
+# Changelog
+
+<p align="center">
+  <a href="CHANGELOG.vi.md">Tiếng Việt</a>
+</p>
+
+## v0.1.24 (2026-09-05)
+
+### Fixed
+
+- **Password field English fallback**: Ensure `password_detection.enabled=true` (`daemon/src/password_detector.rs:30`) correctly forces `EN` in `sudo`, `polkit`, `pinentry` and browser password fields - verified `journalctl` now shows `Password field detected — engine disabled` and `status` `en` when typing `password`.
+
+- **English duplicate word fix**: Enable `deduplicate_keys=true,120ms` by default (`daemon/src/config.rs:82`, `vietc.toml:7`) to handle fast `hello`/`while`/`double` duplicate `hheelloo`/`whilee`/`contiinue` without `a terminal is required` `sudo -u` failure (`install.sh:340` `runuser`/`su` fallback).
+
+- **Omawrite initial-letter double**: Fix `daemon/src/device.rs:62` virtual `phys=None` and `daemon/src/evdev_loop.rs:65` path-map dedup for `eventXX` reuse that caused `RRùa`/`TThỏ`/`NNguyễn`/`DaaaĐăng`/`nngày`/`ccon`/`tronggg` when typing `rùa`, `thỏ`, `ngày`, `con` quickly.
+
+
+## v0.1.23 (2026-09-05)
+
+### Fixed
+
+- **Eliminate double keystrokes and text loss on fast typing**: Fixed `daemon/src/evdev_loop.rs:236` `DedupState` handling for `value==2` repeats and `daemon/src/device.rs:62` phys dedup for 2.4G combo dongles (now filters by `REL_X`/`REL_Y` and dedupes by `phys` base). Verified `hello`/`continue` no longer doubles to `hheelloo`/`contiinue` in Omawrite (Qt Wayland) and VS Code.
+
+- **Atomic Unicode injection for Wayland**: Replaced persistent `wtype -` stream (`protocol/src/uinput_monitor.rs:55`) with single atomic `wtype -k BackSpace ... -- <text>` (`protocol/src/uinput_monitor.rs:469`) so `Backspace(5), Type("ngày")` is seen atomically by the compositor. Previously `uinput` backspaces + `wtype` text raced, causing `khhhhhhoa`/`aaaaaaanh`/`tthân`/`nngày`/`ccon` in Omawrite and loss of `tiếng` in `tieengs` Telex.
+
+- **Virtual keyboard hotplug for tests and Omawrite**: Fixed `daemon/src/device.rs:62` fallback for `/virtual/` uinput devices (now `None` so dedup only by path) and `daemon/src/evdev_loop.rs:65`/`494` hotplug rebuild of `known_phys_ids` on disconnect. Previously `sysfs:/sys/devices/virtual/input/inputXX` reused same `inputXX` caused second `vietc-vk`/`Omawrite` virtual keyboard to be ignored, leading to raw `tieengs` instead of `tiếng`.
+
+- **Omawrite (Qt) backspace handling**: Verified `wtype -k BackSpace` via Wayland now correctly deletes in Omawrite `Qt TextArea` when sent atomically with text; separate `wtype` invocations left `Nguye` undeleted causing `NguNguyễn`.
+
+### Tested
+
+- **Omawrite Telex/VNI**: `tieengs` -> `tiếng`, `vo4` -> `võ`, `nguye6n4` -> `nguyễn`, `khoa` `thân` `ngày` `con` no longer double to `khoaaa` `thhân` `nngày` `ccon`; full sentences `võ nguyễn đăng khoa`, `rùa và thỏ là đôi bạn thân`, `một ngày trời nắng thỏ rủ rùa con đi dạo` now correct in Omawrite.
+- **Fast typing**: `abcdefghijklmnopqrstuvwxyz` no loss, `hello` no double with `deduplicate_keys=true,80ms` (`~/.config/vietc/config.toml:5`).
+
+### Changed
+
+- `~/.config/vietc/config.toml` now supports `deduplicate_keys` and `deduplicate_window_ms` (default `false`/`80`) for hardware double.
+- `install.sh` now installs `wtype`/`wl-clipboard` deps and sets `Ctrl+Space` (`vietcctl`) correctly.
+
+
+## v0.1.8 (2026-07-13)
+
+### Rootless Operation
+
+- **Runs with zero privileges**: vietc now operates as a normal user — no root, no `setcap`, no `/dev/uinput`/udev, no `input` group. It speaks `zwp_input_method_v2` when the compositor offers it, and otherwise falls back to the rootless X11 path (`XQueryKeymap` + `XTEST` over XWayland), like `ibus-x11`.
+- **Automatic IBus takeover**: on start vietc stops IBus; on a *clean* exit it restarts IBus automatically (via `IbusRestartGuard`), so it transparently replaces the system IME and restores it when you quit.
+- **systemd user service**: `vietc.service` starts vietc on login (`After=graphical-session.target`, `ConditionEnvironment=DISPLAY`, `KillMode=process` so the respawned IBus survives the stop). Enable once with `systemctl --user enable --now vietc.service`.
+- **Packaging aligned**: `install.sh` and the deb now install the rootless `vietc.service` (running `vietc-daemon` directly) instead of the tray autostart, and ship `grab = false` by default. The privileged evdev/uinput path remains available as a fallback.
+- **Known limitation**: current Mutter/GNOME Shell does not expose `zwp_input_method_manager_v2`, so on that session the X11 path covers X11/XWayland windows only; Wayland-native GTK4/Qt clients are covered automatically once the compositor advertises v2. See `docs/wayland-rootless.md`.
+
+### Aux Controller — Wayland Terminal / Per-App Handling
+
+- **Bamboo aux controller mode**: vietc now runs as an aux controller (`controller_mode = true`) that drives the system **Bamboo** IBus engine per focused app instead of registering its own engine. Vietnamese composition is done by Bamboo; vietc only switches `Bamboo` ⇄ `BambooUs` and handles password fields.
+- **Undetectable (Wayland-native) windows left alone**: on this GNOME/Wayland session no API reports the focused Wayland-native window (GNOME Shell `Eval` is gated off, `xprop` only sees XWayland, AT-SPI2 carries no focus flag/event). When `get_focused_window_class()` returns `None`, the controller now issues **no engine switch** (previously it force-Vietnamese, which garbled Wayland terminals like **ptyxis**).
+- **Per-app engine memory required**: relies on IBus per-application engine memory — set `dconf write /desktop/ibus/general/use-global-engine false` so each app keeps its own IBus engine (ptyxis → `BambooUs`/English, firefox/gedit → `Bamboo`/Vietnamese). One-time manual setup per app; vietc only drives the apps it *can* see (VS Code, X11 terminals).
+- **VNI allow-list**: default `vietnamese_apps` now includes `gedit`, `gnome-text-editor`, `org.gnome.TextEditor`.
+- **Universal typing-style switch (`vietcctl`)**: new `vietcctl` tool cycles the typing style **EN → VNI → TELEX → EN** (and supports `en`/`vni`/`telex`/`status`). It persists the choice to `~/.config/vietc/mode`, rewrites Bamboo's `InputMethod`, and switches the active IBus engine. Install.sh registers **Left Ctrl+Space** as a GNOME custom keybinding (`<Primary>space` → `vietcctl cycle`) so the shortcut works on Wayland too — independent of whether vietc holds the keyboard grab.
+
+### Modular Refactoring
+
+- **Monolithic 2151-line main.rs split into 11 focused modules**: Each module has a single responsibility — `event.rs` (pure event routing, testable without I/O), `evdev_loop.rs` (poll loop only), `inject.rs` (command execution), `daemon.rs` (Daemon struct + process_key/toggle/replay), `device.rs` (keyboard discovery + permissions), `signal.rs` (signal handling + single-instance lock), `stdin.rs` (stdin mode with retry), `x11_capture.rs` (X11 RECORD + keymap capture), `env.rs` (DISPLAY/DBUS recovery), `commands.rs` (OutputCommand enum), `log.rs` (log rotation).
+- **Pure functions extracted to `event.rs`**: Grab-mode keystroke rendering can now be tested without evdev or uinput devices — verifies engine composition + daemon forwarding decisions in pure Rust.
+- **104 unit tests** (20 daemon + 72 engine + 12 protocol), all passing.
+
+### Bug Fixes
+
+- **Grab now persists for daemon lifetime**: Removed idle-grab fallback (300ms). Previously the daemon released the grab after 3 idle polls (~300ms), forcing a non-grabbed fallback that had inherent race conditions. Now the grab is held until the daemon exits.
+- **Double-input from non-primary devices fixed**: Changed `if !grabbed && i != 0` to `if i != 0` — devices that are not the primary keyboard (index 0) are always skipped in the engine path. Their events reach the application directly; processing them through the engine injected a second copy of every keystroke.
+- **Engine-disabled key forwarding in grabbed mode**: When the engine is toggled OFF, keys are forwarded directly via `injector.send_key_event()` instead of being consumed and paste-injected.
+
+### Integration Testing
+
+- **Virtual keyboard test harness** (`daemon/tests/common/virtual_keyboard.rs`): Creates `/dev/uinput` virtual devices for sending synthetic keystrokes in CI.
+- **Clipboard backend** (`daemon/tests/common/clipboard.rs`): Reads system clipboard via xclip (X11) or wl-paste (Wayland) to verify daemon output.
+- **Distro detection** (`daemon/tests/common/distro.rs`): Auto-detects Ubuntu, Mint, Fedora, Arch, display server, and desktop environment for backend selection.
+- **DaemonProcess subprocess manager** (`daemon/tests/common/mod.rs`): Spawns, monitors logs, and kills the daemon subprocess for integration tests.
+- **Daemon integration suite** (`daemon/tests/daemon_suite.rs`): Tests for virtual keyboard creation, clipboard read/write, and VNI word injection in both grabbed and non-grabbed modes.
+
+### Documentation
+
+- **Testing dictionary** (`docs/testing-dictionary.md`): Comprehensive glossary covering 40+ test scenarios with TEST-NNN, SETUP, INPUT, EXPECTED, and CHECKS for all 4 suites (engine, event, daemon, regression).
+
+### Distro Support
+
+- **Distro support table**: README now lists supported (Ubuntu, Debian, Mint, Pop!_OS, elementary, Zorin, Neon, Fedora, RHEL, CentOS, Arch, Manjaro), might-support (openSUSE, Solus, Void), and not-supported (NixOS, Alpine, Gentoo) distros.
+- **libwayland-dev** added to install.sh for all distro families (was missing — caused build failures on X11-only systems like Linux Mint).
+- **libwayland-client0** added to runtime deps (was missing — caused "cannot open shared object file" on Mint).
+- **Config typo fixed**: `mặt khẩu` → `mật khẩu` in default config and README.
+
+### Documentation
+
+- **Roadmap section** added to README (v0.1.22: Wayland IM protocol, event-based AT-SPI2; v0.1.23: CI, Flatpak).
+- **RELEASE_CHECKLIST.md** removed (process now documented in the release commit messages).
+
+---
+
+## v0.1.7 (2026-07-01)
+
+### Password Auto-Detection
+
+- **AT-SPI2 D-Bus integration**: Queries `org.a11y.atspi.Accessible.GetRole` on the a11y bus (not session bus) to detect password fields. Works in GUI password dialogs and a11y-enabled apps.
+- **Process-tree sudo detection**: Scans `pstree` for `sudo`/`passwd` processes — auto-disables Vietnamese when sudo prompts in terminals.
+- **Window-title fallback**: Window titles containing "password", "sudo", "mật khẩu" trigger automatic English mode.
+- **Window-class fallback**: Known password dialogs (pinentry, polkit, kwallet) detected via `password_apps` config.
+- **Periodic re-check**: Re-evaluates password status every 30 keystrokes (catches in-terminal prompts).
+
+### Telex Input Method
+
+- **Telex now fully enabled**: Both VNI and Telex are fully supported. Switch via Ctrl+Shift or tray menu "Input Method > Telex / VNI".
+- **Method status file** (`~/.config/vietc/method`): Daemon writes the current method; tray reads it to display.
+- **Tray indicator**: Red "VN" for VNI, Blue "TLX" for Telex, Gray "EN" for English mode.
+- **Config option**: `toggle_method_key = "shift"` configures the method toggle combo.
+
+### GNOME/Wayland Support
+
+- **GNOME Shell D-Bus integration**: Queries `org.gnome.Shell.Eval` for focused window class, ID, title, and PID — works on Wayland GNOME where xdotool/xprop are unavailable.
+- **Window detection chain**: GNOME Shell D-Bus → xprop → wlrctl → xdotool → wmctrl → /proc — works across all environments.
+- **Compositor detection**: GNOME/Mutter detected via `pgrep gnome-shell` and `XDG_CURRENT_DESKTOP`.
+- **Dependencies**: `dbus` crate (0.9) for AT-SPI2 and GNOME Shell D-Bus.
+
+### Keyboard Grab Safety
+
+- **sigaction without SA_RESTART**: Ctrl+C and SIGTERM now properly interrupt the blocking evdev read, releasing the grab before exit.
+- **uinput auto-load**: The injector runs `modprobe uinput` before opening `/dev/uinput`.
+- **EINTR handling**: Interrupted system calls are caught and re-check the signal flag.
+- **30-second safety timeout**: Auto-releases grab if no events arrive (prevents permanent lockout).
+
+### Clipboard & Injection
+
+- **`wl-copy --paste-once`**: Keeps the clipboard process alive until pasted, eliminating 300-900ms delays on Wayland/GNOME.
+- **X11 SelectionRequest log silenced**: No more clipboard spam in the terminal.
+- **uinput priority**: uinput is always preferred over X11 XTest injection.
+
+### Config Changes
+
+- **Auto-restore disabled by default**: Prevents space consumption on valid Vietnamese words. Enable via `[auto_restore] enabled = true` if desired.
+
+### CLI Enhancements
+
+- **Pass-through characters**: All characters appear in output (not just engine events).
+- **Screen display**: Backspaces properly applied for realistic on-screen view.
+- **State reset**: Each input line starts with a clean engine state.
+- **New commands**: `:help`, `:status`, `:vi`, `:en`, `:ar on|off`, `:macros`, `:macro add/rm/clear`, `:events`.
+
+### Bug Fixes
+
+- **Double space on Ctrl+Space toggle**: Raw key forwarding now checks engine enabled state.
+- **Single-instance lock**: PID written to lock file; stale locks auto-detected and cleaned.
+- **xprop/wmctrl fallbacks**: Window detection works without `xdotool` installed.
+- **AT-SPI2 a11y bus connection**: Was connecting to session bus; now correctly queries the private a11y bus.
+- **Engine state reset between CLI input lines**.
+
+---
+
+## v0.1.6 (2026-06-29)
+
+### uinput-First Injection
+
+- **Injection priority reversed**: uinput (`/dev/uinput`) is now the primary injection backend on X11, with X11 XTest as fallback.
+- **X11 XTest keycode fix**: +8 offset applied to all evdev keycodes for XTest compatibility.
+- **`paste_via_clipboard()` backspace fixed**: was sending X11 keycode 14 (= "5"), now sends correct keycode 22.
+
+### Window-Switch Detection
+
+- **Active window ID verified on every keystroke**: removed the 100ms guard — catches sub-100ms window switches.
+
+### Input Method
+
+- **Telex disabled in tray**: greyed out as "(next version)". Only VNI was functional.
+- **Default input method changed** to `"vni"`.
+
+### Packaging
+
+- **Flatpak and AppImage removed**: only `.deb` packaging is maintained.
+- **Postinst improvements**: cleans stale binaries, config files; shows logout popup.
+
+---
+
+## v0.1.5 (2026-06-29)
+
+## v0.1.5 (2026-06-29)
+
+### Window-Switch Engine Reset
+- **Engine state now clears on window switch** — when Alt+Tab'ing between apps, the composition buffer is properly reset before the next keystroke. Previously, keystrokes could still apply Vietnamese tone/mark rules across app boundaries, producing corrupted text.
+- **`last_key_time` only on character key presses** — modifier-only events (Alt, Ctrl, Shift) no longer update the gap timer, so the 100 ms inline xprop poll fires reliably after every window switch, regardless of held modifiers.
+
+### Active Window Detection
+- **xprop fallback** — `get_active_window_id()` tries `xdotool` first, falls back to `xprop -root _NET_ACTIVE_WINDOW` (preinstalled `x11-utils`). Works under sudo even when xdotool is absent.
+
+### Code Cleanup
+- **Removed ~400 lines of dead unsafe code** — entire X11 clipboard shared-state block (unsafe statics, manual Xlib dlopen, SelectionRequest handling) was unused and has been deleted. All related `#[warn(dead_code)]` and `#[warn(static_mut_refs)]` warnings eliminated.
+- **Engine dead code removed** — unused methods `is_empty`, `is_tone_or_mark_key`, `process_string`, `last_base_char`, `apply_cluster_mark`, `apply_mark` in `BambooEngine`; `RuleEffect` enum and `special_rules` field in `InputMethodRules`.
+- **Production logging** — per-key `eprintln!` removed from evdev loop and uinput paste path. Only startup/error/window-change messages remain (`log_info` to both stderr and file).
+
+### Flatpak Build & System Tray
+- **System tray** (`vietc-tray` using ksni/DBus StatusNotifier) is now built and included in the Flatpak bundle. The tray launches the daemon and shows Vietnamese/English mode.
+- **Desktop menu entry** — the app now appears when searching **"Viet+"** in the application menu. Search, launch, or uninstall from there.
+- **Flatpak command** changed from `vietc-daemon` to `vietc-tray` (the tray spawns the daemon).
+- **Tray fixes for Flatpak** — `find_sibling_binary()` now tries `{name}-daemon` fallback; `is_daemon_running()` checks both `vietc` and `vietc-daemon` process names.
+- **Fixed `mkdir -p`** — `build-flatpak.sh` now creates `/app/share/applications` before installing the desktop file.
+
+### Active Window Detection (Flatpak fix)
+- **Native X11 `_NET_ACTIVE_WINDOW` query** via `dlopen("libX11.so.6")` — added as third fallback in `get_active_window_id()`. Works inside the Flatpak sandbox where `xdotool`/`xprop` are unavailable. No subprocess, no external dependencies.
+### Default Mode
+- **`start_enabled` now defaults to `true`** — Vietnamese mode is active immediately after launch. Press Ctrl+Space to toggle to English.  
+  *(Existing users with a custom config.toml are unaffected — the explicit setting overrides the default.)*
+
+### Tray & Desktop Entry
+- **No password prompt inside Flatpak** — `needs_root()` detects Flatpak sandbox (`FLATPAK_ID` or `/app/bin` presence) and skips sudo entirely; the sandbox already has device access via `--device=all`.
+- **First-launch flag always written** — the `.first-launch-done` marker is created even when the password prompt is dismissed, preventing repeated prompts.
+- **Desktop categories** widened to `Utility;TextTools;X-GNOME-Utilities;` for better visibility in Cinnamon/Mint app menu.
+- **Bundle**: `VietPlus-0.1.5.flatpak` (66 MB with tray, runtime `org.gnome.Platform//50`). Warning-free build.
+
+---
+
+## v0.1.4 (2026-06-28)
+
+### Flatpak Packaging
+- **Flatpak bundle** with all components: daemon, CLI, system tray, uinputd, XRecord, wrapper script
+- **System tray icon** via D-Bus StatusNotifierItem (ksni)
+- **Build script** `packaging/flatpak/build-flatpak.sh` — automated build from source
+- **Permissions:** X11, Wayland, D-Bus session bus, input devices, IPC
+
+### Documentation
+- README updated with Flatpak-only install/build instructions
+
+### Clipboard & Injection
+- **Fix clipboard-into-text race** — Eliminated race condition where clipboard content leaked into typed text during Unicode injection.
+- **CI/CD pipeline** — GitHub Actions workflow for automatic .deb and AppImage builds on push.
+
+### Tests
+- **106 tests** passing (72 engine + 16 CLI + 12 protocol + 5 auto-restore + 1 tone placement).
+
+### Releases
+- `vietc_0.1.4-1_amd64.deb`, `Viet+-0.1.4-x86_64.AppImage` on GitHub + Forgejo.
+
+---
+
+## v0.1.3 (2026-06-26)
+
+- ua-horn cluster fix, clipboard_context save/restore, control-key consumption
+- 106 tests, DEB + AppImage
+
+---
+
+## v0.1.2 (2026-06-26)
+
+- Flush char forwarded as raw key, auto-restore English words
+- Tone placement qu/gi/uê/uơ, skip auto-repeat, Enter key
+
+---
+
+## v0.1.1 (2026-06-26)
+
+- Fix Telex tone key consumption, persistent X11 connection
+
+---
+
+## v0.1.0 (2026-06-26)
+
+Initial release — bamboo engine port, evdev capture, uinput injection.

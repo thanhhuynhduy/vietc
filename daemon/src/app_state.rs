@@ -1,0 +1,1087 @@
+// SPDX-License-Identifier: MIT
+use std::collections::HashMap;
+use std::fs;
+use std::process::Command;
+
+use crate::password_detector::PasswordDetector;
+
+/// Query _NET_ACTIVE_WINDOW directly via X11 client library (dlopen).
+/// Works inside the Flatpak sandbox where xdotool/xprop are unavailable
+/// but libX11.so.6 is present in the GNOME runtime.  No external process
+/// or subclassing needed — open display, query property, return hex ID.
+fn get_active_window_x11_dlopen() -> Option<String> {
+    unsafe {
+        let lib = libc::dlopen(c"libX11.so.6".as_ptr(), libc::RTLD_LAZY);
+        if lib.is_null() {
+            return None;
+        }
+
+        type FnOpenDisplay = unsafe extern "C" fn(*const libc::c_char) -> *mut libc::c_void;
+        type FnDefaultRoot = unsafe extern "C" fn(*mut libc::c_void) -> u64;
+        type FnInternAtom =
+            unsafe extern "C" fn(*mut libc::c_void, *const libc::c_char, libc::c_int) -> u64;
+        type FnGetProperty = unsafe extern "C" fn(
+            *mut libc::c_void,
+            u64,
+            u64,
+            u64,
+            u64,
+            u64,
+            libc::c_int,
+            *mut u64,
+            *mut libc::c_int,
+            *mut u64,
+            *mut u64,
+            *mut *mut u8,
+        ) -> libc::c_int;
+        type FnFree = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
+        type FnCloseDisplay = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
+
+        macro_rules! dlsym_fn {
+            ($lib:expr, $name:literal) => {
+                std::mem::transmute::<*mut libc::c_void, _>(libc::dlsym(
+                    $lib,
+                    concat!($name, "\0").as_ptr() as *const libc::c_char,
+                ))
+            };
+        }
+
+        let xopen: FnOpenDisplay = dlsym_fn!(lib, "XOpenDisplay");
+        let xroot: FnDefaultRoot = dlsym_fn!(lib, "XDefaultRootWindow");
+        let xatom: FnInternAtom = dlsym_fn!(lib, "XInternAtom");
+        let xgetprop: FnGetProperty = dlsym_fn!(lib, "XGetProperty");
+        let xfree: FnFree = dlsym_fn!(lib, "XFree");
+        let xclosedpy: FnCloseDisplay = dlsym_fn!(lib, "XCloseDisplay");
+
+        let dpy = xopen(std::ptr::null());
+        if dpy.is_null() {
+            libc::dlclose(lib);
+            return None;
+        }
+
+        let root = xroot(dpy);
+        let net_active = xatom(dpy, c"_NET_ACTIVE_WINDOW".as_ptr(), 0);
+
+        // XA_WINDOW = 33 (the standard X11 atom for Window type)
+        let xa_window: u64 = 33;
+        let mut actual_type: u64 = 0;
+        let mut actual_format: libc::c_int = 0;
+        let mut nitems: u64 = 0;
+        let mut bytes_after: u64 = 0;
+        let mut data: *mut u8 = std::ptr::null_mut();
+
+        let status = xgetprop(
+            dpy,
+            root,
+            net_active,
+            xa_window,
+            0, // offset
+            1, // length
+            0, // delete
+            &mut actual_type,
+            &mut actual_format,
+            &mut nitems,
+            &mut bytes_after,
+            &mut data,
+        );
+
+        let result = if status != 0 && !data.is_null() && nitems > 0 && actual_format == 32 {
+            // Format=32 elements are returned as unsigned long arrays
+            let id = *(data as *const u64);
+            if id != 0 {
+                Some(format!("0x{:x}", id))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if !data.is_null() {
+            xfree(data as *mut libc::c_void);
+        }
+        xclosedpy(dpy);
+        libc::dlclose(lib);
+
+        result
+    }
+}
+
+struct HyprWindowInfo {
+    address: String,
+    class: String,
+    title: String,
+    pid: u32,
+}
+
+fn get_hyprland_active_window() -> Option<HyprWindowInfo> {
+    if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_err()
+        && !std::env::var("XDG_CURRENT_DESKTOP")
+            .is_ok_and(|d| d.to_lowercase().contains("hyprland"))
+    {
+        return None;
+    }
+
+    let output = run_as_user("hyprctl")
+        .args(["activewindow", "-j"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    if json_str.trim().is_empty() || json_str.trim() == "{}" {
+        return None;
+    }
+
+    let val: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+    let address = val.get("address")?.as_str()?.to_string();
+    if address.is_empty() || address == "0x0" {
+        return None;
+    }
+    let class = val
+        .get("class")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    let title = val
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    let pid = val.get("pid").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
+
+    Some(HyprWindowInfo {
+        address,
+        class,
+        title,
+        pid,
+    })
+}
+
+fn get_sway_focused_window() -> Option<(String, String, String, u32)> {
+    if std::env::var("SWAYSOCK").is_err()
+        && !std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_lowercase().contains("sway"))
+    {
+        return None;
+    }
+
+    let output = run_as_user("swaymsg")
+        .args(["-t", "get_tree"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let val: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    find_sway_focused_node(&val)
+}
+
+fn find_sway_focused_node(val: &serde_json::Value) -> Option<(String, String, String, u32)> {
+    if val.get("focused").and_then(|b| b.as_bool()) == Some(true) {
+        let id = val
+            .get("id")
+            .and_then(|i| i.as_i64())
+            .map(|i| format!("0x{:x}", i))
+            .unwrap_or_default();
+        let class = val
+            .get("app_id")
+            .and_then(|a| a.as_str())
+            .or_else(|| {
+                val.get("window_properties")
+                    .and_then(|w| w.get("class"))
+                    .and_then(|c| c.as_str())
+            })
+            .unwrap_or_default()
+            .to_lowercase();
+        let title = val
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or_default()
+            .to_lowercase();
+        let pid = val.get("pid").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
+        return Some((id, class, title, pid));
+    }
+
+    if let Some(nodes) = val.get("nodes").and_then(|n| n.as_array()) {
+        for node in nodes {
+            if let Some(res) = find_sway_focused_node(node) {
+                return Some(res);
+            }
+        }
+    }
+    if let Some(floating) = val.get("floating_nodes").and_then(|n| n.as_array()) {
+        for node in floating {
+            if let Some(res) = find_sway_focused_node(node) {
+                return Some(res);
+            }
+        }
+    }
+    None
+}
+
+/// Get the active window's PID (works on Wayland GNOME via D-Bus, Hyprland, Sway, X11 via xprop)
+pub fn get_active_window_pid() -> Option<u32> {
+    // Try Hyprland first
+    if let Some(info) = get_hyprland_active_window() {
+        if info.pid > 0 {
+            return Some(info.pid);
+        }
+    }
+
+    // Try Sway
+    if let Some((_, _, _, pid)) = get_sway_focused_window() {
+        if pid > 0 {
+            return Some(pid);
+        }
+    }
+
+    // Try GNOME Shell D-Bus (works on Wayland)
+    if let Some(pid) = get_gnome_focused_pid() {
+        return Some(pid);
+    }
+    // Fallback: X11 via xprop
+    get_xprop_window_pid()
+}
+
+/// Query GNOME Shell via D-Bus for the focused window's PID
+fn get_gnome_focused_pid() -> Option<u32> {
+    let js = "global.display.focus_window?.get_pid()?.toString() ?? ''";
+    let (_, pid_str) = gnome_shell_eval(js)?;
+    pid_str.parse::<u32>().ok().filter(|&p| p > 0)
+}
+
+/// Get active window PID via xprop (X11/XWayland)
+fn get_xprop_window_pid() -> Option<u32> {
+    let id = get_active_window_id_xprop()?;
+    let output = Command::new("xprop")
+        .args(["-id", &id, "_NET_WM_PID"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(pid_str) = stdout.split("= ").nth(1) {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                if pid > 0 {
+                    return Some(pid);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Get the active window's title (lowercase)
+pub fn get_active_window_title() -> Option<String> {
+    // Try Hyprland first
+    if let Some(info) = get_hyprland_active_window() {
+        if !info.title.is_empty() {
+            return Some(info.title);
+        }
+    }
+
+    // Try Sway
+    if let Some((_, _, title, _)) = get_sway_focused_window() {
+        if !title.is_empty() {
+            return Some(title);
+        }
+    }
+
+    // Try GNOME Shell D-Bus (Wayland GNOME)
+    if let Some(title) = get_gnome_window_title() {
+        return Some(title.to_lowercase());
+    }
+
+    // Try X11 via xdotool
+    if let Ok(output) = Command::new("xdotool")
+        .args(["getactivewindow", "getwindowname"])
+        .output()
+    {
+        if output.status.success() {
+            let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !title.is_empty() {
+                return Some(title.to_lowercase());
+            }
+        }
+    }
+
+    // Try X11 via xprop/wmctrl (fallback when xdotool not installed)
+    if let Some(title) = get_wmctrl_window_title() {
+        return Some(title);
+    }
+
+    None
+}
+
+/// Query GNOME Shell via D-Bus for the focused window's title
+fn get_gnome_window_title() -> Option<String> {
+    let js = "global.display.focus_window?.get_title() ?? ''";
+    let (_, title) = gnome_shell_eval(js)?;
+    if title.is_empty() {
+        None
+    } else {
+        Some(title)
+    }
+}
+
+/// Get the active window's X11 or Wayland ID (unique per window).
+/// Returns a unique window-identifier string.
+pub fn get_active_window_id() -> Option<String> {
+    // Try Hyprland first
+    if let Some(info) = get_hyprland_active_window() {
+        if !info.address.is_empty() {
+            return Some(info.address);
+        }
+    }
+
+    // Try Sway
+    if let Some((id, _, _, _)) = get_sway_focused_window() {
+        if !id.is_empty() {
+            return Some(id);
+        }
+    }
+
+    // Try GNOME Shell D-Bus (Wayland GNOME) — returns hex window ID
+    if let Some(id) = get_gnome_active_window_id() {
+        return Some(id);
+    }
+
+    // Try xdotool first (fast, direct, X11)
+    if let Ok(output) = Command::new("xdotool").args(["getactivewindow"]).output() {
+        if output.status.success() {
+            let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !id.is_empty() {
+                return Some(id);
+            }
+        }
+    }
+
+    // Fallback: xprop -root _NET_ACTIVE_WINDOW (x11-utils, preinstalled on most distros)
+    if let Ok(output) = Command::new("xprop")
+        .args(["-root", "_NET_ACTIVE_WINDOW"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // Format: "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00004"
+            if let Some(hex) = stdout.split("window id # ").nth(1) {
+                let hex = hex.trim();
+                if !hex.is_empty() {
+                    return Some(hex.to_string());
+                }
+            }
+        }
+    }
+
+    // Final fallback: direct X11 client library query (works in Flatpak sandbox)
+    if let Some(id) = get_active_window_x11_dlopen() {
+        return Some(id);
+    }
+
+    None
+}
+
+/// Query GNOME Shell via D-Bus for the focused window's XID
+fn get_gnome_active_window_id() -> Option<String> {
+    let js = "global.display.focus_window?.get_id()?.toString(16) ?? ''";
+    let (_, id) = gnome_shell_eval(js)?;
+    if id.is_empty() {
+        None
+    } else {
+        Some(format!("0x{}", id))
+    }
+}
+
+/// Detect the currently focused window's class name
+pub fn get_focused_window_class() -> Option<String> {
+    // Try Hyprland first
+    if let Some(info) = get_hyprland_active_window() {
+        if !info.class.is_empty() {
+            return Some(info.class);
+        }
+    }
+
+    // Try Sway
+    if let Some((_, class, _, _)) = get_sway_focused_window() {
+        if !class.is_empty() {
+            return Some(class);
+        }
+    }
+
+    // Try GNOME Shell D-Bus (Wayland GNOME)
+    if let Some(class) = get_gnome_focused_wm_class() {
+        return Some(class);
+    }
+
+    // Try Wayland via wlrctl (wlroots compositors)
+    if let Some(class) = get_wayland_window_class() {
+        return Some(class);
+    }
+
+    // Try X11 via xdotool
+    if let Some(class) = get_x11_window_class() {
+        return Some(class);
+    }
+
+    // Try X11 via xprop (fallback when xdotool is not installed)
+    if let Some(class) = get_xprop_window_class() {
+        return Some(class);
+    }
+
+    // Try X11 via wmctrl (fallback)
+    if let Some(class) = get_wmctrl_window_class() {
+        return Some(class);
+    }
+
+    // Fallback: try reading from /proc
+    if let Some(class) = get_proc_window_class() {
+        return Some(class);
+    }
+
+    // Wayland-native window detection via AT-SPI2
+    if let Some(class) = crate::password_detector::get_focused_window_class_atspi() {
+        return Some(class);
+    }
+
+    None
+}
+
+/// Query GNOME Shell via D-Bus for the focused window's WM class (app ID)
+fn get_gnome_focused_wm_class() -> Option<String> {
+    let js = "global.display.focus_window?.get_wm_class() ?? ''";
+    let (_, result) = gnome_shell_eval(js)?;
+    if result.is_empty() {
+        None
+    } else {
+        Some(result.to_lowercase())
+    }
+}
+
+/// Execute JavaScript in GNOME Shell and return (success, output)
+fn gnome_shell_eval(js: &str) -> Option<(bool, String)> {
+    // Use gdbus as a subprocess running as the original user.
+    // Direct D-Bus from a root process gets rejected by GNOME Shell.
+    let output = run_as_user("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.gnome.Shell",
+            "--object-path",
+            "/org/gnome/Shell",
+            "--method",
+            "org.gnome.Shell.Eval",
+            js,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Output format: (true, 'result_string')  or  (false, 'error_message')
+    if let Some(rest) = stdout.strip_prefix("(true, ") {
+        let result = rest.trim_end_matches(')');
+        // Remove surrounding quotes: "'value'" -> "value"
+        let result = result.trim_matches('\'');
+        Some((true, result.to_string()))
+    } else if let Some(rest) = stdout.strip_prefix("(false, ") {
+        let error = rest.trim_end_matches(')');
+        let error = error.trim_matches('\'');
+        Some((false, error.to_string()))
+    } else {
+        None
+    }
+}
+
+/// Build a Command that runs as the original user (not root).
+/// Sets display environment variables for the user's session.
+fn run_as_user(program: &str) -> std::process::Command {
+    let is_root = unsafe { libc::getuid() == 0 };
+    if is_root {
+        if let Ok(uid_str) = std::env::var("SUDO_UID") {
+            if let Ok(uid) = uid_str.parse::<u32>() {
+                use std::os::unix::process::CommandExt;
+                let mut cmd = std::process::Command::new(program);
+                cmd.uid(uid).gid(u32::MAX);
+                if let Ok(v) = std::env::var("HOME") {
+                    cmd.env("HOME", &v);
+                }
+                if let Ok(v) = std::env::var("DISPLAY") {
+                    cmd.env("DISPLAY", v);
+                }
+                if let Ok(v) = std::env::var("WAYLAND_DISPLAY") {
+                    cmd.env("WAYLAND_DISPLAY", v);
+                }
+                if let Ok(v) = std::env::var("XDG_RUNTIME_DIR") {
+                    cmd.env("XDG_RUNTIME_DIR", v);
+                }
+                if let Ok(v) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+                    cmd.env("DBUS_SESSION_BUS_ADDRESS", v);
+                }
+                if let Ok(v) = std::env::var("XAUTHORITY") {
+                    cmd.env("XAUTHORITY", v);
+                }
+                return cmd;
+            }
+        }
+    }
+    std::process::Command::new(program)
+}
+
+fn get_x11_window_class() -> Option<String> {
+    let output = Command::new("xdotool")
+        .args(["getactivewindow", "getwindowclassname"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let class = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !class.is_empty() {
+            return Some(class.to_lowercase());
+        }
+    }
+
+    None
+}
+
+/// Get WM_CLASS via xprop (works on X11 without xdotool)
+fn get_xprop_window_class() -> Option<String> {
+    // First get the active window ID
+    let id = get_active_window_id_xprop()?;
+    // Then get WM_CLASS for that window
+    let output = Command::new("xprop")
+        .args(["-id", &id, "WM_CLASS"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Format: WM_CLASS(STRING) = "gnome-terminal", "Gnome-terminal"
+        // We want the first string (application name)
+        if let Some(class_part) = stdout.split('"').nth(1) {
+            let class = class_part.trim().to_lowercase();
+            if !class.is_empty() {
+                return Some(class);
+            }
+        }
+    }
+    None
+}
+
+/// Get active window ID via xprop (X11, no xdotool needed)
+fn get_active_window_id_xprop() -> Option<String> {
+    let output = Command::new("xprop")
+        .args(["-root", "_NET_ACTIVE_WINDOW"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Format: "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00004"
+        if let Some(hex) = stdout.split("window id # ").nth(1) {
+            let hex = hex.trim();
+            if !hex.is_empty() {
+                return Some(hex.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Get window class via wmctrl (X11 fallback)
+fn get_wmctrl_window_class() -> Option<String> {
+    // Only try wmctrl if xdotool is unavailable
+    if Command::new("xdotool").output().is_ok() {
+        return None; // xdotool exists, prefer it
+    }
+    // wmctrl -l -x lists windows with their class (WM_CLASS)
+    let output = Command::new("wmctrl").args(["-l", "-x"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Each line format: 0x00a00001  desktop_num  class_name  title
+    // Class name format: "gnome-terminal.Gnome-terminal"
+    // We want the part before the dot
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let class_part = parts[2];
+            // Get the app part before the dot if present
+            let class = class_part
+                .split('.')
+                .next()
+                .unwrap_or(class_part)
+                .to_lowercase();
+            if !class.is_empty() && class != "nvidia-settings" {
+                // wmctrl returns ALL windows, not just focused.
+                // We check if the first listed window is focused,
+                // or if there's an active-state marker.
+                return Some(class);
+            }
+        }
+    }
+    None
+}
+
+/// Get active window title using wmctrl
+fn get_wmctrl_window_title() -> Option<String> {
+    let id = get_active_window_id_xprop()?;
+    let output = Command::new("xprop")
+        .args(["-id", &id, "WM_NAME"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // Format: "WM_NAME(STRING) = "title""
+        if let Some(title) = stdout.split('"').nth(1) {
+            let title = title.trim();
+            if !title.is_empty() {
+                return Some(title.to_lowercase());
+            }
+        }
+    }
+    None
+}
+
+fn get_wayland_window_class() -> Option<String> {
+    // Try wlr-foreign-toplevel-management protocol via wlrctl
+    let output = Command::new("wlrctl")
+        .args(["toplevel", "list", "--format", "%app-id"])
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let lines = String::from_utf8_lossy(&output.stdout);
+        // First line is typically the focused window
+        if let Some(class) = lines.lines().next() {
+            let class = class.trim().to_string();
+            if !class.is_empty() {
+                return Some(class.to_lowercase());
+            }
+        }
+    }
+
+    None
+}
+
+fn get_proc_window_class() -> Option<String> {
+    // Read /proc/active-windows if available (some compositors expose this)
+    let content = fs::read_to_string("/proc/active-windows").ok()?;
+    // Format: pid window_class window_title
+    content
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)
+        .map(|s| s.to_lowercase())
+}
+
+/// Manages per-app IME state
+pub struct AppStateManager {
+    /// Current app class (lowercase)
+    current_app: String,
+    /// Per-app overrides (user toggled manually)
+    overrides: HashMap<String, bool>,
+    /// Default English apps from config
+    english_apps: Vec<String>,
+    /// Default Vietnamese apps from config
+    vietnamese_apps: Vec<String>,
+    /// Bypass apps from config
+    bypass_apps: Vec<String>,
+    /// Terminal emulator class names (force VNI mode)
+    terminal_apps: Vec<String>,
+    /// Input method forced in terminals
+    terminal_input_method: String,
+    /// User's global input method (VNI/Telex)
+    global_method: String,
+    /// Effective method after terminal override
+    effective_method: String,
+    /// Global enabled state
+    global_enabled: bool,
+    /// Password detection config
+    password_enabled: bool,
+    check_atspi2: bool,
+    check_window_title: bool,
+    title_keywords: Vec<String>,
+    password_apps: Vec<String>,
+    /// Password detector (AT-SPI2)
+    password_detector: PasswordDetector,
+    /// Cached password field state
+    is_password_field: bool,
+}
+
+impl AppStateManager {
+    pub fn new(
+        english_apps: Vec<String>,
+        vietnamese_apps: Vec<String>,
+        bypass_apps: Vec<String>,
+        terminal_apps: Vec<String>,
+        terminal_input_method: String,
+        global_method: String,
+        global_enabled: bool,
+    ) -> Self {
+        let effective_method = Self::compute_effective_method(
+            &global_method,
+            &terminal_input_method,
+            &terminal_apps,
+            "",
+        );
+        Self {
+            current_app: String::new(),
+            overrides: HashMap::new(),
+            english_apps: english_apps.iter().map(|s| s.to_lowercase()).collect(),
+            vietnamese_apps: vietnamese_apps.iter().map(|s| s.to_lowercase()).collect(),
+            bypass_apps: bypass_apps.iter().map(|s| s.to_lowercase()).collect(),
+            terminal_apps: terminal_apps.iter().map(|s| s.to_lowercase()).collect(),
+            terminal_input_method,
+            global_method,
+            effective_method,
+            global_enabled,
+            password_enabled: false,
+            check_atspi2: true,
+            check_window_title: true,
+            title_keywords: Vec::new(),
+            password_apps: Vec::new(),
+            password_detector: PasswordDetector::new(),
+            is_password_field: false,
+        }
+    }
+
+    /// Compute effective method: use terminal override if current_app is a terminal,
+    /// otherwise use the global method.
+    fn compute_effective_method(
+        global_method: &str,
+        terminal_method: &str,
+        terminal_apps: &[String],
+        current_app: &str,
+    ) -> String {
+        for pattern in terminal_apps {
+            if current_app.contains(pattern.as_str()) {
+                return terminal_method.to_string();
+            }
+        }
+        global_method.to_string()
+    }
+
+    /// Update password detection config
+    pub fn set_password_config(
+        &mut self,
+        enabled: bool,
+        check_atspi2: bool,
+        check_window_title: bool,
+        title_keywords: Vec<String>,
+        password_apps: Vec<String>,
+    ) {
+        self.password_enabled = enabled;
+        self.check_atspi2 = check_atspi2;
+        self.check_window_title = check_window_title;
+        self.title_keywords = title_keywords.iter().map(|s| s.to_lowercase()).collect();
+        self.password_apps = password_apps.iter().map(|s| s.to_lowercase()).collect();
+    }
+
+    /// Set the user's global enabled state
+    pub fn set_global_enabled(&mut self, enabled: bool) {
+        self.global_enabled = enabled;
+    }
+
+    /// Clear app overrides
+    pub fn clear_overrides(&mut self) {
+        self.overrides.clear();
+        let _ = self.save_overrides();
+    }
+
+    /// Set the user's global input method and recompute effective method
+    pub fn set_global_method(&mut self, method: &str) {
+        self.global_method = method.to_string();
+        self.update_effective_method();
+    }
+
+    /// Recompute effective method based on terminal override
+    pub fn update_effective_method(&mut self) {
+        self.effective_method = Self::compute_effective_method(
+            &self.global_method,
+            &self.terminal_input_method,
+            &self.terminal_apps,
+            &self.current_app,
+        );
+    }
+
+    /// Get the effective input method (terminal override applied)
+    pub fn effective_method(&self) -> &str {
+        &self.effective_method
+    }
+
+    /// Check if the current app is a terminal emulator
+    pub fn is_terminal_app(&self) -> bool {
+        for pattern in &self.terminal_apps {
+            if self.current_app.contains(pattern.as_str()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if the current focused widget is a password field
+    /// Returns true if password detected, forcing English mode
+    pub fn check_password_field(&mut self) -> bool {
+        if !self.password_enabled {
+            self.is_password_field = false;
+            return false;
+        }
+
+        // Layer 1: AT-SPI2 (most accurate, works in terminals and dialogs)
+        if self.check_atspi2 {
+            if let Some(is_password) = self.password_detector.check() {
+                self.is_password_field = is_password;
+                if is_password {
+                    log_password_detection("AT-SPI2", &self.current_app);
+                }
+                return is_password;
+            }
+        }
+
+        // Layer 2: Window class match (for known password dialogs)
+        for pattern in &self.password_apps {
+            if self.current_app.contains(pattern.as_str()) {
+                self.is_password_field = true;
+                log_password_detection("window-class", &self.current_app);
+                return true;
+            }
+        }
+
+        // Layer 3: Window title heuristic (for sudo prompts, browser dialogs)
+        if self.check_window_title {
+            if let Some(title) = get_active_window_title() {
+                for keyword in &self.title_keywords {
+                    if title.contains(keyword.as_str()) {
+                        self.is_password_field = true;
+                        log_password_detection("window-title", &title);
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Layer 4: Process-based detection (for terminal sudo/passwd prompts)
+        if let Some(pid) = get_active_window_pid() {
+            if is_sudo_process(pid) {
+                self.is_password_field = true;
+                log_password_detection("process-sudo", &format!("PID {}", pid));
+                return true;
+            }
+        }
+
+        self.is_password_field = false;
+        false
+    }
+
+    /// Check if focused app changed with a pre-detected class and return whether engine should be enabled
+    pub fn update_with_app(&mut self, new_class: String) -> Option<bool> {
+        if new_class == self.current_app {
+            return None; // No change
+        }
+
+        let old_app = self.current_app.clone();
+        self.current_app = new_class;
+
+        eprintln!("[vietc] App: {} → {}", old_app, self.current_app);
+
+        // Recompute effective method on window change
+        self.update_effective_method();
+        Some(self.get_default_state())
+    }
+
+    /// Get the default Vietnamese state for the current app
+    pub fn get_default_state(&self) -> bool {
+        if !self.global_enabled {
+            return false;
+        }
+
+        // Check user override first
+        if let Some(&override_state) = self.overrides.get(&self.current_app) {
+            return override_state;
+        }
+
+        // Check config defaults
+        for pattern in &self.english_apps {
+            if self.current_app.contains(pattern.as_str()) {
+                return false;
+            }
+        }
+
+        for pattern in &self.vietnamese_apps {
+            if self.current_app.contains(pattern.as_str()) {
+                return true;
+            }
+        }
+
+        // Default: enabled
+        true
+    }
+
+    /// Update app lists from reloaded config
+    pub fn update_lists(
+        &mut self,
+        english_apps: Vec<String>,
+        vietnamese_apps: Vec<String>,
+        bypass_apps: Vec<String>,
+        terminal_apps: Vec<String>,
+        terminal_input_method: String,
+    ) -> &Self {
+        self.english_apps = english_apps.iter().map(|s| s.to_lowercase()).collect();
+        self.vietnamese_apps = vietnamese_apps.iter().map(|s| s.to_lowercase()).collect();
+        self.bypass_apps = bypass_apps.iter().map(|s| s.to_lowercase()).collect();
+        self.terminal_apps = terminal_apps.iter().map(|s| s.to_lowercase()).collect();
+        self.terminal_input_method = terminal_input_method;
+        self.update_effective_method();
+        eprintln!(
+            "[vietc] App lists updated: {} English, {} Vietnamese, {} Bypass, {} Terminal",
+            self.english_apps.len(),
+            self.vietnamese_apps.len(),
+            self.bypass_apps.len(),
+            self.terminal_apps.len()
+        );
+        self
+    }
+
+    /// Check if the currently active application should bypass the IME completely
+    pub fn is_current_app_bypassed(&self) -> bool {
+        for pattern in &self.bypass_apps {
+            if self.current_app.contains(pattern.as_str()) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Save overrides to config file
+    #[allow(dead_code)]
+    pub fn save_overrides(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let path = override_path();
+        let content = toml::to_string(&self.overrides)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, content)?;
+        Ok(())
+    }
+
+    /// Load overrides from config file
+    pub fn load_overrides(&mut self) {
+        let path = override_path();
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(overrides) = toml::from_str::<HashMap<String, bool>>(&content) {
+                self.overrides = overrides;
+                eprintln!("[vietc] Loaded {} app overrides", self.overrides.len());
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn current_app(&self) -> &str {
+        &self.current_app
+    }
+}
+
+fn log_password_detection(method: &str, context: &str) {
+    eprintln!(
+        "[vietc] Password field detected via {}: {}",
+        method, context
+    );
+}
+
+/// Walk up the process tree from `pid` to PID 1 and return all ancestor PIDs.
+fn get_ancestor_pids(pid: u32) -> Vec<u32> {
+    let mut ancestors = Vec::new();
+    let mut current = pid;
+    loop {
+        ancestors.push(current);
+        let path = format!("/proc/{}/status", current);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        let ppid = match content
+            .lines()
+            .find(|l| l.starts_with("PPid:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u32>().ok())
+        {
+            Some(0) | None => break,
+            Some(p) => p,
+        };
+        if ppid == current {
+            break;
+        }
+        current = ppid;
+    }
+    ancestors
+}
+
+/// Check if the given PID or any of its descendants is running a password
+/// prompt (sudo, passwd, pkexec).  Excludes the daemon's own ancestor chain
+/// so that running `sudo vietc-daemon` from the same terminal doesn't cause
+/// a false positive.
+fn is_sudo_process(pid: u32) -> bool {
+    // Build the daemon's ancestor PID chain to exclude self from detection
+    let daemon_pid = unsafe { libc::getpid() as u32 };
+    let daemon_ancestors = get_ancestor_pids(daemon_pid);
+
+    if let Ok(output) = Command::new("pstree")
+        .args(["-p", &pid.to_string()])
+        .output()
+    {
+        let tree = String::from_utf8_lossy(&output.stdout);
+        for target in &["sudo(", "passwd(", "pkexec("] {
+            let mut start = 0;
+            while let Some(pos) = tree[start..].find(target) {
+                let abs_pos = start + pos;
+                let after = &tree[abs_pos + target.len()..];
+                let found_pid = after.split(')').next().and_then(|s| s.parse::<u32>().ok());
+                // Skip if this PID is the daemon's own ancestor (e.g. `sudo vietc-daemon`)
+                if let Some(p) = found_pid {
+                    if target == &"sudo(" && daemon_ancestors.contains(&p) {
+                        start = abs_pos + 1;
+                        continue;
+                    }
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Fallback if pstree is not installed: check children directly
+    if let Ok(output) = Command::new("ps")
+        .args(["--ppid", &pid.to_string(), "-o", "comm="])
+        .output()
+    {
+        let output = String::from_utf8_lossy(&output.stdout);
+        for line in output.lines() {
+            let comm = line.trim();
+            if comm == "sudo" || comm == "passwd" || comm == "pkexec" {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn override_path() -> std::path::PathBuf {
+    std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".config"))
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("vietc")
+        .join("overrides.toml")
+}

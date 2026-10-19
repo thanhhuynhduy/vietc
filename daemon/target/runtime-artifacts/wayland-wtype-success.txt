@@ -1,0 +1,7 @@
+display_server: wayland
+compositor: COSMIC
+tools:
+  wtype: installed; version unavailable
+  zenity: 4.0.1
+failure_logs:
+  wayland-wtype-success: PASS: expected="vietc-wayland-runtime-783436"; observed="vietc-wayland-runtime-783436"; inject_result=Success
