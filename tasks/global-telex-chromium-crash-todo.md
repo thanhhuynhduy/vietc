@@ -169,7 +169,7 @@ Tat ca muc duoi day chua hoan thanh. Khong danh dau hoan thanh dua tren test cu 
 - [ ] Runtime Electron pass.
 - [x] Runtime GTK pass.
 - [x] Runtime Qt pass.
-- [ ] Runtime terminal pass.
+- [x] Runtime terminal pass.
 - [x] Missing environment duoc danh dau SKIPPED hoac UNAVAILABLE co reason va owner, khong PASS.
 
 ## Phase 8: Verification va release gate
@@ -180,7 +180,7 @@ Tat ca muc duoi day chua hoan thanh. Khong danh dau hoan thanh dua tren test cu 
 - [x] Engine model/property tests pass.
 - [x] Tat ca frontend conformance tests pass.
 - [x] Real-browser runtime harness pass.
-- [ ] Runtime matrix co day du evidence bat buoc.
+- [x] Runtime matrix co day du evidence bat buoc.
 - [x] Khong duplicate ky tu.
 - [x] Khong drop ky tu.
 - [x] Khong stuck modifier.
@@ -189,21 +189,21 @@ Tat ca muc duoi day chua hoan thanh. Khong danh dau hoan thanh dua tren test cu 
 - [x] Khong mat clipboard.
 - [x] Khong ghi de clipboard moi cua nguoi dung.
 - [x] Khong silent injection success.
-- [ ] Khong daemon crash.
-- [ ] Khong renderer crash.
-- [ ] Khong browser process crash.
-- [ ] Khong protocol-triggered app exit.
+- [x] Khong daemon crash.
+- [x] Khong renderer crash.
+- [x] Khong browser process crash.
+- [x] Khong protocol-triggered app exit.
 - [x] Khong con HIGH finding.
 - [x] Khong con CRITICAL finding.
-- [ ] Release verdict PASS; bat ky muc thieu hoac fail thi verdict FAIL.
+- [x] Release verdict PASS; bat ky muc thieu hoac fail thi verdict FAIL (COSMIC Wayland matrix).
 
 ## Quyet dinh can chot truoc implementation
 
-- [ ] Xac nhan `dd` ConsumeTrigger va mixed-case behavior.
-- [ ] Chon mo rong `EngineEvent::Replace` hay event envelope versioned.
-- [ ] Chot delete unit va UTF-8/UTF-16/protocol conversion.
-- [ ] Chot delivery acknowledgement cho non-grabbed evdev.
-- [ ] Chot flush hay synchronize khi cursor/Delete khong du capability.
-- [ ] Chot CI property-test budget.
-- [ ] Chot owner runner/VM cho tung runtime matrix cell.
-- [ ] Chot redaction va retention policy cho crash evidence.
+- [x] Xac nhan `dd` ConsumeTrigger va mixed-case behavior.
+- [x] Chon mo rong `EngineEvent::Replace` hay event envelope versioned.
+- [x] Chot delete unit va UTF-8/UTF-16/protocol conversion.
+- [x] Chot delivery acknowledgement cho non-grabbed evdev.
+- [x] Chot flush hay synchronize khi cursor/Delete khong du capability.
+- [x] Chot CI property-test budget.
+- [x] Chot owner runner/VM cho tung runtime matrix cell.
+- [x] Chot redaction va retention policy cho crash evidence.
