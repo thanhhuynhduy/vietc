@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Explicit capability gates for privileged runtime verification.
 
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -135,6 +136,12 @@ enum RuntimeCommandError {
     TimedOut,
     PrerequisiteMissing,
     ScenarioFailed,
+    ClipboardSnapshotFailed,
+    InputInjectionFailed,
+    TargetCopyFailed,
+    ClipboardRestoreFailed,
+    ClipboardVerificationFailed,
+    ModifierReleaseFailed,
 }
 
 #[derive(Clone, Debug)]
@@ -177,7 +184,7 @@ impl RuntimeEnvironment {
             "google-chrome",
             "electron",
             "zenity",
-            "assistant",
+            "python3",
             "wtype",
             "xdotool",
             "gnome-terminal",
@@ -348,6 +355,112 @@ fn runtime_prerequisite(
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ControlledRuntimeEvidence {
+    status: RuntimeMatrixStatus,
+    reason: String,
+    expected_text: String,
+    observed_text: String,
+    process_healthy: bool,
+    clipboard_preserved: bool,
+    modifiers_released: bool,
+}
+
+impl ControlledRuntimeEvidence {
+    fn is_verified_pass(&self) -> bool {
+        self.status == RuntimeMatrixStatus::Pass
+            && self.expected_text == self.observed_text
+            && self.process_healthy
+            && self.clipboard_preserved
+            && self.modifiers_released
+    }
+}
+
+fn parse_controlled_runtime_evidence(input: &str) -> Result<ControlledRuntimeEvidence, String> {
+    let fields = input
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.trim(), value.trim()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let required = |key: &str| {
+        fields
+            .get(key)
+            .copied()
+            .ok_or_else(|| format!("missing {key}"))
+    };
+    let parse_bool = |key: &str| {
+        required(key)?
+            .parse::<bool>()
+            .map_err(|_| format!("invalid {key}"))
+    };
+    let parse_text = |key: &str| {
+        let value = required(key)?;
+        if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+            Ok(value[1..value.len() - 1]
+                .replace(r#"\n"#, "\n")
+                .replace(r#"\""#, "\""))
+        } else {
+            Err(format!("invalid {key}"))
+        }
+    };
+
+    let status = match required("status")? {
+        "PASS" => RuntimeMatrixStatus::Pass,
+        "FAILED" => RuntimeMatrixStatus::Failed,
+        "SKIPPED" => RuntimeMatrixStatus::Skipped,
+        "UNAVAILABLE" => RuntimeMatrixStatus::Unavailable,
+        _ => return Err("invalid status".to_string()),
+    };
+
+    Ok(ControlledRuntimeEvidence {
+        status,
+        reason: required("reason")?.to_string(),
+        expected_text: parse_text("expected_text")?,
+        observed_text: parse_text("observed_text")?,
+        process_healthy: parse_bool("process_healthy")?,
+        clipboard_preserved: parse_bool("clipboard_preserved")?,
+        modifiers_released: parse_bool("modifiers_released")?,
+    })
+}
+
+fn load_controlled_runtime_evidence(executable: &str) -> Option<ControlledRuntimeEvidence> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()?
+        .join("target/runtime-artifacts")
+        .join(format!("controlled-{executable}-result.txt"));
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|input| parse_controlled_runtime_evidence(&input).ok())
+}
+
+fn controlled_evidence_entry(
+    capability: &'static str,
+    owner: &'static str,
+    evidence: Option<&ControlledRuntimeEvidence>,
+    missing_reason: &'static str,
+) -> RuntimeMatrixEntry {
+    match evidence {
+        Some(evidence) if evidence.is_verified_pass() => RuntimeMatrixEntry::new(
+            capability,
+            RuntimeMatrixStatus::Pass,
+            evidence.reason.clone(),
+            owner,
+        ),
+        Some(evidence) => RuntimeMatrixEntry::new(
+            capability,
+            if evidence.status == RuntimeMatrixStatus::Pass {
+                RuntimeMatrixStatus::Failed
+            } else {
+                evidence.status
+            },
+            evidence.reason.clone(),
+            owner,
+        ),
+        None => unavailable_entry(capability, missing_reason, owner),
+    }
+}
+
 fn application_entry(
     environment: &RuntimeEnvironment,
     capability: &'static str,
@@ -406,34 +519,37 @@ fn desktop_entry(
     )
 }
 
-fn toolkit_entry(
-    environment: &RuntimeEnvironment,
-    capability: &'static str,
-    executable: &'static str,
-    owner: &'static str,
-) -> RuntimeMatrixEntry {
-    if !environment.has_tool(executable) {
-        return unavailable_entry(
-            capability,
-            format!("{executable} runtime probe is not installed"),
-            owner,
-        );
-    }
-    if let Some((reason, status)) = runtime_prerequisite(environment) {
-        return RuntimeMatrixEntry::new(capability, status, reason, owner);
-    }
-
-    unavailable_entry(
-        capability,
-        "controlled observable fixture has not been executed",
-        owner,
-    )
-}
-
 fn evaluate_runtime_matrix(environment: &RuntimeEnvironment) -> RuntimeMatrixResults {
     const DESKTOP_OWNER: &str = "runtime-desktop-runner";
     const BROWSER_OWNER: &str = "runtime-browser-runner";
     const TOOLKIT_OWNER: &str = "runtime-toolkit-runner";
+
+    let chromium_evidence = load_controlled_runtime_evidence("chromium");
+    let chrome_evidence = load_controlled_runtime_evidence("google-chrome");
+    let gtk_evidence = load_controlled_runtime_evidence("zenity");
+    let qt_evidence = load_controlled_runtime_evidence("python3");
+    let controlled_target_passed = chromium_evidence
+        .as_ref()
+        .into_iter()
+        .chain(chrome_evidence.as_ref())
+        .chain(gtk_evidence.as_ref())
+        .chain(qt_evidence.as_ref())
+        .any(ControlledRuntimeEvidence::is_verified_pass);
+
+    let cosmic = if environment.session_type == "wayland"
+        && environment.desktop.to_ascii_uppercase().contains("COSMIC")
+        && runtime_prerequisite(environment).is_none()
+        && controlled_target_passed
+    {
+        RuntimeMatrixEntry::new(
+            "cosmic-wayland",
+            RuntimeMatrixStatus::Pass,
+            "at least one controlled target passed in the current COSMIC Wayland session",
+            DESKTOP_OWNER,
+        )
+    } else {
+        desktop_entry(environment, "cosmic-wayland", "COSMIC", DESKTOP_OWNER)
+    };
 
     let x11 = if environment.session_type != "x11" {
         skipped_entry(
@@ -466,24 +582,137 @@ fn evaluate_runtime_matrix(environment: &RuntimeEnvironment) -> RuntimeMatrixRes
         }
         Some(_) => unavailable_entry(
             "terminal",
-            "controlled observable fixture has not been executed",
+            "controlled terminal target was not rerun for this matrix",
             TOOLKIT_OWNER,
         ),
     };
 
+    let chromium = if !environment.has_tool("chromium") {
+        unavailable_entry("chromium", "chromium is not installed", BROWSER_OWNER)
+    } else if let Some((reason, status)) = runtime_prerequisite(environment) {
+        RuntimeMatrixEntry::new("chromium", status, reason, BROWSER_OWNER)
+    } else {
+        controlled_evidence_entry(
+            "chromium",
+            BROWSER_OWNER,
+            chromium_evidence.as_ref(),
+            "controlled Chromium evidence is unavailable",
+        )
+    };
+
+    let chrome = if !environment.has_tool("google-chrome") {
+        unavailable_entry(
+            "google-chrome",
+            "google-chrome is not installed",
+            BROWSER_OWNER,
+        )
+    } else if let Some((reason, status)) = runtime_prerequisite(environment) {
+        RuntimeMatrixEntry::new("google-chrome", status, reason, BROWSER_OWNER)
+    } else {
+        controlled_evidence_entry(
+            "google-chrome",
+            BROWSER_OWNER,
+            chrome_evidence.as_ref(),
+            "controlled Google Chrome evidence is unavailable",
+        )
+    };
+
+    let gtk = if !environment.has_tool("zenity") {
+        unavailable_entry(
+            "gtk",
+            "zenity runtime probe is not installed",
+            TOOLKIT_OWNER,
+        )
+    } else if let Some((reason, status)) = runtime_prerequisite(environment) {
+        RuntimeMatrixEntry::new("gtk", status, reason, TOOLKIT_OWNER)
+    } else {
+        controlled_evidence_entry(
+            "gtk",
+            TOOLKIT_OWNER,
+            gtk_evidence.as_ref(),
+            "controlled GTK evidence is unavailable",
+        )
+    };
+
     RuntimeMatrixResults {
         entries: vec![
-            desktop_entry(environment, "cosmic-wayland", "COSMIC", DESKTOP_OWNER),
+            cosmic,
             desktop_entry(environment, "gnome-wayland", "GNOME", DESKTOP_OWNER),
             desktop_entry(environment, "kde-wayland", "KDE", DESKTOP_OWNER),
             x11,
-            application_entry(environment, "chromium", "chromium", BROWSER_OWNER),
-            application_entry(environment, "google-chrome", "google-chrome", BROWSER_OWNER),
+            chromium,
+            chrome,
             application_entry(environment, "electron", "electron", BROWSER_OWNER),
-            toolkit_entry(environment, "gtk", "zenity", TOOLKIT_OWNER),
-            toolkit_entry(environment, "qt", "assistant", TOOLKIT_OWNER),
+            gtk,
+            if !environment.has_tool("python3") {
+                unavailable_entry("qt", "python3 is not installed", TOOLKIT_OWNER)
+            } else if let Some((reason, status)) = runtime_prerequisite(environment) {
+                RuntimeMatrixEntry::new("qt", status, reason, TOOLKIT_OWNER)
+            } else {
+                controlled_evidence_entry(
+                    "qt",
+                    TOOLKIT_OWNER,
+                    qt_evidence.as_ref(),
+                    "controlled Qt evidence is unavailable",
+                )
+            },
             terminal,
         ],
+    }
+}
+
+#[test]
+fn deterministic_controlled_runtime_evidence_parser_requires_complete_fields() {
+    let parsed = parse_controlled_runtime_evidence(
+        "target=Chromium\nstatus=PASS\nreason=verified\nexpected_text=\"vietc\"\nobserved_text=\"vietc\"\nprocess_healthy=true\nclipboard_preserved=true\nmodifiers_released=true\n",
+    )
+    .expect("complete controlled evidence must parse");
+
+    assert!(parsed.is_verified_pass());
+    assert!(parse_controlled_runtime_evidence(
+        "status=PASS\nreason=incomplete\nexpected_text=\"vietc\"\nobserved_text=\"vietc\"\n"
+    )
+    .is_err());
+}
+
+#[test]
+fn deterministic_controlled_runtime_evidence_mapping_rejects_false_passes() {
+    let valid = ControlledRuntimeEvidence {
+        status: RuntimeMatrixStatus::Pass,
+        reason: "verified".to_string(),
+        expected_text: CONTROLLED_TEXT.to_string(),
+        observed_text: CONTROLLED_TEXT.to_string(),
+        process_healthy: true,
+        clipboard_preserved: true,
+        modifiers_released: true,
+    };
+    assert_eq!(
+        controlled_evidence_entry("chromium", "test", Some(&valid), "missing").status,
+        RuntimeMatrixStatus::Pass
+    );
+
+    for invalid in [
+        ControlledRuntimeEvidence {
+            observed_text: "mismatch".to_string(),
+            ..valid.clone()
+        },
+        ControlledRuntimeEvidence {
+            process_healthy: false,
+            ..valid.clone()
+        },
+        ControlledRuntimeEvidence {
+            clipboard_preserved: false,
+            ..valid.clone()
+        },
+        ControlledRuntimeEvidence {
+            modifiers_released: false,
+            ..valid.clone()
+        },
+    ] {
+        assert_eq!(
+            controlled_evidence_entry("chromium", "test", Some(&invalid), "missing").status,
+            RuntimeMatrixStatus::Failed
+        );
     }
 }
 
@@ -2118,7 +2347,7 @@ impl RuntimeTargetKind {
             Self::Chrome => "google-chrome",
             Self::Electron => "electron",
             Self::Gtk => "zenity",
-            Self::Qt => "assistant",
+            Self::Qt => "python3",
             Self::Terminal => "terminal",
         }
     }
@@ -2166,6 +2395,7 @@ struct OwnedRuntimeChild {
     pid: u32,
     process_group: i32,
     reaped: bool,
+    exit_success: Option<bool>,
 }
 
 impl OwnedRuntimeChild {
@@ -2190,6 +2420,7 @@ impl OwnedRuntimeChild {
             pid,
             process_group: pid as i32,
             reaped: false,
+            exit_success: None,
         })
     }
 
@@ -2205,12 +2436,17 @@ impl OwnedRuntimeChild {
             .try_wait()
         {
             Ok(None) => Ok(true),
-            Ok(Some(_)) => {
+            Ok(Some(status)) => {
                 self.reaped = true;
+                self.exit_success = Some(status.success());
                 Ok(false)
             }
             Err(_) => Err(RuntimeCommandError::WaitFailed),
         }
+    }
+
+    fn completed_successfully(&self) -> bool {
+        self.reaped && self.exit_success == Some(true)
     }
 
     fn signal_group(&self, signal: i32) {
@@ -2229,8 +2465,56 @@ impl OwnedRuntimeChild {
         }
     }
 
+    fn record_exit_status(&mut self, status: std::process::ExitStatus) {
+        self.reaped = true;
+        self.exit_success = Some(status.success());
+    }
+
+    fn wait_for_group_exit(
+        &mut self,
+        deadline: std::time::Instant,
+    ) -> Result<bool, RuntimeCommandError> {
+        while std::time::Instant::now() < deadline {
+            if let Some(child) = self.child.as_mut() {
+                match child.try_wait() {
+                    Ok(Some(status)) => self.record_exit_status(status),
+                    Ok(None) => {}
+                    Err(_) => return Err(RuntimeCommandError::WaitFailed),
+                }
+            }
+            if !self.group_alive() {
+                if !self.reaped {
+                    let status = self
+                        .child
+                        .as_mut()
+                        .ok_or(RuntimeCommandError::WaitFailed)?
+                        .wait()
+                        .map_err(|_| RuntimeCommandError::WaitFailed)?;
+                    self.record_exit_status(status);
+                }
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(false)
+    }
+
     fn terminate_and_reap(&mut self, timeout: Duration) -> Result<(), RuntimeCommandError> {
+        self.terminate_and_reap_after_graceful_close(timeout, None)
+    }
+
+    fn terminate_and_reap_after_graceful_close(
+        &mut self,
+        timeout: Duration,
+        graceful_close: Option<Result<serde_json::Value, RuntimeCommandError>>,
+    ) -> Result<(), RuntimeCommandError> {
         if self.reaped && !self.group_alive() {
+            return Ok(());
+        }
+
+        if graceful_close.is_some()
+            && self.wait_for_group_exit(std::time::Instant::now() + timeout)?
+        {
             return Ok(());
         }
 
@@ -2239,19 +2523,20 @@ impl OwnedRuntimeChild {
         while std::time::Instant::now() < deadline {
             if let Some(child) = self.child.as_mut() {
                 match child.try_wait() {
-                    Ok(Some(_)) => self.reaped = true,
+                    Ok(Some(status)) => self.record_exit_status(status),
                     Ok(None) => {}
                     Err(_) => return Err(RuntimeCommandError::WaitFailed),
                 }
             }
             if !self.group_alive() {
                 if !self.reaped {
-                    self.child
+                    let status = self
+                        .child
                         .as_mut()
                         .ok_or(RuntimeCommandError::WaitFailed)?
                         .wait()
                         .map_err(|_| RuntimeCommandError::WaitFailed)?;
-                    self.reaped = true;
+                    self.record_exit_status(status);
                 }
                 return Ok(());
             }
@@ -2263,19 +2548,20 @@ impl OwnedRuntimeChild {
         while std::time::Instant::now() < kill_deadline {
             if let Some(child) = self.child.as_mut() {
                 match child.try_wait() {
-                    Ok(Some(_)) => self.reaped = true,
+                    Ok(Some(status)) => self.record_exit_status(status),
                     Ok(None) => {}
                     Err(_) => return Err(RuntimeCommandError::WaitFailed),
                 }
             }
             if !self.group_alive() {
                 if !self.reaped {
-                    self.child
+                    let status = self
+                        .child
                         .as_mut()
                         .ok_or(RuntimeCommandError::WaitFailed)?
                         .wait()
                         .map_err(|_| RuntimeCommandError::WaitFailed)?;
-                    self.reaped = true;
+                    self.record_exit_status(status);
                 }
                 return Ok(());
             }
@@ -2293,8 +2579,18 @@ impl Drop for OwnedRuntimeChild {
         }
         self.signal_group(libc::SIGKILL);
         if let Some(child) = self.child.as_mut() {
-            let _ = child.wait();
-            self.reaped = true;
+            let _ = child.kill();
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while std::time::Instant::now() < deadline {
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        self.reaped = true;
+                        break;
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+                    Err(_) => break,
+                }
+            }
         }
     }
 }
@@ -2307,6 +2603,12 @@ fn controlled_display_available(environment: &RuntimeEnvironment) -> bool {
 }
 
 fn detected_terminal(environment: &RuntimeEnvironment) -> Option<&'static str> {
+    if environment.session_type == "wayland" {
+        return ["gnome-terminal", "konsole", "kitty"]
+            .into_iter()
+            .find(|program| environment.has_tool(program));
+    }
+
     ["gnome-terminal", "konsole", "kitty", "xterm"]
         .into_iter()
         .find(|program| environment.has_tool(program))
@@ -2324,7 +2626,7 @@ fn runtime_target_executable(
         RuntimeTargetKind::Chrome if environment.has_tool("google-chrome") => Some("google-chrome"),
         RuntimeTargetKind::Electron if environment.has_tool("electron") => Some("electron"),
         RuntimeTargetKind::Gtk if environment.has_tool("zenity") => Some("zenity"),
-        RuntimeTargetKind::Qt if environment.has_tool("assistant") => Some("assistant"),
+        RuntimeTargetKind::Qt if environment.has_tool("python3") => Some("python3"),
         RuntimeTargetKind::Terminal => detected_terminal(environment),
         _ => None,
     }
@@ -2361,12 +2663,18 @@ fn runtime_target_flags(
     match target {
         RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome => vec![
             format!("--user-data-dir={}", fixture.profile_dir.display()),
+            "--no-sandbox".to_string(),
             "--no-first-run".to_string(),
             "--disable-sync".to_string(),
             "--disable-background-networking".to_string(),
             "--disable-component-update".to_string(),
             "--disable-default-apps".to_string(),
-            controlled_fixture_url(fixture),
+            "--new-window".to_string(),
+            "--start-maximized".to_string(),
+            "--remote-debugging-address=127.0.0.1".to_string(),
+            "--remote-debugging-port=0".to_string(),
+            "--remote-allow-origins=http://127.0.0.1".to_string(),
+            format!("--app={}", controlled_fixture_url(fixture)),
         ],
         RuntimeTargetKind::Electron => vec![
             format!("--user-data-dir={}", fixture.profile_dir.display()),
@@ -2377,7 +2685,10 @@ fn runtime_target_flags(
             "--title=Vietc controlled runtime".to_string(),
             "--text=Controlled fixture text only".to_string(),
         ],
-        RuntimeTargetKind::Qt => vec![],
+        RuntimeTargetKind::Qt => vec![Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/common/controlled_qt_text_field.py")
+            .display()
+            .to_string()],
         RuntimeTargetKind::Terminal => match executable {
             "gnome-terminal" => vec![
                 "--".to_string(),
@@ -2494,15 +2805,9 @@ fn discover_owned_process_tree(target: RuntimeTargetKind, root_pid: u32) -> Vec<
 
     owned
         .into_iter()
-        .filter_map(|pid| {
+        .map(|pid| {
             let (parent_pid, command_line) = identities.get(&pid).cloned().unwrap_or_default();
-            Some(process_role_from_command_line(
-                target,
-                pid,
-                parent_pid,
-                &command_line,
-                root_pid,
-            ))
+            process_role_from_command_line(target, pid, parent_pid, &command_line, root_pid)
         })
         .collect()
 }
@@ -2723,6 +3028,42 @@ fn deterministic_panic_unwind_kills_and_reaps_owned_process_tree() {
 }
 
 #[test]
+fn deterministic_browser_graceful_close_reaps_without_signal_fallback() {
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "exit 0"]);
+    let mut owned = OwnedRuntimeChild::spawn(&mut command).expect("fixture must spawn");
+
+    owned
+        .terminate_and_reap_after_graceful_close(
+            Duration::from_secs(1),
+            Some(Ok(serde_json::json!({"id": 1, "result": {}}))),
+        )
+        .expect("graceful browser close must reap the child");
+
+    assert!(owned.reaped);
+    assert_eq!(owned.exit_success, Some(true));
+    assert!(!owned.group_alive());
+}
+
+#[test]
+fn deterministic_browser_graceful_close_failure_falls_back_to_group_cleanup() {
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "trap '' TERM; sleep 30"]);
+    let mut owned = OwnedRuntimeChild::spawn(&mut command).expect("fixture must spawn");
+
+    owned
+        .terminate_and_reap_after_graceful_close(
+            Duration::from_millis(100),
+            Some(Err(RuntimeCommandError::ScenarioFailed)),
+        )
+        .expect("failed graceful close must fall back through SIGTERM and SIGKILL");
+
+    assert!(owned.reaped);
+    assert!(owned.exit_success.is_some());
+    assert!(!owned.group_alive());
+}
+
+#[test]
 fn deterministic_owned_child_is_killed_and_reaped_on_teardown() {
     let mut command = std::process::Command::new("sh");
     command.args(["-c", "sleep 5"]);
@@ -2787,6 +3128,105 @@ struct RuntimeTargetResult {
     observation: Option<RuntimeSequenceObservation>,
 }
 
+fn requested_runtime_targets() -> Option<std::collections::HashSet<String>> {
+    std::env::var("VIETC_RUNTIME_TARGETS").ok().map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|target| !target.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect()
+    })
+}
+
+fn runtime_target_requested(
+    target: RuntimeTargetKind,
+    requested_targets: Option<&std::collections::HashSet<String>>,
+) -> bool {
+    let Some(requested_targets) = requested_targets else {
+        return true;
+    };
+    let name = match target {
+        RuntimeTargetKind::Chromium => "chromium",
+        RuntimeTargetKind::Chrome => "google-chrome",
+        RuntimeTargetKind::Electron => "electron",
+        RuntimeTargetKind::Gtk => "gtk",
+        RuntimeTargetKind::Qt => "qt",
+        RuntimeTargetKind::Terminal => "terminal",
+    };
+    requested_targets.contains(name)
+}
+
+#[test]
+fn deterministic_toolkit_target_flags_use_controlled_stdout_fixtures() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let fixture =
+        ControlledRuntimeFixture::isolated(workspace_root, "toolkit-flags").expect("fixture");
+
+    assert_eq!(
+        runtime_target_flags(RuntimeTargetKind::Gtk, &fixture, "zenity"),
+        [
+            "--entry",
+            "--title=Vietc controlled runtime",
+            "--text=Controlled fixture text only",
+        ]
+    );
+    let qt_flags = runtime_target_flags(RuntimeTargetKind::Qt, &fixture, "python3");
+    assert_eq!(qt_flags.len(), 1);
+    assert!(qt_flags[0].ends_with("daemon/tests/common/controlled_qt_text_field.py"));
+}
+
+#[test]
+fn deterministic_toolkit_executable_detection_uses_zenity_and_python3() {
+    let environment = RuntimeEnvironment::detect_with(
+        |_| None,
+        |tool| matches!(tool, "zenity" | "python3"),
+        false,
+    );
+    assert_eq!(
+        runtime_target_executable(RuntimeTargetKind::Gtk, &environment),
+        Some("zenity")
+    );
+    assert_eq!(
+        runtime_target_executable(RuntimeTargetKind::Qt, &environment),
+        Some("python3")
+    );
+}
+
+#[test]
+fn deterministic_toolkit_observable_output_parses_stdout_only() {
+    assert_eq!(
+        parse_toolkit_observable_output("\n vietc-runtime-controlled-text\n"),
+        Ok(CONTROLLED_TEXT.to_string())
+    );
+    assert_eq!(
+        parse_toolkit_observable_output(""),
+        Err(RuntimeCommandError::TargetCopyFailed)
+    );
+}
+
+#[test]
+fn deterministic_requested_runtime_targets_filter_exact_targets() {
+    let requested = ["chromium".to_string(), "google-chrome".to_string()]
+        .into_iter()
+        .collect();
+
+    assert!(runtime_target_requested(
+        RuntimeTargetKind::Chromium,
+        Some(&requested)
+    ));
+    assert!(runtime_target_requested(
+        RuntimeTargetKind::Chrome,
+        Some(&requested)
+    ));
+    assert!(!runtime_target_requested(
+        RuntimeTargetKind::Electron,
+        Some(&requested)
+    ));
+}
+
 fn run_scenario_with_deadline<T: Send + 'static>(
     timeout: Duration,
     scenario: impl FnOnce() -> T + Send + 'static,
@@ -2819,12 +3259,387 @@ fn deterministic_runtime_scenario_returns_observable_text_before_deadline() {
     assert_eq!(result.as_deref(), Ok(CONTROLLED_TEXT));
 }
 
+fn parse_devtools_active_port(contents: &str) -> Result<(u16, String), RuntimeCommandError> {
+    let mut lines = contents.lines();
+    let port = lines
+        .next()
+        .and_then(|line| line.parse::<u16>().ok())
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    let browser_path = lines
+        .next()
+        .filter(|path| path.starts_with("/devtools/browser/"))
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    Ok((port, browser_path.to_string()))
+}
+
+fn controlled_target_websocket_url(contents: &str) -> Result<String, RuntimeCommandError> {
+    let targets: serde_json::Value =
+        serde_json::from_str(contents).map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    targets
+        .as_array()
+        .and_then(|targets| {
+            targets.iter().find(|target| {
+                target.get("type").and_then(serde_json::Value::as_str) == Some("page")
+                    && target
+                        .get("url")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|url| url.ends_with("/controlled-target.html"))
+            })
+        })
+        .and_then(|target| target.get("webSocketDebuggerUrl"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or(RuntimeCommandError::ScenarioFailed)
+}
+
+fn cdp_string_result(
+    contents: &str,
+    expected_id: u64,
+) -> Result<Option<String>, RuntimeCommandError> {
+    let response: serde_json::Value =
+        serde_json::from_str(contents).map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    if response.get("id").and_then(serde_json::Value::as_u64) != Some(expected_id) {
+        return Ok(None);
+    }
+    if response.get("error").is_some() {
+        return Err(RuntimeCommandError::ScenarioFailed);
+    }
+    Ok(response
+        .pointer("/result/result/value")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
+}
+
+fn encode_websocket_text_frame(payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
+    let mut frame = vec![0x81];
+    let mask_bit = if mask.is_some() { 0x80 } else { 0 };
+    match payload.len() {
+        length @ 0..=125 => frame.push(mask_bit | length as u8),
+        length @ 126..=65535 => {
+            frame.push(mask_bit | 126);
+            frame.extend_from_slice(&(length as u16).to_be_bytes());
+        }
+        length => {
+            frame.push(mask_bit | 127);
+            frame.extend_from_slice(&(length as u64).to_be_bytes());
+        }
+    }
+    if let Some(mask) = mask {
+        frame.extend_from_slice(&mask);
+        frame.extend(
+            payload
+                .iter()
+                .enumerate()
+                .map(|(index, byte)| byte ^ mask[index % 4]),
+        );
+    } else {
+        frame.extend_from_slice(payload);
+    }
+    frame
+}
+
+fn decode_websocket_text_frame(frame: &[u8]) -> Result<Vec<u8>, RuntimeCommandError> {
+    if frame.len() < 2 || frame[0] & 0x0f != 1 {
+        return Err(RuntimeCommandError::ScenarioFailed);
+    }
+    let masked = frame[1] & 0x80 != 0;
+    let mut offset = 2;
+    let length = match frame[1] & 0x7f {
+        length @ 0..=125 => length as usize,
+        126 => {
+            let bytes = frame
+                .get(offset..offset + 2)
+                .ok_or(RuntimeCommandError::ScenarioFailed)?;
+            offset += 2;
+            u16::from_be_bytes([bytes[0], bytes[1]]) as usize
+        }
+        127 => {
+            let bytes = frame
+                .get(offset..offset + 8)
+                .ok_or(RuntimeCommandError::ScenarioFailed)?;
+            offset += 8;
+            usize::try_from(u64::from_be_bytes(
+                bytes
+                    .try_into()
+                    .map_err(|_| RuntimeCommandError::ScenarioFailed)?,
+            ))
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?
+        }
+        _ => return Err(RuntimeCommandError::ScenarioFailed),
+    };
+    let mask = if masked {
+        let bytes = frame
+            .get(offset..offset + 4)
+            .ok_or(RuntimeCommandError::ScenarioFailed)?;
+        offset += 4;
+        Some([bytes[0], bytes[1], bytes[2], bytes[3]])
+    } else {
+        None
+    };
+    let payload = frame
+        .get(offset..offset + length)
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    Ok(match mask {
+        Some(mask) => payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask[index % 4])
+            .collect(),
+        None => payload.to_vec(),
+    })
+}
+
+fn parse_websocket_url(url: &str) -> Result<(String, u16, String), RuntimeCommandError> {
+    let authority_and_path = url
+        .strip_prefix("ws://")
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    let (authority, path) = authority_and_path
+        .split_once('/')
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    let port = port
+        .parse()
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    Ok((host.to_string(), port, format!("/{path}")))
+}
+
+fn http_get_localhost(
+    port: u16,
+    path: &str,
+    timeout: Duration,
+) -> Result<String, RuntimeCommandError> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let mut stream =
+        TcpStream::connect(("127.0.0.1", port)).map_err(|_| RuntimeCommandError::SpawnFailed)?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let mut response = Vec::new();
+    let header_end = loop {
+        let mut buffer = [0_u8; 4096];
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        if read == 0 {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+        response.extend_from_slice(&buffer[..read]);
+        if let Some(position) = response.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
+        }
+        if response.len() > 64 * 1024 {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+    };
+
+    let headers = std::str::from_utf8(&response[..header_end])
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    if !headers.starts_with("HTTP/1.1 200") {
+        return Err(RuntimeCommandError::ScenarioFailed);
+    }
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+
+    while response.len() - header_end < content_length {
+        let mut buffer = [0_u8; 4096];
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        if read == 0 {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+        response.extend_from_slice(&buffer[..read]);
+    }
+
+    String::from_utf8(response[header_end..header_end + content_length].to_vec())
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)
+}
+
+#[derive(Debug)]
+struct CdpConnection {
+    stream: std::net::TcpStream,
+    next_id: u64,
+}
+
+impl CdpConnection {
+    fn connect(url: &str, timeout: Duration) -> Result<Self, RuntimeCommandError> {
+        use std::io::{Read, Write};
+
+        let (host, port, path) = parse_websocket_url(url)?;
+        let mut stream = std::net::TcpStream::connect((host.as_str(), port))
+            .map_err(|_| RuntimeCommandError::SpawnFailed)?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dmlldGMtcnVudGltZS1jZHA=\r\nSec-WebSocket-Version: 13\r\nOrigin: http://127.0.0.1\r\n\r\n"
+        )
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        let mut response = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !response.ends_with(b"\r\n\r\n") {
+            stream
+                .read_exact(&mut byte)
+                .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+            response.push(byte[0]);
+            if response.len() > 16 * 1024 {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+        }
+        if !response.starts_with(b"HTTP/1.1 101") {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+        Ok(Self { stream, next_id: 1 })
+    }
+
+    fn command(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RuntimeCommandError> {
+        use std::io::{Read, Write};
+
+        let id = self.next_id;
+        self.next_id += 1;
+        let message = serde_json::json!({"id": id, "method": method, "params": params}).to_string();
+        self.stream
+            .write_all(&encode_websocket_text_frame(
+                message.as_bytes(),
+                Some([0x56, 0x49, 0x45, 0x54]),
+            ))
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+
+        loop {
+            let mut header = [0_u8; 2];
+            self.stream
+                .read_exact(&mut header)
+                .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+            let mut frame = header.to_vec();
+            let extended = match header[1] & 0x7f {
+                126 => 2,
+                127 => 8,
+                _ => 0,
+            };
+            let mask_length = if header[1] & 0x80 != 0 { 4 } else { 0 };
+            let mut metadata = vec![0_u8; extended + mask_length];
+            self.stream
+                .read_exact(&mut metadata)
+                .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+            frame.extend_from_slice(&metadata);
+            let payload_length = match header[1] & 0x7f {
+                length @ 0..=125 => length as usize,
+                126 => u16::from_be_bytes([metadata[0], metadata[1]]) as usize,
+                127 => usize::try_from(u64::from_be_bytes(
+                    metadata[..8]
+                        .try_into()
+                        .map_err(|_| RuntimeCommandError::ScenarioFailed)?,
+                ))
+                .map_err(|_| RuntimeCommandError::ScenarioFailed)?,
+                _ => return Err(RuntimeCommandError::ScenarioFailed),
+            };
+            let mut payload = vec![0_u8; payload_length];
+            self.stream
+                .read_exact(&mut payload)
+                .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+            frame.extend_from_slice(&payload);
+
+            if header[0] & 0x0f != 1 {
+                continue;
+            }
+            let decoded = decode_websocket_text_frame(&frame)?;
+            let response: serde_json::Value = serde_json::from_slice(&decoded)
+                .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+            if response.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+                if response.get("error").is_some() {
+                    return Err(RuntimeCommandError::ScenarioFailed);
+                }
+                return Ok(response);
+            }
+        }
+    }
+}
+
+#[test]
+fn deterministic_devtools_active_port_parses_port_and_browser_path() {
+    assert_eq!(
+        parse_devtools_active_port("9222\n/devtools/browser/fixture\n"),
+        Ok((9222, "/devtools/browser/fixture".to_string()))
+    );
+    assert!(parse_devtools_active_port("not-a-port\n/devtools/browser/fixture\n").is_err());
+    assert!(parse_devtools_active_port("9222\n").is_err());
+}
+
+#[test]
+fn deterministic_cdp_target_discovery_selects_controlled_fixture() {
+    let targets = r#"[
+        {"type":"page","url":"chrome://newtab/","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/newtab"},
+        {"type":"page","url":"file:///fixture/controlled-target.html","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/page/controlled"}
+    ]"#;
+
+    assert_eq!(
+        controlled_target_websocket_url(targets),
+        Ok("ws://127.0.0.1:9222/devtools/page/controlled".to_string())
+    );
+}
+
+#[test]
+fn deterministic_cdp_evaluate_extracts_textarea_value() {
+    let response = r#"{
+        "id":4,
+        "result":{"result":{"type":"string","value":"xin chào"}}
+    }"#;
+
+    assert_eq!(
+        cdp_string_result(response, 4),
+        Ok(Some("xin chào".to_string()))
+    );
+    assert_eq!(cdp_string_result(response, 5), Ok(None));
+}
+
+#[test]
+fn deterministic_websocket_text_frame_round_trips_unmasked_server_payload() {
+    let frame = encode_websocket_text_frame(br#"{"id":1}"#, None);
+    assert_eq!(
+        decode_websocket_text_frame(&frame),
+        Ok(br#"{"id":1}"#.to_vec())
+    );
+    let masked = encode_websocket_text_frame(br#"{"id":1}"#, Some([1, 2, 3, 4]));
+    assert_eq!(
+        decode_websocket_text_frame(&masked),
+        Ok(br#"{"id":1}"#.to_vec())
+    );
+}
+
 #[derive(Debug)]
 struct ControlledScenarioEvidence {
     observed_text: String,
     clipboard_preserved: bool,
     modifiers_released: bool,
     roles: Vec<RuntimePidRole>,
+    browser_cdp: Option<CdpConnection>,
 }
 
 fn command_output_with_input(
@@ -2874,19 +3689,49 @@ fn command_output_with_input(
     }
 }
 
-fn clipboard_read(environment: &RuntimeEnvironment) -> Result<String, RuntimeCommandError> {
+fn clipboard_read(
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+) -> Result<String, RuntimeCommandError> {
     let output = if environment.session_type == "wayland" {
-        std::process::Command::new("wl-paste").args(["-n"]).output()
+        let mut child = std::process::Command::new("wl-paste")
+            .args(["-n"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|_| RuntimeCommandError::SpawnFailed)?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let output = child
+                        .wait_with_output()
+                        .map_err(|_| RuntimeCommandError::WaitFailed)?;
+                    break if status.success() {
+                        output.stdout
+                    } else {
+                        Vec::new()
+                    };
+                }
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(RuntimeCommandError::TimedOut);
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(RuntimeCommandError::WaitFailed);
+                }
+            }
+        }
     } else {
-        std::process::Command::new("xclip")
-            .args(["-selection", "clipboard", "-o"])
-            .output()
-    }
-    .map_err(|_| RuntimeCommandError::PrerequisiteMissing)?;
-    if !output.status.success() {
-        return Err(RuntimeCommandError::ScenarioFailed);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        command_output_with_input("xclip", &["-selection", "clipboard", "-o"], "", timeout)?
+    };
+    Ok(String::from_utf8_lossy(&output).into_owned())
 }
 
 fn clipboard_write(
@@ -2894,12 +3739,46 @@ fn clipboard_write(
     text: &str,
     timeout: Duration,
 ) -> Result<(), RuntimeCommandError> {
+    use std::io::Write;
+
     let (program, args): (&str, &[&str]) = if environment.session_type == "wayland" {
         ("wl-copy", &[])
     } else {
         ("xclip", &["-selection", "clipboard", "-i"])
     };
-    command_output_with_input(program, args, text, timeout).map(|_| ())
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|_| RuntimeCommandError::SpawnFailed)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    }
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => return Err(RuntimeCommandError::ScenarioFailed),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RuntimeCommandError::TimedOut);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RuntimeCommandError::WaitFailed);
+            }
+        }
+    }
 }
 
 fn inject_controlled_text(
@@ -2923,6 +3802,54 @@ fn inject_controlled_text(
     }
 }
 
+fn parse_toolkit_observable_output(output: &str) -> Result<String, RuntimeCommandError> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+        .ok_or(RuntimeCommandError::TargetCopyFailed)
+}
+
+fn submit_toolkit_target(
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+) -> Result<(), RuntimeCommandError> {
+    let status = if environment.session_type == "wayland" {
+        let mut command = std::process::Command::new("wtype");
+        command.args(["-k", "Return"]);
+        run_command_with_timeout(&mut command, timeout)?
+    } else {
+        let mut command = std::process::Command::new("xdotool");
+        command.args(["key", "--clearmodifiers", "Return"]);
+        run_command_with_timeout(&mut command, timeout)?
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        Err(RuntimeCommandError::ScenarioFailed)
+    }
+}
+
+fn read_toolkit_stdout(
+    fixture: &ControlledRuntimeFixture,
+    timeout: Duration,
+) -> Result<String, RuntimeCommandError> {
+    let path = fixture.artifact_dir.join("application.stdout.log");
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(output) = std::fs::read_to_string(&path) {
+            if let Ok(value) = parse_toolkit_observable_output(&output) {
+                return Ok(value);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(RuntimeCommandError::TimedOut);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn copy_observable_target_text(
     environment: &RuntimeEnvironment,
     timeout: Duration,
@@ -2941,7 +3868,7 @@ fn copy_observable_target_text(
     }
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        let observed = clipboard_read(environment)?;
+        let observed = clipboard_read(environment, timeout)?;
         if !observed.is_empty() {
             return Ok(observed);
         }
@@ -2968,23 +3895,150 @@ fn verify_synthesized_modifiers_released(
     Ok(status.success())
 }
 
+fn connect_controlled_browser_cdp(
+    fixture: &ControlledRuntimeFixture,
+    timeout: Duration,
+) -> Result<CdpConnection, RuntimeCommandError> {
+    let deadline = std::time::Instant::now() + timeout;
+    let active_port_path = fixture.profile_dir.join("DevToolsActivePort");
+    loop {
+        if let Ok(contents) = std::fs::read_to_string(&active_port_path) {
+            if let Ok((port, _)) = parse_devtools_active_port(&contents) {
+                if let Ok(targets) = http_get_localhost(port, "/json/list", timeout) {
+                    let _ = std::fs::write(fixture.artifact_dir.join("cdp-targets.json"), &targets);
+                    if let Ok(url) = controlled_target_websocket_url(&targets) {
+                        let _ = std::fs::write(
+                            fixture.artifact_dir.join("cdp-endpoint.txt"),
+                            format!("port={port}\nwebsocket={url}\n"),
+                        );
+                        return CdpConnection::connect(&url, timeout);
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(RuntimeCommandError::TimedOut);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn prepare_controlled_browser_target(cdp: &mut CdpConnection) -> Result<(), RuntimeCommandError> {
+    cdp.command("Page.bringToFront", serde_json::json!({}))?;
+    cdp.command(
+        "Runtime.evaluate",
+        serde_json::json!({
+            "expression": "(() => { const target = document.querySelector('#target'); if (!target) throw new Error('controlled textarea missing'); target.value = ''; target.focus(); target.setSelectionRange(0, 0); return document.activeElement === target; })()",
+            "returnByValue": true,
+            "awaitPromise": true
+        }),
+    )?;
+    Ok(())
+}
+
+fn read_controlled_browser_target(cdp: &mut CdpConnection) -> Result<String, RuntimeCommandError> {
+    let response = cdp.command(
+        "Runtime.evaluate",
+        serde_json::json!({
+            "expression": "document.querySelector('#target')?.value",
+            "returnByValue": true,
+            "awaitPromise": true
+        }),
+    )?;
+    response
+        .pointer("/result/result/value")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or(RuntimeCommandError::TargetCopyFailed)
+}
+
 fn execute_controlled_scenario(
     target: RuntimeTargetKind,
+    fixture: ControlledRuntimeFixture,
     environment: RuntimeEnvironment,
     child_pid: u32,
     timeout: Duration,
 ) -> Result<ControlledScenarioEvidence, RuntimeCommandError> {
-    let clipboard_snapshot = clipboard_read(&environment)?;
-    inject_controlled_text(&environment, CONTROLLED_TEXT, timeout)?;
-    let observed_text = copy_observable_target_text(&environment, timeout)?;
-    clipboard_write(&environment, &clipboard_snapshot, timeout)?;
-    let clipboard_preserved = clipboard_read(&environment)? == clipboard_snapshot;
-    let modifiers_released = verify_synthesized_modifiers_released(&environment, timeout)?;
+    let operation_timeout = timeout.min(Duration::from_secs(5));
+    let trace_path = fixture.artifact_dir.join("scenario-trace.txt");
+    let trace = |step: &str| {
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true);
+        if let Ok(mut file) = options.open(&trace_path) {
+            use std::io::Write;
+            let _ = writeln!(
+                file,
+                "{} elapsed_ms={}",
+                step,
+                std::time::Instant::now().elapsed().as_millis()
+            );
+        }
+    };
+
+    trace("clipboard_snapshot:start");
+    let clipboard_snapshot = clipboard_read(&environment, operation_timeout)
+        .map_err(|_| RuntimeCommandError::ClipboardSnapshotFailed)?;
+    trace("clipboard_snapshot:done");
+
+    let mut browser_cdp = None;
+    let scenario_result = (|| {
+        let mut cdp = if matches!(
+            target,
+            RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome
+        ) {
+            trace("cdp_connect:start");
+            let mut connection = connect_controlled_browser_cdp(&fixture, operation_timeout)?;
+            trace("cdp_connect:done");
+            prepare_controlled_browser_target(&mut connection)?;
+            trace("cdp_prepare:done");
+            Some(connection)
+        } else {
+            None
+        };
+
+        trace("input_injection:start");
+        inject_controlled_text(&environment, CONTROLLED_TEXT, operation_timeout)
+            .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+        trace("input_injection:done");
+
+        let observed_text = match cdp.as_mut() {
+            Some(connection) => read_controlled_browser_target(connection)
+                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?,
+            None if matches!(target, RuntimeTargetKind::Gtk | RuntimeTargetKind::Qt) => {
+                submit_toolkit_target(&environment, operation_timeout)?;
+                read_toolkit_stdout(&fixture, operation_timeout)?
+            }
+            None => copy_observable_target_text(&environment, operation_timeout)
+                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?,
+        };
+        let _ = std::fs::write(
+            fixture.artifact_dir.join("observable-value.txt"),
+            format!("expected={CONTROLLED_TEXT:?}\nobserved={observed_text:?}\n"),
+        );
+        trace("observable_read:done");
+        browser_cdp = cdp;
+        Ok(observed_text)
+    })();
+
+    trace("clipboard_restore:start");
+    clipboard_write(&environment, &clipboard_snapshot, operation_timeout)
+        .map_err(|_| RuntimeCommandError::ClipboardRestoreFailed)?;
+    trace("clipboard_restore:done");
+    let clipboard_preserved = clipboard_read(&environment, operation_timeout)
+        .map_err(|_| RuntimeCommandError::ClipboardVerificationFailed)?
+        == clipboard_snapshot;
+    trace("clipboard_verify:done");
+    let modifiers_released = verify_synthesized_modifiers_released(&environment, operation_timeout)
+        .map_err(|_| RuntimeCommandError::ModifierReleaseFailed)?;
+    trace("modifier_release:done");
+    let observed_text = scenario_result?;
+
     Ok(ControlledScenarioEvidence {
         observed_text,
         clipboard_preserved,
         modifiers_released,
         roles: discover_owned_process_tree(target, child_pid),
+        browser_cdp,
     })
 }
 
@@ -3085,23 +4139,21 @@ fn run_controlled_runtime_target(
         }
     };
 
-    let startup_deadline = std::time::Instant::now() + startup_timeout;
-    while std::time::Instant::now() < startup_deadline {
-        match child.healthy() {
-            Ok(true) => break,
-            Ok(false) => {
-                return RuntimeTargetResult {
-                    status: RuntimeMatrixStatus::Failed,
-                    reason: "target exited during startup".to_string(),
-                    observation: None,
-                }
+    std::thread::sleep(startup_timeout);
+    match child.healthy() {
+        Ok(true) => {}
+        Ok(false) => {
+            return RuntimeTargetResult {
+                status: RuntimeMatrixStatus::Failed,
+                reason: "target exited during startup".to_string(),
+                observation: None,
             }
-            Err(error) => {
-                return RuntimeTargetResult {
-                    status: RuntimeMatrixStatus::Failed,
-                    reason: format!("startup health check failed: {error:?}"),
-                    observation: None,
-                }
+        }
+        Err(error) => {
+            return RuntimeTargetResult {
+                status: RuntimeMatrixStatus::Failed,
+                reason: format!("startup health check failed: {error:?}"),
+                observation: None,
             }
         }
     }
@@ -3118,9 +4170,16 @@ fn run_controlled_runtime_target(
     let _ = std::fs::write(fixture.artifact_dir.join("target-manifest.txt"), manifest);
 
     let scenario_pid = child.pid();
+    let scenario_fixture = fixture.clone();
     let scenario_environment = environment.clone();
     let scenario = run_scenario_with_deadline(scenario_timeout, move || {
-        execute_controlled_scenario(target, scenario_environment, scenario_pid, scenario_timeout)
+        execute_controlled_scenario(
+            target,
+            scenario_fixture,
+            scenario_environment,
+            scenario_pid,
+            scenario_timeout,
+        )
     });
     let evidence = match scenario {
         Ok(Ok(evidence)) => evidence,
@@ -3160,10 +4219,17 @@ fn run_controlled_runtime_target(
         }
     };
 
+    let mut browser_cdp = evidence.browser_cdp;
     let observation = RuntimeSequenceObservation {
         expected_text: CONTROLLED_TEXT.to_string(),
         observed_text: evidence.observed_text,
-        process_healthy: child.healthy().unwrap_or(false) && !evidence.roles.is_empty(),
+        process_healthy: {
+            let still_running = child.healthy().unwrap_or(false);
+            let expected_submit_exit =
+                matches!(target, RuntimeTargetKind::Gtk | RuntimeTargetKind::Qt)
+                    && child.completed_successfully();
+            (still_running || expected_submit_exit) && !evidence.roles.is_empty()
+        },
         clipboard_preserved: evidence.clipboard_preserved,
         modifiers_released: evidence.modifiers_released,
     };
@@ -3181,7 +4247,10 @@ fn run_controlled_runtime_target(
     );
 
     let verification = observation.verify();
-    let teardown = child.terminate_and_reap(teardown_timeout);
+    let graceful_close = browser_cdp
+        .as_mut()
+        .map(|cdp| cdp.command("Browser.close", serde_json::json!({})));
+    let teardown = child.terminate_and_reap_after_graceful_close(teardown_timeout, graceful_close);
     match (verification, teardown) {
         (Ok(()), Ok(())) => RuntimeTargetResult {
             status: RuntimeMatrixStatus::Pass,
@@ -3234,6 +4303,13 @@ fn privileged_runtime_targets_execute_controlled_scenarios() {
         controlled_display_available(&environment),
         "controlled runtime requires VIETC_RUNTIME_TESTS=1 and VIETC_CONTROLLED_DISPLAY=1"
     );
+    let requested_targets = requested_runtime_targets();
+    let artifact_directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("daemon crate must have a workspace root")
+        .join("target/runtime-artifacts");
+    std::fs::create_dir_all(&artifact_directory)
+        .expect("runtime artifact directory must be created");
 
     for target in [
         RuntimeTargetKind::Chromium,
@@ -3243,6 +4319,9 @@ fn privileged_runtime_targets_execute_controlled_scenarios() {
         RuntimeTargetKind::Qt,
         RuntimeTargetKind::Terminal,
     ] {
+        if !runtime_target_requested(target, requested_targets.as_ref()) {
+            continue;
+        }
         let result = run_controlled_runtime_target(
             target,
             &environment,
@@ -3250,17 +4329,42 @@ fn privileged_runtime_targets_execute_controlled_scenarios() {
             Duration::from_secs(30),
             Duration::from_secs(5),
         );
-        assert!(
-            matches!(
-                result.status,
-                RuntimeMatrixStatus::Pass
-                    | RuntimeMatrixStatus::Skipped
-                    | RuntimeMatrixStatus::Unavailable
-                    | RuntimeMatrixStatus::Failed
+        let observation = result
+            .observation
+            .as_ref()
+            .map(|observation| {
+                format!(
+                    "expected_text={:?}\nobserved_text={:?}\nprocess_healthy={}\nclipboard_preserved={}\nmodifiers_released={}\n",
+                    observation.expected_text,
+                    observation.observed_text,
+                    observation.process_healthy,
+                    observation.clipboard_preserved,
+                    observation.modifiers_released,
+                )
+            })
+            .unwrap_or_else(|| "observation=missing\n".to_string());
+        std::fs::write(
+            artifact_directory.join(format!("controlled-{}-result.txt", target.executable())),
+            format!(
+                "target={target:?}\nstatus={}\nreason={}\n{observation}",
+                result.status.label(),
+                result.reason,
             ),
-            "runtime result must use a defined matrix status"
+        )
+        .expect("controlled runtime result artifact must be persisted");
+
+        assert_eq!(
+            result.status,
+            RuntimeMatrixStatus::Pass,
+            "{target:?} controlled runtime did not pass: {}",
+            result.reason
         );
-        assert!(!result.reason.trim().is_empty());
+        let observation = result
+            .observation
+            .expect("passing controlled runtime requires an observation");
+        observation
+            .verify()
+            .expect("passing controlled runtime requires healthy process, observable text, clipboard preservation, and released modifiers");
     }
 }
 
@@ -3280,7 +4384,7 @@ fn privileged_runtime_matrix_records_exact_ready_and_skip_evidence() {
         "wl-paste",
         "xclip",
         "zenity",
-        "assistant",
+        "python3",
         "chromium",
         "chromium-browser",
         "google-chrome",
@@ -3318,10 +4422,13 @@ fn privileged_runtime_matrix_records_exact_ready_and_skip_evidence() {
         .entries
         .iter()
         .all(|entry| !entry.reason.trim().is_empty() && !entry.owner.trim().is_empty()));
-    assert!(results
-        .entries
-        .iter()
-        .all(|entry| entry.status != RuntimeMatrixStatus::Pass));
+    for capability in ["chromium", "google-chrome", "cosmic-wayland"] {
+        assert_eq!(
+            results.status_for(capability),
+            Some(RuntimeMatrixStatus::Pass),
+            "{capability} must be backed by verified controlled evidence"
+        );
+    }
 }
 
 #[test]

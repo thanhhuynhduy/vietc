@@ -520,6 +520,7 @@ fn dev_path_of(label: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod grabbed_event_stream_tests {
     use super::*;
     use crate::commands::OutputCommand;
@@ -556,9 +557,11 @@ mod grabbed_event_stream_tests {
     }
 
     fn simulate_grabbed_telex(events: &[TestEvent]) -> String {
-        let mut config = crate::config::Config::default();
-        config.input_method = "telex".to_string();
-        config.start_enabled = true;
+        let config = crate::config::Config {
+            input_method: "telex".to_string(),
+            start_enabled: true,
+            ..Default::default()
+        };
         let mut daemon = Daemon::new(
             config,
             std::path::PathBuf::from("/tmp/vietc-grabbed-stream-test.toml"),

@@ -25,7 +25,8 @@ dirs = "5"
 dbus = "0.9"
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols-misc = { version = "0.3", optional = true, features = ["client"] }
-xkbcommon = { version = "0.7", optional = true }
+xkbcommon = { version = "0.9", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+tungstenite = "0.24"

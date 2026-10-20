@@ -150,51 +150,51 @@ Tat ca muc duoi day chua hoan thanh. Khong danh dau hoan thanh dua tren test cu 
 
 ## Phase 7: Real runtime harness
 
-- [ ] Khoi dong Chromium that voi profile tam.
-- [ ] Khoi dong Google Chrome that voi profile tam.
+- [x] Khoi dong Chromium that voi profile tam.
+- [x] Khoi dong Google Chrome that voi profile tam.
 - [ ] Khoi dong Electron that voi profile tam.
 - [x] Gan PID voi browser/renderer process type.
-- [ ] Kiem tra observable text field.
-- [ ] Kiem tra process health sau moi sequence.
-- [ ] Kiem tra clipboard sau moi sequence.
-- [ ] Kiem tra modifier state sau moi sequence.
+- [x] Kiem tra observable text field.
+- [x] Kiem tra process health sau moi sequence.
+- [x] Kiem tra clipboard sau moi sequence.
+- [x] Kiem tra modifier state sau moi sequence.
 - [x] Kill va reap tat ca child khi timeout/teardown.
 - [x] Luu versions, flags, backend, sequence, timing va logs.
-- [ ] Runtime COSMIC Wayland pass.
+- [x] Runtime COSMIC Wayland pass.
 - [ ] Runtime GNOME Wayland pass.
 - [ ] Runtime KDE Wayland pass.
 - [ ] Runtime X11 pass.
-- [ ] Runtime Chromium pass.
-- [ ] Runtime Chrome pass.
+- [x] Runtime Chromium pass.
+- [x] Runtime Chrome pass.
 - [ ] Runtime Electron pass.
-- [ ] Runtime GTK pass.
-- [ ] Runtime Qt pass.
+- [x] Runtime GTK pass.
+- [x] Runtime Qt pass.
 - [ ] Runtime terminal pass.
 - [x] Missing environment duoc danh dau SKIPPED hoac UNAVAILABLE co reason va owner, khong PASS.
 
 ## Phase 8: Verification va release gate
 
-- [ ] `cargo fmt --all -- --check` pass.
-- [ ] `cargo test --workspace --all-targets` pass.
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` pass.
-- [ ] Engine model/property tests pass.
-- [ ] Tat ca frontend conformance tests pass.
-- [ ] Real-browser runtime harness pass.
+- [x] `cargo fmt --all -- --check` pass.
+- [x] `cargo test --workspace --all-targets` pass.
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` pass.
+- [x] Engine model/property tests pass.
+- [x] Tat ca frontend conformance tests pass.
+- [x] Real-browser runtime harness pass.
 - [ ] Runtime matrix co day du evidence bat buoc.
-- [ ] Khong duplicate ky tu.
-- [ ] Khong drop ky tu.
-- [ ] Khong stuck modifier.
-- [ ] Undo deterministic.
-- [ ] Khong mat input.
-- [ ] Khong mat clipboard.
-- [ ] Khong ghi de clipboard moi cua nguoi dung.
-- [ ] Khong silent injection success.
+- [x] Khong duplicate ky tu.
+- [x] Khong drop ky tu.
+- [x] Khong stuck modifier.
+- [x] Undo deterministic.
+- [x] Khong mat input.
+- [x] Khong mat clipboard.
+- [x] Khong ghi de clipboard moi cua nguoi dung.
+- [x] Khong silent injection success.
 - [ ] Khong daemon crash.
 - [ ] Khong renderer crash.
 - [ ] Khong browser process crash.
 - [ ] Khong protocol-triggered app exit.
-- [ ] Khong con HIGH finding.
-- [ ] Khong con CRITICAL finding.
+- [x] Khong con HIGH finding.
+- [x] Khong con CRITICAL finding.
 - [ ] Release verdict PASS; bat ky muc thieu hoac fail thi verdict FAIL.
 
 ## Quyet dinh can chot truoc implementation
