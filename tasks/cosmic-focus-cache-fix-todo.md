@@ -100,4 +100,4 @@
 - [x] Không còn log `window ID '' -> '0x0'`
 - [x] Không còn output `hoorxin chào`
 - [x] Không tái phát Edge SIGILL
-- [ ] Working tree sạch sau commit
+- [x] Working tree sạch sau commit
