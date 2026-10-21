@@ -896,8 +896,15 @@ impl UinputInjector {
         // Keep delete and insert on the same uinput channel. Mixing uinput
         // Backspace with Wayland virtual-keyboard text can crash Microsoft Edge
         // with SIGILL even for a minimal replacement such as `Da` -> `Dạ`.
-        if backspaces > 0 && self.send_backspaces(backspaces).is_err() {
-            return InjectResult::Failed;
+        if backspaces > 0 {
+            if self.send_backspaces(backspaces).is_err() {
+                return InjectResult::Failed;
+            }
+            // Let the focused application consume the complete delete phase
+            // before Ctrl+V starts the insert phase. Without this boundary,
+            // Chromium-family clients can process the paste after only part of
+            // the Backspace batch, leaving the first raw character duplicated.
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         if self.paste_via_clipboard(text) {
