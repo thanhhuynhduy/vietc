@@ -759,17 +759,9 @@ if [ -n "$INSTALLING_USER" ] && [ "$INSTALLING_USER" != "root" ]; then
     elif command -v adduser &>/dev/null; then
         adduser "$INSTALLING_USER" input 2>/dev/null || true
     fi
-    # Ubuntu GNOME fix: don't blindly delete user config on grab mode — that
-    # would wipe an existing `auto_ibus` / `ibus_engine` tuning. Only remove if
-    # the file is the very old default (no auto_ibus key). New installs start clean
-    # via /etc/vietc/config.toml copied to the user file below.
-    if [ "$MODE" = "grab" ]; then
-        if [ -f "$USER_HOME/.config/vietc/config.toml" ] && ! grep -q "auto_ibus" "$USER_HOME/.config/vietc/config.toml" 2>/dev/null; then
-            # Migrate old config: keep a backup and let the new defaults take over
-            cp "$USER_HOME/.config/vietc/config.toml" "$USER_HOME/.config/vietc/config.toml.bak.$(date +%s)" 2>/dev/null || true
-            rm -f "$USER_HOME/.config/vietc/config.toml" 2>/dev/null || true
-        fi
-    fi
+    # Preserve the user's existing configuration during upgrades. Missing
+    # compatibility keys are appended below without replacing grab or other
+    # user-selected values.
 fi
 
 # Ubuntu GNOME: ensure session env reaches the user manager and IBus is ready.
@@ -864,7 +856,7 @@ input_method = "vni"
 toggle_key = "space"
 toggle_method_key = "space"
 start_enabled = true
-grab = false
+grab = true
 debug = false
 # Ubuntu GNOME Wayland fix: auto-enable native IBus engine where
 # zwp_input_method_v2 is unavailable (Mutter). Mirrors Funput's Linux

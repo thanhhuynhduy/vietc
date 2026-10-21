@@ -337,7 +337,7 @@ impl Default for Config {
             password_detection: PasswordDetectionConfig::default(),
             app_state: AppStateConfig::default(),
             macros,
-            grab: false, // default false so daemon works without root (needs input group for uinput)
+            grab: true, // default to evdev grab; installer adds the user to the input group
             debug: false,
             ibus_engine: false,
             controller_mode: false,
