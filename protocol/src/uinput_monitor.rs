@@ -13,6 +13,8 @@ use super::inject::{InjectResult, KeyInjector};
 /// is never pasted into the text while the target app might still be reading
 /// our freshly pasted word.
 const RESTORE_DEBOUNCE: Duration = Duration::from_millis(600);
+const CLIPBOARD_READY_TIMEOUT: Duration = Duration::from_millis(250);
+const CLIPBOARD_READY_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 const UINPUT_MAX_NAME_SIZE: usize = 80;
 const UI_SET_EVBIT: u64 = 0x40045564;
@@ -302,17 +304,6 @@ impl ClipboardBurstState {
     fn reset(&mut self) {
         self.saved_clipboard = None;
         self.injected_clipboard = None;
-    }
-}
-
-fn try_unicode_insert(
-    try_wtype: impl FnOnce() -> bool,
-    try_clipboard: impl FnOnce() -> bool,
-) -> InjectResult {
-    if try_wtype() || try_clipboard() {
-        InjectResult::Success
-    } else {
-        InjectResult::Failed
     }
 }
 
@@ -870,13 +861,10 @@ impl UinputInjector {
         None
     }
 
-    /// Send backspaces and text through a single injection channel to avoid
-    /// reordering between input methods. For ASCII we use uinput directly
-    /// (single kernel device). For Unicode on Wayland we use a single `wtype`
-    /// invocation that sends both backspaces and text via the Wayland virtual
-    /// keyboard protocol, so the compositor sees them atomically. Clipboard
-    /// paste (Ctrl+V via uinput) is the last resort and also stays on the
-    /// uinput channel for backspaces.
+    /// Send backspaces and replacement text through one uinput device.
+    /// ASCII is injected directly. Unicode is copied to the clipboard and
+    /// pasted with Ctrl+V through the same device, avoiding mixed-channel
+    /// editing transactions.
     fn inject_replacement_atomic(&self, backspaces: usize, text: &str) -> InjectResult {
         if text.is_empty() {
             if backspaces == 0 || self.send_backspaces(backspaces).is_ok() {
@@ -905,40 +893,13 @@ impl UinputInjector {
             return InjectResult::Success;
         }
 
-        // Unicode: backspaces via uinput (reliable for Qt Omawrite, where wtype BackSpace is ignored),
-        // text via wtype (Wayland) when available. Verified: wtype -k BackSpace alone leaves Omawrite's
-        // "Nguye" undeleted (clipboard still "Nguye" after 5 wtype BackSpaces), while uinput BackSpace
-        // correctly deletes and subsequent wtype -- "rùa" yields correct "rùa" without "rrùa" duplication.
-        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
-        if is_wayland {
-            if backspaces > 0 {
-                if self.send_backspaces(backspaces).is_err() {
-                    return InjectResult::Failed;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-
-            return try_unicode_insert(
-                || {
-                    let Ok(mut cmd) = Self::user_cmd("wtype") else {
-                        return false;
-                    };
-                    cmd.args(["-P", "Shift_L", "-p", "Shift_L", "--", text]);
-                    cmd.output()
-                        .map(|output| output.status.success())
-                        .unwrap_or(false)
-                },
-                || self.paste_via_clipboard(text),
-            );
+        // Keep delete and insert on the same uinput channel. Mixing uinput
+        // Backspace with Wayland virtual-keyboard text can crash Microsoft Edge
+        // with SIGILL even for a minimal replacement such as `Da` -> `Dạ`.
+        if backspaces > 0 && self.send_backspaces(backspaces).is_err() {
+            return InjectResult::Failed;
         }
 
-        // X11 or no Wayland: backspaces via uinput, text via clipboard.
-        if backspaces > 0 {
-            if self.send_backspaces(backspaces).is_err() {
-                return InjectResult::Failed;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
         if self.paste_via_clipboard(text) {
             InjectResult::Success
         } else {
@@ -987,18 +948,32 @@ impl UinputInjector {
 
         if !Self::copy_to_clipboard(text) {
             let mut st = self.clip.inner.lock().unwrap();
-            st.burst.reset();
-            st.restore_due = None;
+            st.restore_due = Some(Instant::now());
+            drop(st);
+            self.clip.cv.notify_all();
             return false;
         }
 
-        // Give the selection owner a moment to take ownership before pasting.
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        let ready_deadline = Instant::now() + CLIPBOARD_READY_TIMEOUT;
+        loop {
+            if Self::read_clipboard().as_deref() == Some(text) {
+                break;
+            }
+            if Instant::now() >= ready_deadline {
+                let mut st = self.clip.inner.lock().unwrap();
+                st.restore_due = Some(Instant::now());
+                drop(st);
+                self.clip.cv.notify_all();
+                return false;
+            }
+            std::thread::sleep(CLIPBOARD_READY_POLL_INTERVAL);
+        }
 
         if self.send_ctrl_v().is_err() {
             let mut st = self.clip.inner.lock().unwrap();
-            st.burst.reset();
-            st.restore_due = None;
+            st.restore_due = Some(Instant::now());
+            drop(st);
+            self.clip.cv.notify_all();
             return false;
         }
         let elapsed = (std::time::Instant::now() - t_total).as_millis();
@@ -1386,41 +1361,6 @@ struct input_id {
     vendor: u16,
     product: u16,
     version: u16,
-}
-
-#[cfg(test)]
-mod replacement_strategy_tests {
-    use super::*;
-
-    #[test]
-    fn unicode_insert_fails_when_wtype_and_clipboard_fail() {
-        let result = try_unicode_insert(|| false, || false);
-
-        assert_eq!(result, InjectResult::Failed);
-    }
-
-    #[test]
-    fn unicode_insert_uses_clipboard_when_wtype_fails() {
-        let result = try_unicode_insert(|| false, || true);
-
-        assert_eq!(result, InjectResult::Success);
-    }
-
-    #[test]
-    fn unicode_insert_does_not_use_clipboard_when_wtype_succeeds() {
-        let clipboard_called = std::cell::Cell::new(false);
-
-        let result = try_unicode_insert(
-            || true,
-            || {
-                clipboard_called.set(true);
-                true
-            },
-        );
-
-        assert_eq!(result, InjectResult::Success);
-        assert!(!clipboard_called.get());
-    }
 }
 
 #[cfg(test)]

@@ -364,37 +364,44 @@ Day la nguyen nhan cua loi buffer cu khi chuyen cua so, nhung chua co bang chung
 8. Chua co symbols de khang dinh `ud2` la Chromium CFI trap nao.
 9. Chua co ket qua khi injection duoc thay bang clipboard, IBus CommitText hoac mot backend atomically commit text khac.
 
-## 9. Root-cause hypothesis hien tai
+## 9. Root cause da duoc co lap
 
-### Gia thuyet uu tien cao
+Root cause nam o viec mot replacement tron hai virtual input channel:
 
-Edge nhan mot chuoi dai cac low-level keyboard event do VietC tao ra de thay the text:
+1. ASCII va Backspace duoc gui qua thiet bi uinput `vietc`.
+2. Unicode replacement duoc gui qua mot Wayland virtual keyboard rieng do `wtype` tao.
+3. Microsoft Edge 150.0.4078.96 co the roi vao `SIGILL` tai `ud2` khi hai channel nay cung tham gia mot editing transaction.
 
-1. Physical ASCII keys bi suppress do keyboard grab.
-2. VietC engine phat hien Telex transform.
-3. VietC inject backspace hoac delete.
-4. VietC inject lai ca chuoi Unicode da bien doi.
-5. Qua trinh nay lap lai nhieu lan trong mot editing session.
-6. Edge cap nhat input, selection, DOM, spellcheck va accessibility state.
-7. Mot trang thai noi bo khong hop le tich luy.
-8. Edge browser process danh vao indirect-call guard.
-9. Guard that bai va Edge chu dong chay `ud2`.
+Trigger toi thieu da duoc tai hien doc lap voi engine:
 
-Do tin cay: cao ve pham vi `Replace` va injection, trung binh ve co che noi bo Edge.
+1. Gui `D`, `a` qua uinput.
+2. Gui hai Backspace qua cung uinput device.
+3. Gui `Dạ` qua `wtype`.
+4. Edge tao core dump `SIGILL`.
 
-### Gia thuyet trung binh
+Cac phep doi chung:
 
-Toc do injection qua nhanh, thieu mot synchronization boundary giua delete va insert, lam Edge xu ly selection hoac accessibility state trong luc chuoi low-level event moi tiep tuc den.
+- Gui ca chuoi Unicode truc tiep bang `wtype`: khong crash.
+- Gui ASCII va Backspace hoan toan qua uinput: khong crash.
+- Gui ASCII, Backspace va Ctrl+V clipboard paste qua cung uinput device: khong tao core moi.
+- Tang delay delete-to-insert len 20 ms va 50 ms: van crash.
+- Loai chuoi Shift gia cua `wtype`: van crash.
+- AT-SPI tat: van crash.
+- VietC `enabled=false`: khong crash.
 
-Do tin cay: trung binh.
+Vi vay, day khong phai loi Telex deterministic, khong phai mot ky tu Unicode cu the, khong phai do toc do don thuan va khong phai do AT-SPI. Co che noi bo chinh xac ben trong Edge tai `ud2` van chua the dat ten do khong co debug symbols, nhung dieu kien kich hoat phia VietC da duoc xac dinh voi doi chung toi thieu.
 
-### Gia thuyet thap hon
+### Ban sua
 
-- Mot ky tu Unicode cu the lam Edge crash.
-- Tu `khong` la trigger duy nhat.
-- AT-SPI DFS la root cause duy nhat.
-- Viec bat keyboard device hoac forward phim thuan la root cause.
-- Engine Telex deterministic logic tu no gay `SIGILL`.
+Unicode replacement khong con dung `wtype` sau khi xoa bang uinput. Backend moi:
+
+1. Xoa bang Backspace tren uinput device `vietc`.
+2. Ghi Unicode vao clipboard.
+3. Cho den khi clipboard owner tra ve dung noi dung can paste, toi da 250 ms.
+4. Gui Ctrl+V qua chinh uinput device `vietc`.
+5. Khoi phuc clipboard theo co che burst co san, va khong ghi de neu nguoi dung da thay doi clipboard.
+
+Cach nay giu delete va insert tren cung mot input channel va loai mixed-channel transaction da tai hien crash.
 
 ## 10. Ke hoach dieu tra tiep theo
 
@@ -603,11 +610,41 @@ Thu muc `target/` khong nen duoc xem la tai lieu release lau dai neu bi clean bo
 - Chua tim duoc timing threshold.
 - Chua xac dinh ham Edge bang symbols.
 - Chua sua code.
-- Chua co regression runtime test tu dong cho cau dai.
+- Da co probe runtime Edge cho 20 replacement toi thieu lien tiep; cau dai van can mot adapter observable rieng de doi chieu toan bo text.
 - Chua the danh dau `Khong browser process crash`.
 - Release verdict phai tiep tuc la `FAIL` cho den khi ban sua duoc xac minh tren runtime matrix bat buoc.
 
-## 15. Ket luan
+## 15. Ket qua xac minh ban sua
+
+Kiem thu tu dong ngay 2026-10-21 dung Microsoft Edge 150.0.4078.96 voi profile co lap va trang `textarea` autofocus:
+
+- Chay 20 lan replacement toi thieu `Da` thanh `Dạ` bang dung `UinputInjector` production.
+- Ca 20 transaction hoan thanh.
+- Edge browser process van song sau probe.
+- Core count truoc: 35.
+- Core count sau: 35.
+- Core delta: 0.
+- Clipboard ownership lan dau san sang sau 33 ms, nam trong timeout 250 ms.
+- Workspace test suite pass.
+- Strict Clippy toan workspace pass voi `--workspace --all-targets --all-features -- -D warnings`.
+- Format check pass.
+
+Artifact nam tai:
+
+`target/runtime-artifacts/edge-investigation/same-channel-fix/`
+
+Bang chung chinh:
+
+- `result-isolated.txt`
+- `probe-isolated.log`
+- `edge-process-before-probe.txt`
+- `edge-process-after-probe.txt`
+- `core-count-before-isolated.txt`
+- `core-count-after-isolated.txt`
+
+Runtime regression sau ban sua da PASS tren Chromium, Google Chrome, GTK, Qt va terminal: observable text dung, process healthy, clipboard preserved va modifiers released. Electron khong duoc chay vi chua cai dat. Van can kiem thu thu cong tren Edge de xac nhan text hien thi cua cau dai va clipboard duoc khoi phuc dung.
+
+## 16. Ket luan
 
 Bang chung hien tai cho thay Microsoft Edge 150.0.4078.96 crash trong browser process tai mot `ud2` guard on dinh khi VietC dang bat engine va thuc hien nhieu replacement qua uinput trong mot chuoi tieng Viet dai.
 

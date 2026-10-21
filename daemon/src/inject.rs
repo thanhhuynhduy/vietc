@@ -1,9 +1,18 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
 use vietc_protocol::inject::InjectResult;
 use vietc_protocol::KeyInjector;
 
 use crate::commands::{OutputCommand, TransactionOutcome};
 use crate::display;
 use crate::log::log_info;
+
+static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn injection_trace_enabled() -> bool {
+    std::env::var_os("VIETC_INJECTION_TRACE").is_some()
+}
 
 pub fn execute_commands(
     injector: &dyn KeyInjector,
@@ -18,21 +27,79 @@ pub fn execute_commands(
 
     if commands.len() == 1 {
         if let OutputCommand::Replace(replacement) = &commands[0] {
+            let transaction_id = NEXT_TRANSACTION_ID.fetch_add(1, Ordering::Relaxed);
+            let started = Instant::now();
+            let trace = injection_trace_enabled();
+
+            if trace {
+                log_info(&format!(
+                    "[vietc] injection transaction start: id={} delete={} insert_scalars={} insert_bytes={} expected_revision={} actual_revision={} generation={} reason={:?}",
+                    transaction_id,
+                    replacement.delete_before_cursor,
+                    replacement.insert.chars().count(),
+                    replacement.insert.len(),
+                    replacement.expected_visible_revision,
+                    *visible_revision,
+                    replacement.transform_generation,
+                    replacement.reason,
+                ));
+            }
+
             if replacement.expected_visible_revision != *visible_revision {
+                if trace {
+                    log_info(&format!(
+                        "[vietc] injection transaction stale: id={} elapsed_us={} expected_revision={} actual_revision={}",
+                        transaction_id,
+                        started.elapsed().as_micros(),
+                        replacement.expected_visible_revision,
+                        *visible_revision,
+                    ));
+                }
                 return TransactionOutcome::Stale {
                     expected_visible_revision: replacement.expected_visible_revision,
                     actual_visible_revision: *visible_revision,
                 };
             }
 
-            if injector.inject_replacement(replacement.delete_before_cursor, &replacement.insert)
-                != InjectResult::Success
-                || injector.flush() != InjectResult::Success
-            {
+            let replacement_result =
+                injector.inject_replacement(replacement.delete_before_cursor, &replacement.insert);
+            let replacement_elapsed = started.elapsed();
+            if replacement_result != InjectResult::Success {
+                if trace {
+                    log_info(&format!(
+                        "[vietc] injection transaction failed: id={} phase=replace elapsed_us={} result={}",
+                        transaction_id,
+                        replacement_elapsed.as_micros(),
+                        replacement_result,
+                    ));
+                }
+                return TransactionOutcome::Failed;
+            }
+
+            let flush_result = injector.flush();
+            if flush_result != InjectResult::Success {
+                if trace {
+                    log_info(&format!(
+                        "[vietc] injection transaction failed: id={} phase=flush replace_us={} elapsed_us={} result={}",
+                        transaction_id,
+                        replacement_elapsed.as_micros(),
+                        started.elapsed().as_micros(),
+                        flush_result,
+                    ));
+                }
                 return TransactionOutcome::Failed;
             }
 
             *visible_revision += 1;
+            if trace {
+                log_info(&format!(
+                    "[vietc] injection transaction applied: id={} replace_us={} elapsed_us={} visible_revision={}",
+                    transaction_id,
+                    replacement_elapsed.as_micros(),
+                    started.elapsed().as_micros(),
+                    *visible_revision,
+                ));
+            }
             return TransactionOutcome::Applied {
                 visible_revision: *visible_revision,
             };
