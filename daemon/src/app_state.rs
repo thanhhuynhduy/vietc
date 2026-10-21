@@ -328,33 +328,48 @@ fn get_gnome_window_title() -> Option<String> {
     }
 }
 
+fn normalize_active_window_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "0" || value.eq_ignore_ascii_case("0x0") {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn parse_xprop_active_window_id(output: &str) -> Option<String> {
+    output
+        .split("window id # ")
+        .nth(1)
+        .and_then(normalize_active_window_id)
+}
+
 /// Get the active window's X11 or Wayland ID (unique per window).
 /// Returns a unique window-identifier string.
 pub fn get_active_window_id() -> Option<String> {
     // Try Hyprland first
     if let Some(info) = get_hyprland_active_window() {
-        if !info.address.is_empty() {
-            return Some(info.address);
+        if let Some(id) = normalize_active_window_id(&info.address) {
+            return Some(id);
         }
     }
 
     // Try Sway
     if let Some((id, _, _, _)) = get_sway_focused_window() {
-        if !id.is_empty() {
+        if let Some(id) = normalize_active_window_id(&id) {
             return Some(id);
         }
     }
 
     // Try GNOME Shell D-Bus (Wayland GNOME) — returns hex window ID
-    if let Some(id) = get_gnome_active_window_id() {
+    if let Some(id) = get_gnome_active_window_id().and_then(|id| normalize_active_window_id(&id)) {
         return Some(id);
     }
 
     // Try xdotool first (fast, direct, X11)
     if let Ok(output) = Command::new("xdotool").args(["getactivewindow"]).output() {
         if output.status.success() {
-            let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !id.is_empty() {
+            if let Some(id) = normalize_active_window_id(&String::from_utf8_lossy(&output.stdout)) {
                 return Some(id);
             }
         }
@@ -367,12 +382,8 @@ pub fn get_active_window_id() -> Option<String> {
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // Format: "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00004"
-            if let Some(hex) = stdout.split("window id # ").nth(1) {
-                let hex = hex.trim();
-                if !hex.is_empty() {
-                    return Some(hex.to_string());
-                }
+            if let Some(id) = parse_xprop_active_window_id(&stdout) {
+                return Some(id);
             }
         }
     }
@@ -579,14 +590,7 @@ fn get_active_window_id_xprop() -> Option<String> {
         .output()
         .ok()?;
     if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Format: "_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00004"
-        if let Some(hex) = stdout.split("window id # ").nth(1) {
-            let hex = hex.trim();
-            if !hex.is_empty() {
-                return Some(hex.to_string());
-            }
-        }
+        return parse_xprop_active_window_id(&String::from_utf8_lossy(&output.stdout));
     }
     None
 }
@@ -1084,4 +1088,50 @@ fn override_path() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("vietc")
         .join("overrides.toml")
+}
+
+#[cfg(test)]
+mod active_window_id_tests {
+    use super::{normalize_active_window_id, parse_xprop_active_window_id};
+
+    #[test]
+    fn rejects_empty_and_no_window_sentinels() {
+        assert_eq!(normalize_active_window_id(""), None);
+        assert_eq!(normalize_active_window_id("   "), None);
+        assert_eq!(normalize_active_window_id("0"), None);
+        assert_eq!(normalize_active_window_id("0x0"), None);
+        assert_eq!(normalize_active_window_id("0X0"), None);
+    }
+
+    #[test]
+    fn preserves_valid_window_identity() {
+        assert_eq!(
+            normalize_active_window_id(" 0x3a00004\n"),
+            Some("0x3a00004".to_string())
+        );
+        assert_eq!(
+            normalize_active_window_id("73400324"),
+            Some("73400324".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_valid_xprop_active_window() {
+        assert_eq!(
+            parse_xprop_active_window_id("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x3a00004\n"),
+            Some("0x3a00004".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_xprop_no_window_and_malformed_output() {
+        assert_eq!(
+            parse_xprop_active_window_id("_NET_ACTIVE_WINDOW(WINDOW): window id # 0x0\n"),
+            None
+        );
+        assert_eq!(
+            parse_xprop_active_window_id("_NET_ACTIVE_WINDOW:  not found.\n"),
+            None
+        );
+    }
 }
