@@ -125,5 +125,5 @@
 - [x] Không còn split-inode lock race
 - [x] CLI không panic do stdin/stdout đóng
 - [x] Mỗi task có regression test
-- [ ] Mỗi task là commit độc lập và có thể rollback
+- [x] Mỗi task là commit độc lập và có thể rollback
 - [x] Không gộp refactor module lớn vào bản vá
