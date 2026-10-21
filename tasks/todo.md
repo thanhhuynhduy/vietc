@@ -34,7 +34,7 @@
 - [x] Fail-closed khi không đọc được peer credentials
 - [x] Chỉ cho phép UID mục tiêu
 - [x] Không log nội dung input
-- [ ] Test đủ `PING`, `TYPE`, `PASTE`, `BACKSPACE`, `REPLACE`
+- [x] Test đủ `PING`, `TYPE`, `PASTE`, `BACKSPACE`, `REPLACE`
 - [x] Test peer không hợp lệ không phát input
 
 - [x] Task 4: Chuyển socket về runtime directory được quản lý
@@ -56,9 +56,9 @@
 - [x] `cargo test --workspace --all-targets` pass
 - [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` pass
 - [x] `cargo fmt --all -- --check` pass
-- [ ] ASCII injection pass
-- [ ] Unicode injection pass
-- [ ] Replacement pass
+- [x] ASCII injection pass
+- [x] Unicode injection pass
+- [x] Replacement pass
 - [x] Peer UID khác bị từ chối
 - [x] Socket không world-writable
 - [x] Fresh install pass

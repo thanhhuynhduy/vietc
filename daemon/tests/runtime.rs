@@ -4470,3 +4470,252 @@ fn wayland_wtype_success_is_observable_at_runtime() {
         .write_to(&artifact_directory.join("wayland-wtype-success.txt"))
         .expect("Wayland runtime artifact must be persisted");
 }
+
+#[derive(Debug)]
+struct DirectUinputProtocolEvidence {
+    ping_response: String,
+    after_type: String,
+    after_paste: String,
+    after_backspace: String,
+    after_replace: String,
+    clipboard_preserved: bool,
+    modifiers_released: bool,
+}
+
+fn send_direct_uinput_command(
+    socket_path: &std::path::Path,
+    command: &str,
+    timeout: Duration,
+) -> Result<String, RuntimeCommandError> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut stream =
+        UnixStream::connect(socket_path).map_err(|_| RuntimeCommandError::PrerequisiteMissing)?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    writeln!(stream, "{command}").map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+
+    let mut response = String::new();
+    BufReader::new(stream)
+        .read_line(&mut response)
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    Ok(response.trim().to_string())
+}
+
+fn wait_for_controlled_browser_value(
+    cdp: &mut CdpConnection,
+    expected: &str,
+    timeout: Duration,
+    evidence_path: &std::path::Path,
+) -> Result<String, RuntimeCommandError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let observed = read_controlled_browser_target(cdp)?;
+        if observed == expected {
+            return Ok(observed);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = std::fs::write(
+                evidence_path,
+                format!("expected={expected:?}\nobserved={observed:?}\n"),
+            );
+            return Err(RuntimeCommandError::TimedOut);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn run_direct_uinput_protocol_scenario(
+    timeout: Duration,
+) -> Result<DirectUinputProtocolEvidence, RuntimeCommandError> {
+    let environment = RuntimeEnvironment::detect_current();
+    if !controlled_display_available(&environment) {
+        return Err(RuntimeCommandError::PrerequisiteMissing);
+    }
+
+    let runtime_dir =
+        std::env::var_os("XDG_RUNTIME_DIR").ok_or(RuntimeCommandError::PrerequisiteMissing)?;
+    let socket_path = std::path::PathBuf::from(runtime_dir)
+        .join("vietc")
+        .join("uinput.sock");
+    if !socket_path.exists() {
+        return Err(RuntimeCommandError::PrerequisiteMissing);
+    }
+
+    let target = RuntimeTargetKind::Chromium;
+    let executable = runtime_target_executable(target, &environment)
+        .ok_or(RuntimeCommandError::PrerequisiteMissing)?;
+    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    let run_id = format!("direct-uinput-{}", std::process::id());
+    let fixture = ControlledRuntimeFixture::isolated(workspace_root, &run_id)
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    fixture
+        .prepare(workspace_root)
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    prepare_target_fixture(target, &fixture).map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let flags = runtime_target_flags(target, &fixture, executable);
+
+    let stdout = std::fs::File::create(fixture.artifact_dir.join("application.stdout.log"))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let stderr = std::fs::File::create(fixture.artifact_dir.join("application.stderr.log"))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(&flags)
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
+    let mut child = OwnedRuntimeChild::spawn(&mut command)?;
+
+    let trace_path = fixture.artifact_dir.join("direct-uinput-trace.txt");
+    let trace = |step: &str| {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&trace_path)
+        {
+            let _ = writeln!(file, "{step}");
+        }
+    };
+
+    let scenario_result = (|| {
+        trace("cdp-connect:start");
+        let mut cdp = connect_controlled_browser_cdp(&fixture, timeout)?;
+        trace("cdp-connect:done");
+        prepare_controlled_browser_target(&mut cdp)?;
+        trace("cdp-prepare:done");
+
+        let clipboard_snapshot = "vietc-direct-uinput-clipboard".to_string();
+        clipboard_write(&environment, &clipboard_snapshot, timeout)
+            .map_err(|_| RuntimeCommandError::ClipboardSnapshotFailed)?;
+        if clipboard_read(&environment, timeout)
+            .map_err(|_| RuntimeCommandError::ClipboardSnapshotFailed)?
+            != clipboard_snapshot
+        {
+            return Err(RuntimeCommandError::ClipboardSnapshotFailed);
+        }
+
+        trace("clipboard-seed:done");
+        prepare_controlled_browser_target(&mut cdp)?;
+        std::thread::sleep(Duration::from_millis(500));
+        trace("target-refocus:done");
+        let ping_response = send_direct_uinput_command(&socket_path, "PING", timeout)?;
+        trace("ping:done");
+        if ping_response != "PONG" {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+
+        if send_direct_uinput_command(&socket_path, "TYPE:hello", timeout)? != "OK" {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+        trace("type-command:done");
+        let after_type = wait_for_controlled_browser_value(
+            &mut cdp,
+            "hello",
+            timeout,
+            &fixture.artifact_dir.join("type-timeout.txt"),
+        )?;
+        trace("type-observation:done");
+
+        if send_direct_uinput_command(&socket_path, "PASTE: tiếng Việt", timeout)? != "OK" {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+        trace("paste-command:done");
+        let after_paste = wait_for_controlled_browser_value(
+            &mut cdp,
+            "hello tiếng Việt",
+            timeout,
+            &fixture.artifact_dir.join("paste-timeout.txt"),
+        )?;
+        trace("paste-observation:done");
+
+        if send_direct_uinput_command(&socket_path, "BACKSPACE:1", timeout)? != "OK" {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+        trace("backspace-command:done");
+        let after_backspace = wait_for_controlled_browser_value(
+            &mut cdp,
+            "hello tiếng Việ",
+            timeout,
+            &fixture.artifact_dir.join("backspace-timeout.txt"),
+        )?;
+        trace("backspace-observation:done");
+
+        if send_direct_uinput_command(&socket_path, "REPLACE:9:thời", timeout)? != "OK" {
+            return Err(RuntimeCommandError::ScenarioFailed);
+        }
+        trace("replace-command:done");
+        let after_replace = wait_for_controlled_browser_value(
+            &mut cdp,
+            "hello thời",
+            timeout,
+            &fixture.artifact_dir.join("replace-timeout.txt"),
+        )?;
+        trace("replace-observation:done");
+
+        clipboard_write(&environment, &clipboard_snapshot, timeout)
+            .map_err(|_| RuntimeCommandError::ClipboardRestoreFailed)?;
+        let clipboard_preserved = clipboard_read(&environment, timeout)
+            .map_err(|_| RuntimeCommandError::ClipboardVerificationFailed)?
+            == clipboard_snapshot;
+        let modifiers_released = verify_synthesized_modifiers_released(&environment, timeout)
+            .map_err(|_| RuntimeCommandError::ModifierReleaseFailed)?;
+
+        let evidence = DirectUinputProtocolEvidence {
+            ping_response,
+            after_type,
+            after_paste,
+            after_backspace,
+            after_replace,
+            clipboard_preserved,
+            modifiers_released,
+        };
+        std::fs::write(
+            fixture.artifact_dir.join("direct-uinput-protocol.txt"),
+            format!(
+                "ping={:?}\nafter_type={:?}\nafter_paste={:?}\nafter_backspace={:?}\nafter_replace={:?}\nclipboard_preserved={}\nmodifiers_released={}\n",
+                evidence.ping_response,
+                evidence.after_type,
+                evidence.after_paste,
+                evidence.after_backspace,
+                evidence.after_replace,
+                evidence.clipboard_preserved,
+                evidence.modifiers_released,
+            ),
+        )
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+
+        let _ = cdp.command("Browser.close", serde_json::json!({}));
+        Ok(evidence)
+    })();
+
+    let teardown = child.terminate_and_reap(Duration::from_secs(5));
+    match (scenario_result, teardown) {
+        (Ok(evidence), Ok(())) => Ok(evidence),
+        (Err(error), _) => Err(error),
+        (_, Err(error)) => Err(error),
+    }
+}
+
+#[test]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, a running vietc-uinputd, Chromium, and a controlled Wayland session"]
+fn privileged_uinput_socket_commands_are_observable_end_to_end() {
+    let evidence = run_direct_uinput_protocol_scenario(Duration::from_secs(30))
+        .expect("direct uinput protocol scenario must complete");
+
+    assert_eq!(evidence.ping_response, "PONG");
+    assert_eq!(evidence.after_type, "hello");
+    assert_eq!(evidence.after_paste, "hello tiếng Việt");
+    assert_eq!(evidence.after_backspace, "hello tiếng Việ");
+    assert_eq!(evidence.after_replace, "hello thời");
+    assert!(evidence.clipboard_preserved);
+    assert!(evidence.modifiers_released);
+}
