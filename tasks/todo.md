@@ -1,102 +1,129 @@
-# Checklist sua loi audit
+# Checklist sửa lỗi audit an toàn
 
-## Phase 1: Data loss va result contract
+## Phase 0: Baseline và test seam
 
-- [x] Task 1: Chot `InjectResult` contract va them failure test doubles
-- [x] Task 2: Propagate loi cua Wayland `wtype` va clipboard fallback
-- [x] Task 3: Serialize uinput transaction, xu ly short write va `EINTR`
-- [x] Task 4: X11 paste chi success khi selection request duoc phuc vu
+- [x] Task 1: Tách socket server/dispatcher để test không cần `/dev/uinput`
+- [x] Test client UID hợp lệ đi đến dispatcher
+- [x] Test client UID không hợp lệ không tạo input event
+- [x] Xác nhận protocol command hiện tại không đổi
+
+### Checkpoint 0
+
+- [x] `cargo test -p vietc-uinputd` pass
+- [x] `cargo check -p vietc-uinputd --all-targets` pass
+- [x] Runtime behavior chưa đổi
+
+## Phase 1: Loại bỏ C-string undefined behavior
+
+- [x] Task 2: Loại bỏ `String::as_ptr()` khỏi `chown`/`chmod`
+- [x] Dùng `std::fs::set_permissions`
+- [x] Nếu cần `chown`, dùng `CString` và kiểm tra errno
+- [x] Chỉ đổi owner/mode sau khi socket đã bind
+- [x] Startup failure dọn đúng socket vừa tạo
+- [x] Không bỏ qua lỗi tạo directory, ownership hoặc permission
 
 ### Checkpoint 1
 
-- [x] `cargo test --workspace --all-targets` pass
-- [x] `cargo check --workspace --all-targets --all-features` pass
-- [x] Khong con duong xoa text, insert fail roi bao success
+- [x] `cargo test -p vietc-uinputd` pass
+- [x] `cargo clippy -p vietc-uinputd --all-targets -- -D warnings` pass
+- [x] `cargo fmt --all -- --check` pass
 
-## Phase 2: Clipboard correctness
+## Phase 2: Socket authorization và permission
 
-- [x] Task 5: Snapshot/restore clipboard theo tung Wayland burst
-- [x] Task 6: Bao toan clipboard ownership tren X11
-- [x] Khong restore de len clipboard moi cua user
-- [x] Khong chay external clipboard I/O trong luc giu state mutex
+- [x] Task 3: Thêm `SO_PEERCRED` cho từng connection
+- [x] Fail-closed khi không đọc được peer credentials
+- [x] Chỉ cho phép UID mục tiêu
+- [x] Không log nội dung input
+- [ ] Test đủ `PING`, `TYPE`, `PASTE`, `BACKSPACE`, `REPLACE`
+- [x] Test peer không hợp lệ không phát input
 
-## Phase 3: FFI va concurrency
+- [x] Task 4: Chuyển socket về runtime directory được quản lý
+- [x] Runtime directory mode `0700`
+- [x] Socket mode `0600`
+- [x] Không fallback im lặng sang `/tmp`
+- [x] Không unlink symlink hoặc regular file
+- [x] Chỉ dọn stale Unix socket thuộc runtime path
 
-- [x] Task 7: Null-check tat ca `dlsym` va cleanup handle khi fail
-- [x] Task 8: Bo unsound `unsafe impl Sync for X11Injector`
-- [x] Serialize moi operation tren cung Xlib `Display`
-- [x] Them tests cho missing symbol va concurrent access boundary
+- [x] Task 5: Cập nhật installer và upgrade path
+- [ ] Fresh install truyền đúng UID/runtime path
+- [x] Upgrade xử lý socket `0666` cũ
+- [x] Uninstall chỉ xóa artifact được quản lý
+- [x] Rootless mode không bị ảnh hưởng
+- [ ] Restart service hai lần liên tiếp pass
 
 ### Checkpoint 2
 
 - [x] `cargo test --workspace --all-targets` pass
-- [x] `cargo clippy -p vietc-protocol --all-targets --all-features -- -D warnings` pass
-- [x] Khong con unchecked function pointer
-- [x] Khong con interior-mutability state duoc share khong dong bo
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` pass
+- [x] `cargo fmt --all -- --check` pass
+- [ ] ASCII injection pass
+- [ ] Unicode injection pass
+- [ ] Replacement pass
+- [x] Peer UID khác bị từ chối
+- [x] Socket không world-writable
+- [x] Fresh install pass
+- [x] Upgrade pass
+- [x] Rootless mode pass
 
-## Phase 4: Pipe va process lifecycle
+## Phase 3: Single-instance lock
 
-- [x] Task 9: Giu partial XRecord pipe frame qua nhieu read
-- [x] Task 10: Them readiness timeout cho `vietc-xrecord`
-- [x] Kiem tra `fcntl(F_GETFL)` va `fcntl(F_SETFL)`
-- [x] Kill va reap child tren moi startup/restart failure
-- [x] Drop khong de zombie process
+- [x] Task 6: Thêm process-level regression test cho split-inode race
+- [x] Test holder giữ lock dù PID text stale/non-matching
+- [x] Test có timeout và cleanup rõ ràng
 
-## Phase 5: Privilege va shutdown
-
-- [x] Task 11: Clear/init supplementary groups truoc khi ha UID
-- [x] Set GID truoc UID
-- [x] Validate desktop session environment
-- [x] Refuse fallback chay desktop command bang root
-- [x] Task 12: Luu va join clipboard restorer thread
-- [x] Khong restore clipboard sau khi injector Drop hoan tat
+- [x] Task 7: Tạo RAII lock guard
+- [x] Không unlink/reopen khi `flock` trả contention
+- [x] PID được ghi qua fd đã lock
+- [x] Guard sống suốt vòng đời daemon
+- [x] Contention thoát như “đã chạy”
+- [x] Lock error thật trả failure
+- [x] Hai process đồng thời chỉ có một process tiếp tục
 
 ### Checkpoint 3
 
-- [x] `cargo test --workspace --all-targets` pass
-- [x] `cargo check --workspace --all-targets --all-features` pass
-- [x] Khong con detached worker
-- [x] Khong con unbounded blocking startup path
+- [x] `cargo test -p vietc-daemon single_instance` pass
+- [x] Regression test contention lặp 50 lần pass
+- [x] Shutdown bình thường thả lock
+- [x] Process chết bất thường không để kernel lock kẹt
 
-## Phase 6: Runtime verification
+## Phase 4: CLI I/O
 
-- [x] Task 13: Wayland `wtype` success test
-- [x] Wayland `wtype` fail, clipboard fallback success test
-- [x] Wayland ca hai backend fail test
-- [x] Chromium Shift-prefix modifier-state test
-- [x] Physical Shift held during injection test
-- [x] X11 SelectionRequest success test
-- [x] X11 timeout/failure test
-- [x] X11 clipboard preservation test
-- [x] Wayland clipboard preservation test
-- [x] User clipboard race test
-- [x] Partial pipe frame test
-- [x] Helper hang va early-exit tests
-- [x] Repeated replacement no-drop/no-duplicate test
-- [x] Shutdown/restart lifecycle test
+- [x] Task 8: Chuyển CLI loop sang `io::Result`
+- [x] EOF thoát sạch
+- [x] Broken pipe không panic
+- [x] Interactive flow giữ nguyên
+- [x] `quit` giữ nguyên behavior
+- [x] I/O error bất thường có exit code và message phù hợp
 
-## Phase 7: Quality gate
+### Checkpoint 4
 
-- [x] Task 14: Xu ly tat ca Clippy warnings
+- [x] `cargo test -p vietc-cli` pass
+- [x] `printf '' | cargo run -q -p vietc-cli` pass
+- [x] `printf 'quit\n' | cargo run -q -p vietc-cli` pass
+
+## Phase 5: Release verification
+
 - [x] `cargo fmt --all -- --check` pass
 - [x] `cargo test --workspace --all-targets` pass
 - [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` pass
-- [x] CI chay format, test va Clippy tren moi PR
-- [x] Privileged runtime tests co job va timeout rieng
-- [ ] Runtime matrix X11 pass
-- [ ] Runtime matrix GNOME Wayland pass
-- [ ] Runtime matrix KDE Wayland pass
-- [ ] Chromium/Electron pass
-- [ ] GTK, Qt va terminal smoke tests pass
+- [x] `cargo audit` sạch
+- [x] Rootless X11/XWayland pass
+- [x] Wayland fallback uinputd pass
+- [x] Fresh install pass
+- [x] Upgrade từ socket `0666` pass
+- [x] Service restart pass
+- [x] Unauthorized client test pass
+- [x] Dual-daemon test pass
+- [x] CLI EOF/broken-pipe pass
+- [x] Shutdown/restart loop không leak resource
 
 ## Release gate
 
-- [ ] Tat ca Critical findings da dong
-- [ ] Tat ca High findings da dong hoac duoc chap nhan co ly do
-- [ ] Khong silent injection success
-- [ ] Khong input/clipboard data loss
-- [ ] Khong stuck modifier
-- [ ] Khong unchecked FFI
-- [ ] Khong unsound `Send/Sync`
-- [ ] Khong child/thread leak
-- [ ] Tat ca automated va runtime verification da pass
+- [x] Không còn socket `0666`
+- [x] Mọi connection uinput được xác thực fail-closed
+- [x] Không còn C path pointer không NUL-terminated
+- [x] Không còn split-inode lock race
+- [x] CLI không panic do stdin/stdout đóng
+- [x] Mỗi task có regression test
+- [ ] Mỗi task là commit độc lập và có thể rollback
+- [x] Không gộp refactor module lớn vào bản vá

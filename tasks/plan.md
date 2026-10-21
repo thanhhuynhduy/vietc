@@ -1,559 +1,439 @@
-# Ke hoach sua loi: Hardening input injection va clipboard
+# Kế hoạch sửa lỗi audit: uinputd, single-instance lock và CLI
 
-## 1. Muc tieu
+## 1. Mục tiêu
 
-Sua cac loi correctness, concurrency, FFI, clipboard va process lifecycle duoc phat hien trong audit, theo thu tu uu tien ngan mat input va mat du lieu nguoi dung truoc.
+Khắc phục bốn phát hiện còn lại theo hướng giảm tối đa hồi quy:
 
-Tieu chi hoan thanh tong the:
+1. Loại bỏ việc truyền chuỗi Rust không kết thúc bằng NUL vào `libc::chown` và `libc::chmod`.
+2. Ngăn client không được phép điều khiển thiết bị uinput đặc quyền.
+3. Loại bỏ race condition có thể cho phép hai daemon cùng chạy.
+4. Không để CLI panic khi stdin hoặc stdout đóng.
 
-- Khong bao `Success` khi thao tac inject that bai.
-- Khong xoa input neu khong co duong chen replacement dang tin cay.
-- Khong co `unsafe impl Send/Sync` neu invariant thread-safety chua duoc chung minh.
-- Khong goi function pointer null tu `dlsym`.
-- Khong ghi de clipboard moi cua nguoi dung.
-- Khong lam mat partial record tren pipe nonblocking.
-- Moi child process va background thread deu co timeout va lifecycle ro rang.
-- `cargo test --workspace --all-targets` pass.
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings` pass.
-- Co runtime verification tren X11 va Wayland cho cac flow injection chinh.
+## 2. Nguyên tắc an toàn
 
-## 2. Nguyen tac trien khai
+- Mỗi task là một commit độc lập, có regression test và có thể rollback riêng.
+- Không refactor các module lớn trong cùng đợt sửa này.
+- Giữ nguyên protocol `PING`, `FLUSH`, `QUIT`, `REPLACE`, `BACKSPACE`, `TYPE`, `PASTE`.
+- Không đổi permission socket trước khi cơ chế xác thực peer và đường nâng cấp đã được kiểm chứng.
+- Không triển khai group hệ thống mới trong bước đầu vì thay đổi installer, quyền user và upgrade path có nguy cơ làm mất chức năng gõ.
+- Kernel lock là nguồn sự thật; PID trong file chỉ phục vụ chẩn đoán.
+- Mỗi checkpoint phải qua test, Clippy và format trước khi chuyển phase.
+- Nếu runtime test input injection thất bại, rollback commit gần nhất thay vì thêm fallback bỏ qua bảo mật.
 
-1. Sua tung nhom loi nho, moi nhom co regression test rieng.
-2. Khong gom refactor rong voi thay doi behavior.
-3. Moi task phai de workspace build va test duoc.
-4. Cac duong loi phai tra ket qua that, khong silent fallback thanh cong.
-5. Cac thao tac delete va insert phai duoc xem la mot transaction.
-6. External process phai co timeout, kiem tra exit status va cleanup.
-7. Unsafe boundary phai co invariant duoc viet ro va kiem chung bang test hoac synchronization.
+## 3. Quyết định kiến trúc
 
-## 3. Thu tu phu thuoc
+### 3.1 Socket uinput
+
+Phương án an toàn nhất cho bản vá đầu tiên:
+
+- Bind socket trong thư mục runtime thuộc user mục tiêu, ưu tiên `$XDG_RUNTIME_DIR/vietc`.
+- Socket mode `0600`.
+- `uinputd` nhận UID được phép từ cấu hình khởi động hoặc thông tin owner đã xác định rõ.
+- Mỗi connection được kiểm tra bằng `SO_PEERCRED` trước khi đọc lệnh.
+- Chỉ cho phép đúng UID mục tiêu; root chỉ được cho phép nếu có yêu cầu vận hành đã ghi rõ.
+- Không dựa riêng vào mode file vì descriptor có thể được truyền giữa process.
+- Không tạo group `vietc` và socket `0660` trong bản vá đầu tiên. Đây là phương án mở rộng sau khi có nhu cầu multi-user thực tế.
+
+Nếu kiến trúc cài đặt hiện tại không cung cấp chắc chắn UID mục tiêu, triển khai migration hai bước:
+
+1. Thêm peer authorization và telemetry lỗi kết nối trong khi tạm giữ compatibility permission.
+2. Sau khi installer truyền đúng UID và runtime tests pass, chuyển socket sang `0600`.
+
+Không được phát hành trạng thái trung gian vẫn `0666` mà không có `SO_PEERCRED`.
+
+### 3.2 Filesystem và FFI
+
+- Dùng API Rust an toàn (`std::fs::set_permissions` với `PermissionsExt`) cho mode.
+- Tránh `libc::chmod` hoàn toàn.
+- Nếu cần `chown`, tạo `CString` từ `OsStrExt::as_bytes`, xử lý `NulError`, gọi sau khi socket tồn tại và kiểm tra errno.
+- Xác minh thư mục socket không phải symlink không tin cậy.
+- Chỉ xóa stale socket nếu metadata xác nhận đó là Unix socket do runtime path dự kiến quản lý.
+
+### 3.3 Single-instance lock
+
+- Mở lock file một lần, lấy `flock(LOCK_EX | LOCK_NB)` một lần.
+- Nếu nhận `EAGAIN` hoặc `EWOULDBLOCK`, đóng fd hiện tại và thoát với thông báo “đã chạy”.
+- Không unlink, reopen hoặc retry lock trên inode mới.
+- Giữ fd thành công sống suốt vòng đời process bằng guard RAII thay vì dựa vào việc cố tình leak descriptor.
+- Ghi PID bằng chính fd đã lock, dùng `ftruncate`, `lseek` và write đầy đủ để tránh thao tác pathname sang inode khác.
+- PID và `/proc/<pid>/comm` chỉ dùng để hiển thị chẩn đoán, không quyết định phá lock.
+
+### 3.4 CLI
+
+- `main` trả `io::Result<()>` hoặc gọi một hàm `run() -> io::Result<()>`.
+- `flush` propagate lỗi.
+- `read_line == 0` được xem là EOF và thoát sạch.
+- Broken pipe không tạo panic hoặc backtrace.
+
+## 4. Dependency graph
 
 ```mermaid
 graph TD
-    A[Task 1: Result contract va failure tests] --> B[Task 2: Wayland injection transaction]
-    A --> C[Task 3: Serialize uinput writes]
-    A --> D[Task 4: X11 injection result]
-    C --> E[Task 5: Clipboard lifecycle Wayland]
-    D --> F[Task 6: Clipboard lifecycle X11]
-    G[Task 7: Safe dynamic symbol loader] --> H[Task 8: X11 thread ownership]
-    I[Task 9: Pipe framing] --> J[Task 10: Helper process lifecycle]
-    B --> K[Task 11: Privilege dropping]
-    E --> L[Task 12: Restorer shutdown]
-    F --> M[Task 13: Runtime integration tests]
-    H --> M
-    J --> M
-    K --> M
-    L --> M
-    M --> N[Task 14: Clippy va CI gate]
+    A[Task 1: Regression tests cho socket boundary] --> B[Task 2: Loại bỏ C-string UB]
+    B --> C[Task 3: SO_PEERCRED authorization]
+    C --> D[Task 4: Runtime path và permission an toàn]
+    D --> E[Task 5: Installer và upgrade compatibility]
+    F[Task 6: Regression tests cho lock race] --> G[Task 7: RAII lock không unlink]
+    H[Task 8: CLI EOF và I/O handling]
+    E --> I[Task 9: Runtime matrix và release gate]
+    G --> I
+    H --> I
 ```
 
-## 4. Phase 1: Chan data loss va failure reporting
+## 5. Phase 0: Baseline và test seam
 
-### Task 1: Chot contract cho `InjectResult`
+### Task 1: Tạo test seam cho socket authorization
 
-**Mo ta:** Xac dinh cach bieu dien thanh cong, loi co the retry va loi khong the recovery trong `KeyInjector`. Bo sung test doubles de ep cac backend that bai tai tung buoc.
+**Mô tả:** Tách phần thiết lập listener, đọc peer credentials và dispatch command khỏi `main` để kiểm thử bằng Unix socket thật mà không cần thiết bị `/dev/uinput`.
 
 **Acceptance criteria:**
 
-- Tat ca API injection co the phan biet thanh cong va that bai.
-- Caller khong bo qua failure cua replacement.
-- Test chung minh failure duoc propagate tu backend den control flow cua daemon.
-- Khong can mot compositor that de test failure propagation.
+- Command parser và authorization được test mà không phát key event thật.
+- Client UID hợp lệ đi đến dispatcher.
+- Client UID không hợp lệ bị đóng trước khi command được thực thi.
+- Protocol hiện tại không đổi.
 
 **Verification:**
 
 ```bash
-cargo test -p vietc-protocol
-cargo test -p vietc-daemon
+cargo test -p vietc-uinputd
+cargo check -p vietc-uinputd --all-targets
 ```
 
-**Files du kien:**
+**Dependencies:** Không.
 
-- `protocol/src/inject.rs`
-- `protocol/src/uinput_monitor.rs`
-- `protocol/src/x11_inject.rs`
-- Test module lien quan trong `protocol`
+**Files dự kiến:**
 
-**Scope:** Medium
+- `uinputd/src/main.rs`
+- Có thể thêm `uinputd/src/server.rs`
+- Test module trong crate `uinputd`
 
-### Task 2: Bien Wayland replacement thanh transaction co ket qua that
+**Scope:** Medium, tối đa 3 file.
 
-**Mo ta:** Sua `inject_replacement_atomic` de khong tra `Success` khi `wtype` va clipboard fallback deu fail. Tach strategy selection khoi side effect de test duoc. Delete chi duoc thuc hien khi insertion strategy da san sang, hoac failure sau delete phai duoc bao ve de caller recovery.
+### Checkpoint 0
+
+- Test cũ vẫn pass.
+- Test không yêu cầu root hoặc `/dev/uinput`.
+- Không thay đổi runtime behavior ở checkpoint này.
+
+## 6. Phase 1: Loại bỏ undefined behavior trước
+
+### Task 2: Thay C path handling bằng API an toàn
+
+**Mô tả:** Loại bỏ `String::as_ptr()` khỏi `chown` và `chmod`; đặt permission sau khi bind; không bỏ qua lỗi filesystem quan trọng.
 
 **Acceptance criteria:**
 
-- `wtype` fail va clipboard fail tra failure.
-- `wtype` fail nhung clipboard thanh cong tra success.
-- Empty replacement va ASCII fast path giu behavior cu.
-- Khong log noi dung input day du trong log production.
-- Shift-prefix duoc dong goi thanh strategy co test va co the tat neu runtime khong ho tro.
+- Không còn truyền pointer không NUL-terminated vào libc path API.
+- Không còn gọi `chown` trước khi socket tồn tại.
+- Permission được đặt bằng `std::fs::set_permissions`.
+- Lỗi tạo thư mục, bind, permission hoặc ownership làm startup fail rõ ràng.
+- Startup failure dọn socket do chính lần startup đó tạo.
 
 **Verification:**
 
 ```bash
-cargo test -p vietc-protocol uinput
-cargo test -p vietc-daemon
+cargo test -p vietc-uinputd
+cargo clippy -p vietc-uinputd --all-targets -- -D warnings
+cargo fmt --all -- --check
 ```
 
-**Files du kien:**
+**Dependencies:** Task 1.
 
-- `protocol/src/uinput_monitor.rs`
-- Test module moi hoac hien co cua `vietc-protocol`
+**Files dự kiến:**
 
-**Scope:** Medium
+- `uinputd/src/main.rs`
+- Test module liên quan
 
-### Task 3: Serialize va kiem tra day du raw uinput writes
+**Scope:** Small.
 
-**Mo ta:** Chuyen cac raw `libc::write` thanh mot helper tra `Result`, xu ly `EINTR`, short write va serialize toan bo key transaction. Xem lai nhu cau cua `unsafe impl Send/Sync`.
+### Checkpoint 1
+
+- Test startup với path hợp lệ pass.
+- Test permission failure trả lỗi, không tiếp tục chạy ở trạng thái nửa cấu hình.
+- Không đổi UID authorization hoặc protocol.
+
+## 7. Phase 2: Authorization không làm mất chức năng
+
+### Task 3: Xác thực từng connection bằng `SO_PEERCRED`
+
+**Mô tả:** Lấy `pid`, `uid`, `gid` từ Unix peer credentials ngay sau `accept`; từ chối trước khi tạo `BufReader` hoặc dispatch command nếu UID không đúng policy.
 
 **Acceptance criteria:**
 
-- Moi `input_event` duoc ghi day du hoac tra loi.
-- Press, release va sync cua mot transaction khong bi interleave.
-- Khong con bo qua return value cua `libc::write`.
-- Xoa `unsafe impl Sync` neu caller khong thuc su can share; neu can, invariant phai duoc bao ve bang mutex.
-- Co test cho short write, interrupted write va concurrent transactions bang writer abstraction.
+- Peer hợp lệ vẫn chạy đủ `PING`, `TYPE`, `PASTE`, `BACKSPACE`, `REPLACE`.
+- Peer không hợp lệ không gây bất kỳ input event nào.
+- Lỗi lấy credentials được xử lý fail-closed.
+- Log chỉ chứa UID/PID và loại lỗi, không log nội dung người dùng gõ.
+- Không có fallback “không lấy được credentials thì cho phép”.
 
 **Verification:**
 
 ```bash
-cargo test -p vietc-protocol uinput
-cargo clippy -p vietc-protocol --all-targets --all-features -- -D warnings
+cargo test -p vietc-uinputd peer
+cargo test -p vietc-protocol uinput_client
+cargo clippy -p vietc-uinputd --all-targets -- -D warnings
 ```
 
-**Files du kien:**
+**Dependencies:** Task 2.
 
-- `protocol/src/uinput_monitor.rs`
-- Test module cua `vietc-protocol`
+**Files dự kiến:**
 
-**Scope:** Medium
+- `uinputd/src/main.rs` hoặc `uinputd/src/server.rs`
+- `protocol/src/uinput_client.rs`
+- Tests liên quan
 
-### Task 4: Lam ket qua X11 clipboard paste trung thuc
+**Scope:** Medium.
 
-**Mo ta:** `paste_via_clipboard` chi tra thanh cong khi mot supported selection request da duoc phuc vu trong deadline. Propagate failure qua `send_string` va `inject_replacement`.
+### Task 4: Chuyển socket sang runtime directory riêng và mode `0600`
+
+**Mô tả:** Thay socket world-writable bằng runtime directory thuộc user được cấp quyền. Không fallback im lặng về `/tmp`.
 
 **Acceptance criteria:**
 
-- Timeout ma khong co `SelectionRequest` tra failure.
-- Unsupported target khong duoc tinh la paste thanh cong.
-- `inject_replacement` khong silent success sau khi da backspace.
-- Deadline la constant co ten va test duoc.
-- Target-supported va timeout paths co regression tests.
+- Socket không còn mode `0666`.
+- Runtime directory mode `0700`; socket mode `0600`.
+- Owner khớp UID mà authorization policy cho phép.
+- Nếu không xác định được runtime directory hoặc UID mục tiêu, service fail với hướng dẫn sửa cấu hình.
+- Không unlink file thường hoặc symlink tại socket path.
+- Restart dọn đúng stale Unix socket nhưng không xóa filesystem object ngoài control.
 
 **Verification:**
 
 ```bash
-cargo test -p vietc-protocol x11
-```
-
-**Files du kien:**
-
-- `protocol/src/x11_inject.rs`
-- Test module cua `vietc-protocol`
-
-**Scope:** Medium
-
-## Checkpoint 1
-
-```bash
-cargo test --workspace --all-targets
-cargo check --workspace --all-targets --all-features
-```
-
-Dieu kien qua checkpoint:
-
-- Khong con duong confirmed nao xoa text, insert fail roi bao success.
-- Failure propagation co test.
-- Uinput transaction khong interleave.
-
-## 5. Phase 2: Clipboard correctness
-
-### Task 5: Sua lifecycle clipboard theo tung Wayland injection burst
-
-**Mo ta:** Thay `clipboard_saved` toan lifecycle bang session/burst state. Moi burst snapshot clipboard hien tai; khi restore xong thi reset state. Truoc restore phai xac minh clipboard van la gia tri Vietc da ghi.
-
-**Acceptance criteria:**
-
-- Sau khi restore A, neu user copy B thi burst sau snapshot B.
-- Restorer khong ghi de B neu clipboard da thay doi ngoai Vietc.
-- State duoc reset sau restore, cancel va shutdown.
-- External clipboard command khong chay trong khi giu mutex.
-- Co test cho chuoi A, inject, restore, user copy B, inject, restore B.
-
-**Verification:**
-
-```bash
-cargo test -p vietc-protocol clipboard
-```
-
-**Files du kien:**
-
-- `protocol/src/uinput_monitor.rs`
-- Test module cua `vietc-protocol`
-
-**Scope:** Medium
-
-### Task 6: Bao toan clipboard tren X11
-
-**Mo ta:** Tao clipboard preservation abstraction cho X11. Snapshot gia tri truoc khi chiem selection, chi restore neu Vietc van dang so huu gia tri injected va khong ghi de thay doi moi cua user.
-
-**Acceptance criteria:**
-
-- Non-ASCII injection khong lam mat clipboard truoc do.
-- Clipboard user thay doi trong luc injection khong bi restore de len.
-- Shutdown khong lam clipboard mat du lieu.
-- X11 va Wayland dung chung state model neu phu hop, khong copy logic gan giong nhau.
-
-**Verification:**
-
-```bash
-cargo test -p vietc-protocol x11_clipboard
+cargo test -p vietc-uinputd socket_path
+cargo test -p vietc-uinputd socket_permissions
+cargo test -p vietc-uinputd stale_socket
 ```
 
 Manual check:
 
-- Copy mot chuoi, go tieng Viet tren X11, paste lai va xac nhan chuoi cu con nguyen.
-- Lap lai trong luc copy mot gia tri moi truoc deadline restore.
+```bash
+stat -c '%a %u %g %F' "$XDG_RUNTIME_DIR/vietc/uinput.sock"
+```
 
-**Files du kien:**
+Kỳ vọng: directory `700`, socket `600`, đúng UID.
 
-- `protocol/src/x11_inject.rs`
-- Co the them `protocol/src/clipboard_state.rs`
-- Test module cua `vietc-protocol`
+**Dependencies:** Task 3.
 
-**Scope:** Medium
+**Files dự kiến:**
 
-## 6. Phase 3: FFI va thread safety
+- `uinputd/src/main.rs` hoặc `uinputd/src/server.rs`
+- Service/install configuration phù hợp
+- Tests liên quan
 
-### Task 7: Tao dynamic symbol loader an toan
+**Scope:** Medium.
 
-**Mo ta:** Thay macro transmute truc tiep bang helper resolve symbol co null check, typed conversion va cleanup tren moi failure path.
+### Task 5: Bảo đảm fresh install và upgrade không khóa client hợp lệ
+
+**Mô tả:** Cập nhật installer/service để truyền UID/runtime path nhất quán, xử lý cả cài mới và nâng cấp từ socket `~/.vietc/uinput.sock`.
 
 **Acceptance criteria:**
 
-- Moi symbol thieu tra initialization error co ten symbol.
-- Khong transmute null pointer.
-- Handle da mo duoc dong khi symbol resolution fail.
-- Dung C string API phu hop, khong tao nul-terminated string thu cong.
-- Co test voi shared library fixture thieu symbol.
+- Fresh install tạo service với UID authorization đúng.
+- Upgrade xóa hoặc vô hiệu hóa socket cũ `0666` một cách có kiểm tra.
+- Không yêu cầu user tự sửa permission sau upgrade.
+- Uninstall chỉ xóa artifact Vietc quản lý.
+- Nếu user chưa logout/restart, installer thông báo rõ bước cần thực hiện.
+- Rootless path hiện tại không bị thay đổi nếu không dùng fallback uinputd.
 
 **Verification:**
 
-```bash
-cargo test -p vietc-protocol symbol
-cargo clippy -p vietc-protocol --all-targets --all-features -- -D warnings
-```
+- Chạy installer trong test VM cho fresh install.
+- Chạy installer trên fixture mô phỏng bản cũ có socket `0666`.
+- Restart service hai lần liên tiếp.
+- Client hợp lệ gửi `PING` nhận `PONG`.
+- Client UID khác bị từ chối.
+- Rootless/X11 mode vẫn khởi động bình thường.
 
-**Files du kien:**
+**Dependencies:** Task 4.
 
-- `protocol/src/x11_inject.rs`
-- `protocol/src/x11_capture.rs`
-- Co the them `protocol/src/dylib.rs`
-- Test fixture cua `vietc-protocol`
+**Files dự kiến:**
 
-**Scope:** Medium
+- `install.sh`
+- `uninstall.sh`
+- File service liên quan
+- Test/VM script liên quan
 
-### Task 8: Loai bo `X11Injector` Sync khong an toan
+**Scope:** Medium. Nếu vượt 5 file, tách installer và uninstall thành hai commit.
 
-**Mo ta:** Chon mot owner model ro rang. Uu tien dedicated injection thread nhan command qua channel; neu kien truc hien tai khong can share, bo `Sync` va giu injector tren mot thread.
-
-**Acceptance criteria:**
-
-- Khong con `unsafe impl Sync for X11Injector`.
-- `RefCell`, `Cell` va Xlib `Display` khong bi truy cap dong thoi.
-- Tat ca operation lien quan den cung mot `Display` chay tren cung owner thread hoac cung mutex.
-- Shutdown owner thread co join.
-- Co concurrency test hoac compile-time ownership proof.
-
-**Verification:**
-
-```bash
-cargo test -p vietc-protocol x11
-cargo test -p vietc-daemon
-```
-
-**Files du kien:**
-
-- `protocol/src/x11_inject.rs`
-- `daemon/src/inject.rs`
-- Test module lien quan
-
-**Scope:** Medium
-
-## Checkpoint 2
+### Checkpoint 2: Gate bảo mật và compatibility
 
 ```bash
 cargo test --workspace --all-targets
-cargo clippy -p vietc-protocol --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
 ```
 
-Dieu kien qua checkpoint:
+Bắt buộc kiểm tra runtime:
 
-- Khong con unchecked `dlsym`.
-- Khong con unsafe `Sync` tren interior-mutability state.
-- Clipboard X11 va Wayland deu co ownership-safe restore.
+- Client hợp lệ vẫn gõ ASCII và Unicode.
+- `REPLACE` xóa và chèn đúng.
+- Client không hợp lệ không thể phát input.
+- Socket không world-writable.
+- Restart không để stale socket.
+- Fresh install và upgrade đều dùng được.
 
-## 7. Phase 4: Capture pipe va child lifecycle
+Không qua checkpoint nếu chỉ unit test pass nhưng input injection thực tế fail.
 
-### Task 9: Giu partial pipe frame qua nhieu lan doc
+## 8. Phase 3: Single-instance lock
 
-**Mo ta:** Them persistent receive buffer vao `X11Capture`. `drain_pipe` chi parse frame day du 8 byte va giu remainder cho lan goi sau.
+### Task 6: Thêm regression test tái hiện split-inode lock
+
+**Mô tả:** Tạo process-level test khởi động holder và contender trên cùng lock path; PID text được làm stale/non-matching trong khi holder vẫn giữ kernel lock.
 
 **Acceptance criteria:**
 
-- Split frame 1+7, 3+5 va 7+1 byte deu parse dung mot event.
-- Nhieu frame va remainder trong mot read duoc xu ly dung.
-- EOF voi partial frame duoc bao loi ro rang, khong silently desync.
-- Khong dung packed field reference gay unaligned access.
+- Test cũ phải tái hiện khả năng contender lấy lock inode mới sau unlink.
+- Test có timeout, dọn child process và file tạm.
+- Không phụ thuộc PID cụ thể hoặc timing sleep dài.
+- Test chạy ổn định nhiều lần.
 
 **Verification:**
 
 ```bash
-cargo test -p vietc-protocol pipe
+cargo test -p vietc-daemon single_instance -- --nocapture
 ```
 
-**Files du kien:**
+**Dependencies:** Không phụ thuộc phase socket, nhưng nên thực hiện tuần tự để giảm thay đổi đồng thời.
 
-- `protocol/src/x11_capture.rs`
-- Test module cua `vietc-protocol`
+**Files dự kiến:**
 
-**Scope:** Small
+- `daemon/src/signal.rs`
+- Test module hoặc integration test daemon
 
-### Task 10: Them timeout va cleanup cho `vietc-xrecord`
+**Scope:** Small.
 
-**Mo ta:** Thay blocking `read_line` bang readiness handshake co deadline. Kiem tra `fcntl`; neu setup fail thi kill va reap child. Restart dung cung mot helper duy nhat voi startup path.
+### Task 7: Thay lock logic bằng RAII guard, tuyệt đối không unlink khi contention
+
+**Mô tả:** `ensure_single_instance` trả guard giữ fd. Khi `flock` báo contention, process thoát; không đọc PID để quyết định phá lock.
 
 **Acceptance criteria:**
 
-- Helper khong gui newline bi timeout trong thoi gian gioi han.
-- Helper exit som duoc report.
-- `F_GETFL` hoac `F_SETFL` fail lam initialization fail sach.
-- Moi failure path kill va `wait` child.
-- Initial startup va restart dung chung implementation.
-- `Drop` khong de zombie process.
+- Chỉ một process lấy lock trong mọi test contention.
+- Không có `remove_file` hoặc reopen path sau `EAGAIN`/`EWOULDBLOCK`.
+- FD được giữ sống bằng type rõ ràng và đóng khi guard drop.
+- PID được ghi qua locked fd, không phải `std::fs::write(path, ...)`.
+- Lỗi lock khác contention trả exit failure thay vì exit success.
+- Message phân biệt “đã có instance” với “không thể kiểm tra lock”.
 
 **Verification:**
 
 ```bash
-cargo test -p vietc-protocol xrecord
+cargo test -p vietc-daemon single_instance
+cargo clippy -p vietc-daemon --all-targets --all-features -- -D warnings
 ```
 
-**Files du kien:**
+Manual check:
 
-- `protocol/src/x11_capture.rs`
-- Test helper/fixture cua `vietc-protocol`
+- Khởi động hai instance gần như đồng thời.
+- Xác nhận chỉ một process tiếp tục.
+- Kill instance giữ lock rồi xác nhận instance mới khởi động được ngay.
 
-**Scope:** Medium
+**Dependencies:** Task 6.
 
-## 8. Phase 5: Privilege va shutdown hardening
+**Files dự kiến:**
 
-### Task 11: Ha privilege day du khi spawn desktop commands
+- `daemon/src/signal.rs`
+- Call sites nhận và giữ guard
+- Tests liên quan
 
-**Mo ta:** Tao mot command builder duy nhat cho process root chay command trong desktop session cua user. Clear/init supplementary groups, set GID truoc UID, validate display/runtime paths va dung environment allowlist.
+**Scope:** Medium.
+
+### Checkpoint 3
+
+- Chạy regression test contention ít nhất 50 lần trong CI hoặc loop test có timeout.
+- Không có hai instance cùng vào runtime loop.
+- Shutdown bình thường thả lock.
+- SIGKILL cũng thả kernel lock khi process kết thúc.
+
+## 9. Phase 4: CLI graceful I/O
+
+### Task 8: Xử lý EOF và broken pipe không panic
+
+**Mô tả:** Chuyển CLI loop sang `io::Result`, kiểm tra số byte đọc và thoát sạch trên EOF.
 
 **Acceptance criteria:**
 
-- Child khong giu supplementary groups cua root.
-- GID duoc set truoc UID.
-- `XDG_RUNTIME_DIR`, `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` duoc lay tu nguon tin cay va validate.
-- Missing session identity tra failure thay vi fallback chay root.
-- Co test kiem tra command preparation; privileged behavior co integration test rieng.
+- `printf '' | vietc-cli` thoát sạch, không loop và không panic.
+- Broken stdout pipe không tạo backtrace.
+- Luồng interactive và lệnh `quit` giữ nguyên.
+- Không nuốt lỗi I/O bất thường; lỗi được báo ngắn gọn và exit code khác 0 khi phù hợp.
 
 **Verification:**
 
 ```bash
-cargo test -p vietc-protocol privilege
-cargo test -p vietc-daemon
+cargo test -p vietc-cli
+printf '' | cargo run -q -p vietc-cli
+printf 'quit\n' | cargo run -q -p vietc-cli
 ```
 
-**Files du kien:**
+**Dependencies:** Không.
 
-- `protocol/src/uinput_monitor.rs`
-- Co the them `protocol/src/user_command.rs`
-- Test module cua `vietc-protocol`
+**Files dự kiến:**
 
-**Scope:** Medium
+- `cli/src/main.rs`
+- CLI integration test nếu crate chưa có
 
-### Task 12: Quan ly restorer thread co ownership va join
+**Scope:** Small.
 
-**Mo ta:** Luu `JoinHandle`, gui shutdown, wake condvar va join trong `Drop`. External clipboard I/O chay ngoai mutex voi state reconciliation sau I/O.
+## 10. Phase 5: Runtime matrix và release gate
 
-**Acceptance criteria:**
+### Task 9: Chạy verification matrix
 
-- Drop doi restorer ket thuc.
-- Khong restore clipboard sau khi Drop hoan tat.
-- Khong giu mutex trong luc cho child process.
-- Khoi tao injector moi khong race voi restorer cu.
-- Test dung fake clipboard backend chung minh shutdown deterministic.
-
-**Verification:**
-
-```bash
-cargo test -p vietc-protocol restorer
-```
-
-**Files du kien:**
-
-- `protocol/src/uinput_monitor.rs`
-- Test module cua `vietc-protocol`
-
-**Scope:** Medium
-
-## Checkpoint 3
-
-```bash
-cargo test --workspace --all-targets
-cargo check --workspace --all-targets --all-features
-```
-
-Dieu kien qua checkpoint:
-
-- Khong con detached background worker.
-- Khong con helper startup co the block vo han.
-- Desktop child process duoc drop privilege day du.
-
-## 9. Phase 6: Runtime proof va quality gate
-
-### Task 13: Them integration harness cho X11 va Wayland
-
-**Mo ta:** Xay test harness co the chay trong VM/session that, tap trung vao observable behavior thay vi implementation detail.
-
-**Scenario bat buoc:**
-
-1. Wayland: `wtype` thanh cong.
-2. Wayland: `wtype` fail, clipboard fallback thanh cong.
-3. Wayland: ca hai fail, result la failure va khong silent data loss.
-4. Chromium Wayland: Shift-prefix khong de stuck modifier.
-5. Chromium Wayland: user dang giu Shift trong luc inject.
-6. X11: supported SelectionRequest thanh cong.
-7. X11: khong co SelectionRequest thi timeout va failure.
-8. X11/Wayland: clipboard cu duoc bao toan.
-9. Clipboard thay doi boi user trong luc debounce khong bi ghi de.
-10. XRecord helper hang, exit som va partial pipe frames.
-11. Repeated Vietnamese replacements khong duplicate hoac drop ky tu.
-12. Shutdown va restart daemon khong de child/thread song sot.
-
-**Acceptance criteria:**
-
-- Moi scenario co pass/fail assertion ro rang.
-- Test timeout bi gioi han, khong the hang CI vo han.
-- Runtime artifact ghi ro display server, compositor, tool versions va failure logs.
-- Test can `/dev/uinput` duoc danh dau de chay trong privileged integration job, khong gia vo la unit test.
-
-**Verification:**
-
-```bash
-cargo test --workspace --all-targets
-cargo test -p vietc-daemon --test daemon_suite -- --test-threads=1
-```
-
-Manual matrix toi thieu:
-
-- X11.
-- GNOME Wayland.
-- KDE Wayland.
-- Chromium/Electron app.
-- GTK app.
-- Qt app.
-- Terminal.
-
-**Files du kien:**
-
-- `daemon/tests/daemon_suite.rs`
-- `daemon/tests/common/`
-- `protocol` test fixtures
-- `scripts/setup-test-vm.sh`
-- `docs/testing-dictionary.md`
-
-**Scope:** Medium, nen tach thanh nhieu commit theo display backend
-
-### Task 14: Don Clippy va bat CI quality gate
-
-**Mo ta:** Sau khi correctness fixes on dinh, xu ly tat ca warning Clippy con lai va bat quality gate. Khong tron mechanical cleanup vao cac commit behavior truoc do.
-
-**Acceptance criteria:**
-
-- Workspace test pass.
-- Workspace Clippy voi `-D warnings` pass.
-- Format check pass.
-- CI chay cac gate nay tren moi PR.
-- Runtime integration tests nhay cam moi truong nam o job rieng va co timeout.
-- Khong `allow` lint chi de che unsafe/problematic code neu co cach sua ro rang.
-
-**Verification:**
+**Automated gate:**
 
 ```bash
 cargo fmt --all -- --check
 cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo audit
 ```
 
-**Files du kien:**
+**Runtime matrix bắt buộc:**
 
-- Cac file Rust dang co lint warning
-- `.github/workflows/` neu da co CI
-- Tai lieu contributor neu can
+| Scenario | Kết quả yêu cầu |
+|---|---|
+| Rootless X11/XWayland | Gõ và replacement như baseline |
+| Wayland fallback uinputd | ASCII, Unicode và replacement pass |
+| Fresh install | Client hợp lệ kết nối ngay |
+| Upgrade từ bản socket `0666` | Socket cũ bị loại bỏ an toàn; client mới kết nối |
+| Service restart | Không stale socket, không mất quyền |
+| Client UID khác | Bị từ chối, không phát input |
+| Hai daemon đồng thời | Chỉ một instance chạy |
+| CLI stdin EOF | Thoát sạch |
+| CLI broken pipe | Không panic |
+| Shutdown/restart lặp lại | Không leak child, thread, socket hoặc lock |
 
-**Scope:** Medium
+## 11. Rollout an toàn
 
-## 10. Chien luoc commit
+1. Phát hành bản thử nghiệm cho fallback uinputd trước, không đổi rootless path.
+2. Ghi nhận lỗi authorization theo UID/PID nhưng tuyệt đối không log text input.
+3. Chuẩn bị rollback package giữ binary cũ nhưng không khôi phục socket `0666`; nếu cần rollback, service phải dừng thay vì mở lại lỗ hổng.
+4. Chỉ phát hành stable khi fresh install và upgrade đều pass trên ít nhất một máy X11/XWayland và một máy Wayland fallback.
+5. Không gộp refactor các file trên 1.000 dòng vào release bảo mật này.
 
-Moi task nen la mot commit doc lap:
+## 12. Rủi ro và giảm thiểu
 
-1. `test: cover injection failure propagation`
-2. `fix: propagate Wayland replacement failures`
-3. `fix: serialize and validate uinput writes`
-4. `fix: report X11 paste failures`
-5. `fix: preserve clipboard per injection burst`
-6. `fix: preserve X11 clipboard ownership`
-7. `fix: validate dynamically loaded X11 symbols`
-8. `fix: confine X11 injection to one thread`
-9. `fix: retain partial XRecord pipe frames`
-10. `fix: bound XRecord helper startup`
-11. `fix: fully drop privileges for desktop commands`
-12. `fix: join clipboard restorer on shutdown`
-13. `test: add display backend integration coverage`
-14. `ci: enforce workspace quality gates`
+| Rủi ro | Mức | Giảm thiểu |
+|---|---|---|
+| Xác định sai UID làm client hợp lệ bị từ chối | Cao | Installer truyền UID rõ ràng; test fresh install/upgrade; fail rõ thay vì fallback |
+| Đổi socket path làm client tìm sai vị trí | Cao | Một hàm canonical tạo path dùng chung client/server; migration test |
+| Permission chặt làm mất chức năng sau upgrade | Cao | Peer-auth trước, permission sau; checkpoint runtime bắt buộc |
+| Xóa nhầm file tại socket path | Cao | `symlink_metadata`, chỉ unlink Unix socket trong runtime dir được quản lý |
+| Lock guard bị drop quá sớm | Cao | Trả guard và giữ trong biến sống bằng vòng đời daemon; process-level test |
+| Test uinput cần quyền root gây flaky CI | Trung bình | Unit test server bằng socket thật và fake dispatcher; runtime test trong VM/job riêng |
+| Thay đổi installer ảnh hưởng rootless mode | Trung bình | Branch logic theo mode; smoke test rootless không khởi động uinputd |
+| Refactor lớn che giấu regression | Trung bình | Không refactor ngoài vùng sửa; mỗi task một commit |
 
-Khong commit generated artifacts trong `target/`.
+## 13. Definition of Done
 
-## 11. Rui ro va mitigation
-
-### Rui ro: Thay doi `InjectResult` lan sang nhieu caller
-
-Mitigation: Them test contract truoc, compile tung package, giu API migration trong mot task rieng.
-
-### Rui ro: Clipboard protocol khac nhau giua X11 va Wayland
-
-Mitigation: Dung chung state machine, nhung giu backend I/O tach biet. Khong ep hai protocol vao mot implementation gia lap.
-
-### Rui ro: X11 owner-thread refactor anh huong latency
-
-Mitigation: Dung bounded channel, benchmark end-to-end key replacement, khong toi uu truoc khi co so lieu.
-
-### Rui ro: Runtime test flaky do compositor timing
-
-Mitigation: Cho event-based readiness, deadline ro rang va log artifact; tranh sleep co dinh neu co the quan sat state.
-
-### Rui ro: Shift-prefix phu thuoc phien ban `wtype`
-
-Mitigation: Ghi nhan version, test capability luc startup va co strategy fallback ro rang.
-
-### Rui ro: Privileged tests khong phu hop job CI thuong
-
-Mitigation: Tach unit tests fake backend va privileged VM integration job. Ca hai deu bat buoc truoc release.
-
-## 12. Definition of done
-
-Release chi duoc mo khoa khi:
-
-- Tat ca Critical va High findings da duoc sua hoac co tai lieu chap nhan trade-off ro rang.
-- Khong con silent success sau failed injection.
-- Khong con unchecked FFI symbol.
-- Khong con unsound `Sync`.
-- Clipboard preservation pass tren X11 va Wayland.
-- Partial pipe va process timeout tests pass.
-- Workspace tests, format va Clippy pass.
-- Runtime matrix pass tren it nhat mot X11 va hai Wayland compositor, bao gom Chromium/Electron.
-- Khong co regression ve Vietnamese composition, duplicate key, missing key hoac stuck modifier.
+- Không còn socket uinput world-writable.
+- Mỗi connection được xác thực fail-closed bằng peer credentials.
+- Không còn truyền `String::as_ptr()` vào libc path API.
+- Không unlink/reopen single-instance lock khi kernel báo contention.
+- CLI không panic khi EOF hoặc broken pipe.
+- Tất cả automated gate pass.
+- Tất cả runtime matrix bắt buộc pass.
+- Fresh install, upgrade, restart và uninstall được kiểm thử.
+- Mỗi thay đổi có regression test và commit riêng.
