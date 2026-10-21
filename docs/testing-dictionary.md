@@ -69,6 +69,40 @@ cargo test -p vietc-daemon --test daemon_suite runtime:: -- --test-threads=1
 
 Do not launch real browsers through this workflow unless the explicit privileged runtime fixture and all prerequisites are available.
 
+## Cross-target composition invalidation
+
+### RT-P-FOCUS-001: Fast Edge to Telegram switch
+
+| Field | Value |
+|-------|-------|
+| SCENARIO | Type `con hoor` in Edge without Space, switch to Telegram after 100 ms, then type `xin chaof` |
+| SETUP | COSMIC Wayland, VietC Telex enabled, Edge and Telegram text fields empty, virtual keyboard grabbed before daemon startup |
+| INPUT | 20 repetitions using the Phase 6 uinput matrix fixture |
+| EXPECTED | Telegram contains only `xin chào` or equivalent clean fixture output; no text from Edge is replayed |
+| CHECKS | 20/20 pass; no `hoorxin chào`; no stale transaction; no injection failure; core delta 0; daemon active/running with `NRestarts=0` |
+
+### RT-P-FOCUS-002: Unknown-focus TTL fallback
+
+| Field | Value |
+|-------|-------|
+| SCENARIO | Repeat the Edge to Telegram scenario with a 900 ms pre-switch delay |
+| SETUP | Same as RT-P-FOCUS-001; `FOCUS_UNKNOWN_COMPOSITION_TTL=750 ms` |
+| INPUT | 20 repetitions using the Phase 6 uinput matrix fixture |
+| EXPECTED | Old composition expires before input reaches the new target |
+| CHECKS | 20/20 pass; at least one TTL reset observed; no stale transaction; no injection failure; core delta 0 |
+
+### RT-D-FOCUS-001: Revision reset synchronization
+
+| Field | Value |
+|-------|-------|
+| SCENARIO | Target A advances engine and daemon visible revisions, then focus changes before Target B applies a replacement |
+| SETUP | Engine and daemon revisions are nonzero and composition state contains replay data |
+| INPUT | Full composition reset followed by `chaof` in Target B |
+| EXPECTED | Engine-visible and daemon-visible revisions both restart at 0 |
+| CHECKS | First Target B replacement has `expected_visible_revision=0`; replay store and screen output are empty |
+
+Runtime artifacts for these scenarios are stored under `target/runtime-artifacts/phase6/`. Clipboard reads must wait for ownership propagation before asserting content; a stale clipboard value is a harness failure, not a composition failure.
+
 ## Test Suites
 
 | Suite | Prefix | Requires | Purpose |

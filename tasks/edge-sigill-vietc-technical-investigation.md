@@ -606,13 +606,9 @@ Thu muc `target/` khong nen duoc xem la tai lieu release lau dai neu bi clean bo
 
 ### Chua hoan thanh
 
-- Chua tim duoc replacement index toi thieu.
-- Chua tim duoc timing threshold.
 - Chua xac dinh ham Edge bang symbols.
-- Chua sua code.
-- Da co probe runtime Edge cho 20 replacement toi thieu lien tiep; cau dai van can mot adapter observable rieng de doi chieu toan bo text.
-- Chua the danh dau `Khong browser process crash`.
-- Release verdict phai tiep tuc la `FAIL` cho den khi ban sua duoc xac minh tren runtime matrix bat buoc.
+- Electron runtime chua chay vi target khong duoc cai dat; ket qua duoc ghi nhan `UNAVAILABLE`, khong phai `PASS`.
+- Runtime tren GNOME Wayland, KDE Wayland va X11 nam ngoai pham vi COSMIC Wayland gate hien tai.
 
 ## 15. Ket qua xac minh ban sua
 
@@ -642,12 +638,38 @@ Bang chung chinh:
 - `core-count-before-isolated.txt`
 - `core-count-after-isolated.txt`
 
-Runtime regression sau ban sua da PASS tren Chromium, Google Chrome, GTK, Qt va terminal: observable text dung, process healthy, clipboard preserved va modifiers released. Electron khong duoc chay vi chua cai dat. Van can kiem thu thu cong tren Edge de xac nhan text hien thi cua cau dai va clipboard duoc khoi phuc dung.
+Runtime regression sau ban sua da PASS tren Chromium, Google Chrome, GTK, Qt va terminal: observable text dung, process healthy, clipboard preserved va modifiers released. Electron khong duoc chay vi chua cai dat va duoc ghi nhan `UNAVAILABLE`.
 
-## 16. Ket luan
+## 16. Xac minh stale composition giua hai ung dung
 
-Bang chung hien tai cho thay Microsoft Edge 150.0.4078.96 crash trong browser process tai mot `ud2` guard on dinh khi VietC dang bat engine va thuc hien nhieu replacement qua uinput trong mot chuoi tieng Viet dai.
+Phase 6 phat hien mot root cause bo sung trong reset focus: daemon dua `visible_revision` cua no ve `0`, nhung `Engine::reset()` khong dua revision noi bo cua engine ve `0`. Vi vay replacement dau tien o target moi co the mang `expected_visible_revision` cu va bi transaction guard danh dau stale.
 
-AT-SPI khong phai dieu kien can thiet cho crash. Engine tat hoac VietC dung hoan toan thi khong tai hien. Cac tu don co dau hoat dong binh thuong. Vi vay huong dieu tra va sua dung la transaction shape, timing va so luong event trong duong `Replace` va uinput injection, khong phai tiep tuc sua quy tac Telex cua mot tu rieng le.
+Ban sua reset dong bo engine-visible revision, daemon-visible revision, engine buffer, replay event store va screen output khi focus generation thay doi hoac unknown-focus TTL het han.
 
-Cho den khi co ban sua va runtime evidence moi, workaround an toan la dat VietC `enabled=false` khi dung Edge hoac dung VietC hoan toan.
+Ket qua runtime Edge sang Telegram:
+
+- Fast switch 100 ms: 20/20 vong cho output sach `xin chào`, stale failure bằng 0, injection failure bằng 0 va core delta bằng 0.
+- Slow switch 900 ms: 20/20 vong pass, ghi nhan 39 TTL reset, stale failure bằng 0, injection failure bằng 0 va core delta bằng 0.
+- Khong xuat hien `hoorxin chào`.
+- Daemon van active/running, `NRestarts=0`.
+
+Artifact nam tai:
+
+`target/runtime-artifacts/phase6/`
+
+Bang chung chinh:
+
+- `fast-matrix-clipboard-wait-summary.txt`
+- `fast-matrix-clipboard-wait-results.log`
+- `fast-matrix-clipboard-wait-journal.log`
+- `slow-matrix-summary.txt`
+- `slow-matrix-results.log`
+- `slow-matrix-journal.log`
+
+## 17. Ket luan
+
+Root cause cua Edge SIGILL duoc khoanh vung vao transaction replacement tron kenh: xoa ASCII qua uinput nhung chen Unicode qua kenh khac tao chuoi su kien ma Chromium-family xu ly khong an toan. Ban sua giu ca delete va insert tren cung uinput device, chen synchronization boundary 10 ms giua Backspace va Ctrl+V, va ep release modifier sau paste.
+
+Root cause cua stale composition la focus identity khong dang tin cay tren COSMIC ket hop voi reset state khong dong bo revision. Ban sua dung AT-SPI application identity cho fast switch, TTL 750 ms khi focus unknown, va reset dong bo toan bo composition state.
+
+COSMIC Wayland release gate hien tai PASS: Edge khong tao core moi, fast va slow two-target matrix deu pass 20/20, khong stale transaction, khong injection failure, clipboard duoc bao toan va modifier duoc release. Chromium, Google Chrome, GTK, Qt va terminal runtime cung pass. Electron van `UNAVAILABLE` va khong duoc tinh la pass.

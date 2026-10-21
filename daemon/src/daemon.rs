@@ -479,6 +479,7 @@ impl Daemon {
 
     pub fn reset_composition_state(&mut self) {
         self.engine.reset();
+        self.engine.reset_visible_revision();
         self.replay_reset();
     }
 
@@ -586,6 +587,77 @@ mod tests {
     fn keymap_multiple_words_no_bleed() {
         assert_eq!(simulate("to6 tie6ng1 "), "tô tiếng ");
         assert_eq!(simulate("tie6ng1 to6 "), "tiếng tô ");
+    }
+
+    #[test]
+    fn focus_change_resets_engine_and_daemon_visible_revisions_together() {
+        let mut daemon = Daemon::new(
+            Config::default(),
+            PathBuf::from("/tmp/vietc_focus_revision_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.engine.set_enabled(true);
+        daemon.engine.set_method(InputMethod::Telex);
+
+        let mut last_expected_revision = None;
+        for ch in "hoor".chars() {
+            for command in daemon.process_key(ch) {
+                if let OutputCommand::Replace(replacement) = command {
+                    last_expected_revision = Some(replacement.expected_visible_revision);
+                }
+            }
+        }
+        let last_expected_revision =
+            last_expected_revision.expect("target A must produce a replacement");
+        daemon.visible_revision = last_expected_revision + 1;
+
+        daemon.reset_composition_state();
+
+        let mut replacement_after_focus_change = None;
+        for ch in "chaof".chars() {
+            for command in daemon.process_key(ch) {
+                if let OutputCommand::Replace(replacement) = command {
+                    replacement_after_focus_change = Some(replacement);
+                }
+            }
+        }
+
+        let replacement = replacement_after_focus_change.expect("expected tone replacement");
+        assert_eq!(replacement.expected_visible_revision, 0);
+        assert_eq!(daemon.visible_revision, 0);
+    }
+
+    #[test]
+    fn two_target_focus_change_does_not_replay_stale_composition() {
+        let mut daemon = Daemon::new(
+            Config::default(),
+            PathBuf::from("/tmp/vietc_two_target_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.engine.set_enabled(true);
+
+        for ch in "hoor".chars() {
+            daemon.process_key(ch);
+        }
+        assert_eq!(daemon.engine.buffer(), "hoor");
+
+        daemon.event_store.push(InputEvent::KeyTyped('r'));
+        daemon.screen_output = "hổ".to_string();
+        daemon.visible_revision = 4;
+        daemon.reset_composition_state();
+
+        let mut target_b = String::new();
+        for ch in "xin chao".chars() {
+            let commands = daemon.process_key(ch);
+            apply(&mut target_b, &commands);
+        }
+
+        assert!(!target_b.contains("hoor"));
+        assert!(!target_b.contains("hổ"));
+        assert_eq!(daemon.engine.buffer(), "chao");
+        assert!(daemon.event_store.is_empty());
+        assert!(daemon.screen_output.is_empty());
+        assert_eq!(daemon.visible_revision, 0);
     }
 
     #[test]

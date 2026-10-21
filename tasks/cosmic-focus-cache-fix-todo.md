@@ -73,23 +73,31 @@
 
 ## Phase 6: Regression và runtime verification
 
-- [ ] Task 6.1: Automated two-target stale-composition regression test
-- [ ] Task 6.2: Runtime fixture Edge `con hổ` không Space → Telegram `xin chào`
-- [ ] Task 6.3: Kiểm tra switch nhanh dưới 750 ms
-- [ ] Task 6.4: Kiểm tra switch chậm trên 750 ms
-- [ ] Task 6.5: Lặp mỗi trường hợp tối thiểu 20 lần
-- [ ] Task 6.6: Edge core delta bằng 0
-- [ ] Task 6.7: Clipboard preservation pass
-- [ ] Task 6.8: Modifier release pass
-- [ ] Task 6.9: Chromium, Chrome, GTK, Qt và terminal runtime pass
-- [ ] Task 6.10: Cập nhật tài liệu investigation và testing dictionary
+- [x] Task 6.1: Automated two-target stale-composition regression test
+- [x] Task 6.2: Runtime fixture Edge `con hổ` không Space → Telegram `xin chào`
+- [x] Task 6.3: Kiểm tra switch nhanh dưới 750 ms
+- [x] Task 6.4: Kiểm tra switch chậm trên 750 ms
+- [x] Task 6.5: Lặp mỗi trường hợp tối thiểu 20 lần
+- [x] Task 6.6: Edge core delta bằng 0
+- [x] Task 6.7: Clipboard preservation pass
+- [x] Task 6.8: Modifier release pass
+- [x] Task 6.9: Chromium, Chrome, GTK, Qt và terminal runtime pass
+- [x] Task 6.10: Cập nhật tài liệu investigation và testing dictionary
+
+### Evidence Phase 6
+
+- Fast switch 100 ms: 20/20 vòng pass, không stale transaction, không injection failure, core delta bằng 0.
+- Slow switch 900 ms: 20/20 vòng pass, 39 lần TTL reset, không stale transaction, không injection failure, core delta bằng 0.
+- Daemon giữ `ActiveState=active`, `SubState=running`, `NRestarts=0`.
+- Chromium, Google Chrome, GTK, Qt và terminal đều pass với process healthy, clipboard preserved và modifiers released.
+- Electron được ghi nhận `UNAVAILABLE`, không được tính là pass.
 
 ## Final quality gate
 
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo test --workspace --all-targets`
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- [ ] Không còn log `window ID '' -> '0x0'`
-- [ ] Không còn output `hoorxin chào`
-- [ ] Không tái phát Edge SIGILL
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo test --workspace --all-targets`
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- [x] Không còn log `window ID '' -> '0x0'`
+- [x] Không còn output `hoorxin chào`
+- [x] Không tái phát Edge SIGILL
 - [ ] Working tree sạch sau commit

@@ -275,6 +275,10 @@ impl Engine {
         self.boundary = BoundaryState::Committed;
     }
 
+    pub fn reset_visible_revision(&mut self) {
+        self.visible_revision = 0;
+    }
+
     pub fn invalidate_composition(&mut self) {
         self.bamboo.reset();
         self.raw_buffer.clear();
