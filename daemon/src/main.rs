@@ -13,6 +13,7 @@ mod env;
 mod evdev_loop;
 mod event;
 mod focus;
+mod focus_tracker;
 mod im_plan;
 mod inject;
 mod log;
@@ -195,6 +196,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     boost_thread_priority();
 
     let shared_focus = Arc::new(Mutex::new(focus::FocusSnapshot::default()));
+    focus_tracker::spawn_atspi_focus_watcher(shared_focus.clone());
     let config_changed = Arc::new(AtomicBool::new(false));
     let status_changed = Arc::new(AtomicBool::new(false));
 

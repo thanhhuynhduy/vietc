@@ -58,18 +58,18 @@
 
 ## Phase 5: COSMIC fast-switch signal
 
-- [ ] Task 5.1: Thêm AT-SPI focus watcher event-driven
-- [ ] Task 5.2: Chỉ theo dõi focus/application identity tối thiểu
-- [ ] Task 5.3: Không DFS Chromium accessibility tree
-- [ ] Task 5.4: Deduplicate event storm
-- [ ] Task 5.5: Watcher failure/unavailable degrade về unknown-focus TTL
-- [ ] Task 5.6: Không log text field hoặc nội dung người dùng
+- [x] Task 5.1: Thêm AT-SPI focus watcher event-driven
+- [x] Task 5.2: Chỉ theo dõi focus/application identity tối thiểu
+- [x] Task 5.3: Không DFS Chromium accessibility tree
+- [x] Task 5.4: Deduplicate event storm
+- [x] Task 5.5: Watcher failure/unavailable degrade về unknown-focus TTL
+- [x] Task 5.6: Không log text field hoặc nội dung người dùng
 
 ### Checkpoint 5
 
-- [ ] Edge → Telegram dưới 750 ms tạo generation mới khi AT-SPI khả dụng
-- [ ] Tắt AT-SPI không làm daemon crash
-- [ ] Unknown-focus fallback vẫn hoạt động
+- [x] Edge → Telegram dưới 750 ms tạo generation mới khi AT-SPI khả dụng
+- [x] Tắt AT-SPI không làm daemon crash
+- [x] Unknown-focus fallback vẫn hoạt động
 
 ## Phase 6: Regression và runtime verification
 

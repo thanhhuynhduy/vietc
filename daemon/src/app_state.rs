@@ -20,14 +20,14 @@ fn get_active_window_x11_dlopen() -> Option<String> {
         type FnDefaultRoot = unsafe extern "C" fn(*mut libc::c_void) -> u64;
         type FnInternAtom =
             unsafe extern "C" fn(*mut libc::c_void, *const libc::c_char, libc::c_int) -> u64;
-        type FnGetProperty = unsafe extern "C" fn(
+        type FnGetWindowProperty = unsafe extern "C" fn(
             *mut libc::c_void,
             u64,
             u64,
-            u64,
-            u64,
-            u64,
+            libc::c_long,
+            libc::c_long,
             libc::c_int,
+            u64,
             *mut u64,
             *mut libc::c_int,
             *mut u64,
@@ -49,7 +49,7 @@ fn get_active_window_x11_dlopen() -> Option<String> {
         let xopen: FnOpenDisplay = dlsym_fn!(lib, "XOpenDisplay");
         let xroot: FnDefaultRoot = dlsym_fn!(lib, "XDefaultRootWindow");
         let xatom: FnInternAtom = dlsym_fn!(lib, "XInternAtom");
-        let xgetprop: FnGetProperty = dlsym_fn!(lib, "XGetProperty");
+        let xgetprop: FnGetWindowProperty = dlsym_fn!(lib, "XGetWindowProperty");
         let xfree: FnFree = dlsym_fn!(lib, "XFree");
         let xclosedpy: FnCloseDisplay = dlsym_fn!(lib, "XCloseDisplay");
 
@@ -74,10 +74,10 @@ fn get_active_window_x11_dlopen() -> Option<String> {
             dpy,
             root,
             net_active,
-            xa_window,
             0, // offset
             1, // length
             0, // delete
+            xa_window,
             &mut actual_type,
             &mut actual_format,
             &mut nitems,
