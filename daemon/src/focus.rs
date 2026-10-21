@@ -1,4 +1,7 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+pub const FOCUS_UNKNOWN_COMPOSITION_TTL: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusReliability {
@@ -49,9 +52,23 @@ impl FocusSnapshot {
 
 pub type SharedFocusSnapshot = Arc<Mutex<FocusSnapshot>>;
 
+pub fn should_expire_unknown_composition(
+    reliability: FocusReliability,
+    idle: Duration,
+    has_composition: bool,
+) -> bool {
+    reliability == FocusReliability::Unavailable
+        && has_composition
+        && idle >= FOCUS_UNKNOWN_COMPOSITION_TTL
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FocusReliability, FocusSnapshot};
+    use super::{
+        should_expire_unknown_composition, FocusReliability, FocusSnapshot,
+        FOCUS_UNKNOWN_COMPOSITION_TTL,
+    };
+    use std::time::Duration;
 
     #[test]
     fn unknown_focus_does_not_create_identity_or_generation() {
@@ -91,6 +108,39 @@ mod tests {
 
         assert_eq!(snapshot.generation, 1);
         assert_eq!(snapshot.class.as_deref(), Some("microsoft-edge"));
+    }
+
+    #[test]
+    fn unknown_focus_expires_pending_composition_at_ttl() {
+        assert!(should_expire_unknown_composition(
+            FocusReliability::Unavailable,
+            FOCUS_UNKNOWN_COMPOSITION_TTL,
+            true,
+        ));
+        assert!(should_expire_unknown_composition(
+            FocusReliability::Unavailable,
+            Duration::from_millis(900),
+            true,
+        ));
+    }
+
+    #[test]
+    fn continuous_typing_below_ttl_preserves_composition() {
+        assert!(!should_expire_unknown_composition(
+            FocusReliability::Unavailable,
+            Duration::from_millis(749),
+            true,
+        ));
+        assert!(!should_expire_unknown_composition(
+            FocusReliability::Reliable,
+            Duration::from_secs(5),
+            true,
+        ));
+        assert!(!should_expire_unknown_composition(
+            FocusReliability::Unavailable,
+            Duration::from_secs(5),
+            false,
+        ));
     }
 
     #[test]

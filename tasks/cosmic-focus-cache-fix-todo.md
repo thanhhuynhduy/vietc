@@ -44,17 +44,17 @@
 
 ## Phase 4: Unknown-focus fallback
 
-- [ ] Task 4.1: Thêm named constant `FOCUS_UNKNOWN_COMPOSITION_TTL = 750 ms`
-- [ ] Task 4.2: Track thời điểm physical key cuối
-- [ ] Task 4.3: Reset composition trước phím mới nếu focus unknown và idle vượt TTL
-- [ ] Task 4.4: Viết fake-clock test cho buffer `hoor` hết hạn
-- [ ] Task 4.5: Viết test gõ liên tục dưới TTL không bị reset
+- [x] Task 4.1: Thêm named constant `FOCUS_UNKNOWN_COMPOSITION_TTL = 750 ms`
+- [x] Task 4.2: Track thời điểm physical key cuối
+- [x] Task 4.3: Reset composition trước phím mới nếu focus unknown và idle vượt TTL
+- [x] Task 4.4: Viết fake-clock test cho buffer `hoor` hết hạn
+- [x] Task 4.5: Viết test gõ liên tục dưới TTL không bị reset
 
 ### Checkpoint 4
 
-- [ ] Slow app switch không thể phát lại stale buffer
-- [ ] Continuous typing trong cùng từ không regression
-- [ ] Tests không dùng sleep thật
+- [x] Slow app switch không thể phát lại stale buffer
+- [x] Continuous typing trong cùng từ không regression
+- [x] Tests không dùng sleep thật
 
 ## Phase 5: COSMIC fast-switch signal
 

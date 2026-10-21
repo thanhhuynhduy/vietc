@@ -12,7 +12,7 @@ use crate::event::{
     is_caps_lock_on, is_flush_char, is_modifier_held_shift, is_modifier_pressed,
     is_toggle_combination_state, is_toggle_key, is_vn_control_key, key_to_char,
 };
-use crate::focus::SharedFocusSnapshot;
+use crate::focus::{should_expire_unknown_composition, SharedFocusSnapshot};
 use crate::inject::{create_injector, execute_commands};
 use crate::log::log_info;
 use crate::signal::SIGNAL_EXIT;
@@ -343,6 +343,18 @@ pub fn run_with_evdev(
                             let focus = shared_focus.lock().unwrap().clone();
                             let active_window_class = focus.class.unwrap_or_default();
                             let focus_changed = focus.generation != last_focus_generation;
+
+                            if should_expire_unknown_composition(
+                                focus.reliability,
+                                gap,
+                                daemon.has_composition_state(),
+                            ) {
+                                log_info(&format!(
+                                    "[vietc] Expiring composition after unknown-focus idle gap {:?}",
+                                    gap
+                                ));
+                                daemon.reset_composition_state();
+                            }
 
                             if focus_changed {
                                 log_info(&format!(

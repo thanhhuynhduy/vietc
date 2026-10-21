@@ -482,6 +482,13 @@ impl Daemon {
         self.replay_reset();
     }
 
+    pub fn has_composition_state(&self) -> bool {
+        !self.engine.buffer().is_empty()
+            || !self.event_store.is_empty()
+            || !self.screen_output.is_empty()
+            || self.visible_revision != 0
+    }
+
     pub fn check_app_change_with(&mut self, new_class: String) {
         if let Some(should_enable) = self.app_state.update_with_app(new_class) {
             self.engine.set_enabled(should_enable);
