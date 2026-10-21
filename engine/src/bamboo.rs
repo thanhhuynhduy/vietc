@@ -209,6 +209,10 @@ impl BambooEngine {
             {
                 return Some((idx, rule.pattern.clone(), rule.result.clone()));
             }
+
+            if is_vowel(ch) {
+                break;
+            }
         }
         None
     }

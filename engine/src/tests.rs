@@ -112,6 +112,13 @@ fn telex_reverts_mark_modifier_for_english_continuation() {
 }
 
 #[test]
+fn repeated_vowel_does_not_create_mark_across_another_vowel() {
+    let mut engine = Engine::new(InputMethod::Telex);
+
+    assert_eq!(get_display(&process_input(&mut engine, "readme")), "readme");
+}
+
+#[test]
 fn replay_keystrokes_reverts_tone_for_english_continuation() {
     let (output, did_flush) = Engine::replay_keystrokes(
         InputMethod::Telex,

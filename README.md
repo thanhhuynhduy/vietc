@@ -136,6 +136,10 @@ enabled = false                 # Ghi nhớ trạng thái theo từng ứng dụ
 
 ---
 
+## 📋 Nhật ký triển khai
+
+Toàn bộ audit, hardening, sửa lỗi clipboard, thay đổi Telex lặp phím, bằng chứng kiểm thử và hướng dẫn rollback được ghi tại [tasks/implementation-log.md](tasks/implementation-log.md).
+
 ## 🛠️ Build và cài đặt từ mã nguồn local
 
 Nếu bạn đã clone repository và đang chỉnh sửa mã nguồn local, hãy build và cài đặt trực tiếp từ thư mục dự án. Cách này bảo đảm máy sử dụng đúng phiên bản code bạn vừa sửa, thay vì tải script hoặc binary từ GitHub của tác giả.
