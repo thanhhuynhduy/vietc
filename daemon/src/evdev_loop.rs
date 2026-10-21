@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::daemon::Daemon;
 use crate::display;
@@ -12,13 +12,13 @@ use crate::event::{
     is_caps_lock_on, is_flush_char, is_modifier_held_shift, is_modifier_pressed,
     is_toggle_combination_state, is_toggle_key, is_vn_control_key, key_to_char,
 };
+use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
 use crate::log::log_info;
 use crate::signal::SIGNAL_EXIT;
 
 pub struct EvdevSharedState {
-    pub active_window: Arc<Mutex<String>>,
-    pub window_class: Arc<Mutex<String>>,
+    pub focus: SharedFocusSnapshot,
     pub config_changed: Arc<std::sync::atomic::AtomicBool>,
     pub status_changed: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -30,8 +30,7 @@ pub fn run_with_evdev(
     display: display::DisplayServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let EvdevSharedState {
-        active_window: shared_active_window,
-        window_class: shared_window_class,
+        focus: shared_focus,
         config_changed,
         status_changed,
     } = shared;
@@ -146,7 +145,12 @@ pub fn run_with_evdev(
         }
         if poll_ret == 0 {
             if daemon.config.app_state.enabled {
-                let class = shared_window_class.lock().unwrap().clone();
+                let class = shared_focus
+                    .lock()
+                    .unwrap()
+                    .class
+                    .clone()
+                    .unwrap_or_default();
                 if !class.is_empty() && class != last_window_class {
                     last_window_class = class.clone();
                     daemon.check_app_change_with(last_window_class.clone());
@@ -336,8 +340,9 @@ pub fn run_with_evdev(
                             let gap = last_key_time.elapsed();
                             last_key_time = std::time::Instant::now();
 
-                            let active_window_id = shared_active_window.lock().unwrap().clone();
-                            let active_window_class = shared_window_class.lock().unwrap().clone();
+                            let focus = shared_focus.lock().unwrap().clone();
+                            let active_window_id = focus.identity.unwrap_or_default();
+                            let active_window_class = focus.class.unwrap_or_default();
                             let mut new_window = None;
 
                             if !active_window_id.is_empty()
@@ -363,7 +368,12 @@ pub fn run_with_evdev(
                                 daemon.replay_reset();
 
                                 if daemon.config.app_state.enabled {
-                                    let class = shared_window_class.lock().unwrap().clone();
+                                    let class = shared_focus
+                                        .lock()
+                                        .unwrap()
+                                        .class
+                                        .clone()
+                                        .unwrap_or_default();
                                     let class = if class.is_empty() {
                                         crate::app_state::get_focused_window_class()
                                             .unwrap_or_default()
@@ -384,7 +394,12 @@ pub fn run_with_evdev(
                                     }
                                 }
                             } else if daemon.config.app_state.enabled {
-                                let class = shared_window_class.lock().unwrap().clone();
+                                let class = shared_focus
+                                    .lock()
+                                    .unwrap()
+                                    .class
+                                    .clone()
+                                    .unwrap_or_default();
                                 if !class.is_empty() {
                                     injector.set_active_window(&class);
                                 }

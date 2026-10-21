@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::daemon::Daemon;
 use crate::display;
+use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
 use crate::log::log_info;
 use crate::signal::SIGNAL_EXIT;
@@ -11,8 +12,7 @@ use crate::signal::SIGNAL_EXIT;
 #[cfg(feature = "x11")]
 pub fn run_with_x11_keymap(
     daemon: &mut Daemon,
-    shared_active_window: Arc<Mutex<String>>,
-    shared_window_class: Arc<Mutex<String>>,
+    shared_focus: SharedFocusSnapshot,
     config_changed: Arc<std::sync::atomic::AtomicBool>,
     status_changed: Arc<std::sync::atomic::AtomicBool>,
     _engine_enabled: Arc<std::sync::atomic::AtomicBool>,
@@ -49,7 +49,12 @@ pub fn run_with_x11_keymap(
         }
 
         {
-            let active_window = shared_active_window.lock().unwrap().clone();
+            let active_window = shared_focus
+                .lock()
+                .unwrap()
+                .identity
+                .clone()
+                .unwrap_or_default();
             if active_window != last_active_window {
                 last_active_window = active_window.clone();
                 daemon.engine.reset();
@@ -57,7 +62,12 @@ pub fn run_with_x11_keymap(
             }
         }
         if daemon.config.app_state.enabled {
-            let class = shared_window_class.lock().unwrap().clone();
+            let class = shared_focus
+                .lock()
+                .unwrap()
+                .class
+                .clone()
+                .unwrap_or_default();
             if !class.is_empty() && class != last_window_class {
                 last_window_class = class.clone();
                 injector.set_active_window(&class);

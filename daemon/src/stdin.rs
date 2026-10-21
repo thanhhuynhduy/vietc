@@ -1,18 +1,18 @@
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 use crate::daemon::Daemon;
 use crate::device::open_keyboard_devices;
 use crate::display;
+use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
 use crate::log::log_info;
 use crate::signal::SIGNAL_EXIT;
 
 pub fn run_stdin_mode(
     daemon: &mut Daemon,
-    shared_active_window: Arc<Mutex<String>>,
-    shared_window_class: Arc<Mutex<String>>,
+    shared_focus: SharedFocusSnapshot,
     config_changed: Arc<std::sync::atomic::AtomicBool>,
     status_changed: Arc<std::sync::atomic::AtomicBool>,
     _engine_enabled: Arc<std::sync::atomic::AtomicBool>,
@@ -52,8 +52,7 @@ pub fn run_stdin_mode(
                     &mut devices,
                     daemon,
                     crate::evdev_loop::EvdevSharedState {
-                        active_window: shared_active_window,
-                        window_class: shared_window_class,
+                        focus: shared_focus,
                         config_changed,
                         status_changed,
                     },
@@ -78,7 +77,12 @@ pub fn run_stdin_mode(
         }
 
         {
-            let active_window = shared_active_window.lock().unwrap().clone();
+            let active_window = shared_focus
+                .lock()
+                .unwrap()
+                .identity
+                .clone()
+                .unwrap_or_default();
             if active_window != last_active_window {
                 log_info(&format!(
                     "[vietc] Window changed: '{}' -> '{}'",
@@ -91,7 +95,12 @@ pub fn run_stdin_mode(
         }
 
         if daemon.config.app_state.enabled {
-            let active_window = shared_active_window.lock().unwrap().clone();
+            let active_window = shared_focus
+                .lock()
+                .unwrap()
+                .identity
+                .clone()
+                .unwrap_or_default();
             injector.set_active_window(&active_window);
             daemon.check_app_change_with(active_window);
         }

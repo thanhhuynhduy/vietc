@@ -12,6 +12,7 @@ mod display;
 mod env;
 mod evdev_loop;
 mod event;
+mod focus;
 mod im_plan;
 mod inject;
 mod log;
@@ -193,14 +194,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     boost_thread_priority();
 
-    let shared_active_window = Arc::new(Mutex::new(String::new()));
-    let shared_window_class = Arc::new(Mutex::new(String::new()));
+    let shared_focus = Arc::new(Mutex::new(focus::FocusSnapshot::default()));
     let config_changed = Arc::new(AtomicBool::new(false));
     let status_changed = Arc::new(AtomicBool::new(false));
 
     {
-        let shared_active_window = shared_active_window.clone();
-        let shared_window_class = shared_window_class.clone();
+        let shared_focus = shared_focus.clone();
         let config_changed = config_changed.clone();
         let config_path = config_path.clone();
         let status_changed = status_changed.clone();
@@ -225,19 +224,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp/vietc-method"));
             let mut last_method = String::new();
             loop {
-                if let Some(id) = app_state::get_active_window_id() {
-                    let mut lock = shared_active_window.lock().unwrap();
-                    if *lock != id {
-                        log_info(&format!("[vietc] bg: window ID '{}' -> '{}'", *lock, id));
-                        *lock = id;
-                    }
+                let identity = app_state::get_active_window_id();
+                let class = app_state::get_focused_window_class();
+                let mut focus = shared_focus.lock().unwrap();
+                let previous_identity = focus.identity.clone();
+                let previous_generation = focus.generation;
+                focus.observe(identity, class);
+                if focus.generation != previous_generation {
+                    log_info(&format!(
+                        "[vietc] bg: focus {:?} -> {:?} generation={}",
+                        previous_identity, focus.identity, focus.generation
+                    ));
                 }
-                if let Some(class) = app_state::get_focused_window_class() {
-                    let mut lock = shared_window_class.lock().unwrap();
-                    if *lock != class {
-                        *lock = class;
-                    }
-                }
+                drop(focus);
 
                 if let Ok(content) = std::fs::read_to_string(&status_path) {
                     let is_vn = content.trim() == "vn";
@@ -284,8 +283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut devices,
                 &mut daemon,
                 EvdevSharedState {
-                    active_window: shared_active_window.clone(),
-                    window_class: shared_window_class.clone(),
+                    focus: shared_focus.clone(),
                     config_changed: config_changed.clone(),
                     status_changed: status_changed.clone(),
                 },
@@ -331,8 +329,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_info("[vietc] Trying X11 keymap-based capture (rootless via XWayland)");
         match x11_capture::run_with_x11_keymap(
             &mut daemon,
-            shared_active_window.clone(),
-            shared_window_class.clone(),
+            shared_focus.clone(),
             config_changed.clone(),
             status_changed.clone(),
             engine_enabled.clone(),
@@ -353,8 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log_info("[vietc] Running in stdin test mode");
     run_stdin_mode(
         &mut daemon,
-        shared_active_window,
-        shared_window_class,
+        shared_focus,
         config_changed,
         status_changed,
         engine_enabled,

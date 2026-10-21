@@ -15,17 +15,17 @@
 
 ## Phase 2: Focus generation
 
-- [ ] Task 2.1: Định nghĩa `FocusSnapshot`
-- [ ] Task 2.2: Thêm `identity`, `class`, `generation` và reliability
-- [ ] Task 2.3: Chỉ tăng generation khi có bằng chứng focus thay đổi
-- [ ] Task 2.4: Không tạo transition giả khi chỉ class metadata đổi
-- [ ] Task 2.5: Thay shared `active_window`/`window_class` bằng shared snapshot
+- [x] Task 2.1: Định nghĩa `FocusSnapshot`
+- [x] Task 2.2: Thêm `identity`, `class`, `generation` và reliability
+- [x] Task 2.3: Chỉ tăng generation khi có bằng chứng focus thay đổi
+- [x] Task 2.4: Không tạo transition giả khi chỉ class metadata đổi
+- [x] Task 2.5: Thay shared `active_window`/`window_class` bằng shared snapshot
 
 ### Checkpoint 2
 
-- [ ] Known identity change tăng generation đúng một lần
-- [ ] Unknown focus không tạo identity giả
-- [ ] Unit tests focus generation pass
+- [x] Known identity change tăng generation đúng một lần
+- [x] Unknown focus không tạo identity giả
+- [x] Unit tests focus generation pass
 
 ## Phase 3: Composition invalidation
 
