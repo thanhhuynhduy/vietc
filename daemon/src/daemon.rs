@@ -477,6 +477,11 @@ impl Daemon {
         self.visible_revision = 0;
     }
 
+    pub fn reset_composition_state(&mut self) {
+        self.engine.reset();
+        self.replay_reset();
+    }
+
     pub fn check_app_change_with(&mut self, new_class: String) {
         if let Some(should_enable) = self.app_state.update_with_app(new_class) {
             self.engine.set_enabled(should_enable);
@@ -574,5 +579,29 @@ mod tests {
     fn keymap_multiple_words_no_bleed() {
         assert_eq!(simulate("to6 tie6ng1 "), "tô tiếng ");
         assert_eq!(simulate("tie6ng1 to6 "), "tiếng tô ");
+    }
+
+    #[test]
+    fn focus_change_reset_clears_all_composition_state() {
+        let mut daemon = Daemon::new(
+            Config::default(),
+            PathBuf::from("/tmp/vietc_focus_reset_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.engine.set_enabled(true);
+        daemon.process_key('h');
+        daemon.process_key('o');
+        daemon.process_key('r');
+        daemon.process_key('r');
+        daemon.event_store.push(InputEvent::KeyTyped('x'));
+        daemon.screen_output = "stale".to_string();
+        daemon.visible_revision = 7;
+
+        daemon.reset_composition_state();
+
+        assert!(daemon.engine.buffer().is_empty());
+        assert!(daemon.event_store.is_empty());
+        assert!(daemon.screen_output.is_empty());
+        assert_eq!(daemon.visible_revision, 0);
     }
 }

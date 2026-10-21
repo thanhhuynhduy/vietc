@@ -99,7 +99,7 @@ pub fn run_with_evdev(
 
     let mut consumed_keys: HashSet<u16> = HashSet::new();
     let mut dedup = crate::key_dedup::DedupState::new();
-    let mut last_active_window = String::new();
+    let mut last_focus_generation = shared_focus.lock().unwrap().generation;
     let mut last_window_class = String::new();
     let mut password_check_counter: u32 = 0;
     let mut last_key_time = std::time::Instant::now();
@@ -341,31 +341,22 @@ pub fn run_with_evdev(
                             last_key_time = std::time::Instant::now();
 
                             let focus = shared_focus.lock().unwrap().clone();
-                            let active_window_id = focus.identity.unwrap_or_default();
                             let active_window_class = focus.class.unwrap_or_default();
-                            let mut new_window = None;
+                            let focus_changed = focus.generation != last_focus_generation;
 
-                            if !active_window_id.is_empty()
-                                && active_window_id != last_active_window
-                            {
-                                new_window = Some(active_window_id.clone());
-                            } else if !active_window_class.is_empty()
-                                && active_window_class != last_window_class
-                            {
-                                new_window = Some(active_window_class.clone());
-                            }
-
-                            if let Some(id) = new_window {
+                            if focus_changed {
                                 log_info(&format!(
-                                    "[vietc] Window changed: '{}' -> '{}' (gap={:?})",
-                                    last_active_window, id, gap
+                                    "[vietc] Focus generation changed: {} -> {} identity={:?} (gap={:?})",
+                                    last_focus_generation,
+                                    focus.generation,
+                                    focus.identity,
+                                    gap
                                 ));
-                                last_active_window = id.clone();
+                                last_focus_generation = focus.generation;
                                 if !active_window_class.is_empty() {
                                     last_window_class = active_window_class.clone();
                                 }
-                                daemon.engine.reset();
-                                daemon.replay_reset();
+                                daemon.reset_composition_state();
 
                                 if daemon.config.app_state.enabled {
                                     let class = shared_focus

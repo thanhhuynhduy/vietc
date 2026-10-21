@@ -29,18 +29,18 @@
 
 ## Phase 3: Composition invalidation
 
-- [ ] Task 3.1: Tạo helper reset toàn bộ composition state
-- [ ] Task 3.2: Helper reset engine buffer
-- [ ] Task 3.3: Helper clear replay event store và screen output
-- [ ] Task 3.4: Gọi helper khi focus generation thay đổi
-- [ ] Task 3.5: Reset focus-independent, không phụ thuộc `app_state.enabled`
-- [ ] Task 3.6: App policy evaluation vẫn chỉ chạy khi app-state bật
+- [x] Task 3.1: Tạo helper reset toàn bộ composition state
+- [x] Task 3.2: Helper reset engine buffer
+- [x] Task 3.3: Helper clear replay event store và screen output
+- [x] Task 3.4: Gọi helper khi focus generation thay đổi
+- [x] Task 3.5: Reset focus-independent, không phụ thuộc `app_state.enabled`
+- [x] Task 3.6: App policy evaluation vẫn chỉ chạy khi app-state bật
 
 ### Checkpoint 3
 
-- [ ] Target A composition không tồn tại sau generation change
-- [ ] `visible_revision`/replacement cũ không áp dụng vào target mới
-- [ ] Injection transaction tests pass
+- [x] Target A composition không tồn tại sau generation change
+- [x] `visible_revision`/replacement cũ không áp dụng vào target mới
+- [x] Injection transaction tests pass
 
 ## Phase 4: Unknown-focus fallback
 

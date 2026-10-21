@@ -23,7 +23,7 @@ pub fn run_with_x11_keymap(
 
     let mut capture = X11KeymapCapture::new()?;
     let injector = create_injector(display)?;
-    let mut last_active_window = String::new();
+    let mut last_focus_generation = shared_focus.lock().unwrap().generation;
     let mut last_window_class = String::new();
     let mut key_state: HashSet<u32> = HashSet::new();
 
@@ -49,16 +49,10 @@ pub fn run_with_x11_keymap(
         }
 
         {
-            let active_window = shared_focus
-                .lock()
-                .unwrap()
-                .identity
-                .clone()
-                .unwrap_or_default();
-            if active_window != last_active_window {
-                last_active_window = active_window.clone();
-                daemon.engine.reset();
-                daemon.replay_reset();
+            let generation = shared_focus.lock().unwrap().generation;
+            if generation != last_focus_generation {
+                last_focus_generation = generation;
+                daemon.reset_composition_state();
             }
         }
         if daemon.config.app_state.enabled {

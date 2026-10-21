@@ -64,7 +64,7 @@ pub fn run_stdin_mode(
 
     let injector = create_injector(display)?;
     let mut buffer = [0u8; 1];
-    let mut last_active_window = String::new();
+    let mut last_focus_generation = shared_focus.lock().unwrap().generation;
 
     log_info("[vietc] Type to test, Ctrl+C to exit");
 
@@ -77,20 +77,14 @@ pub fn run_stdin_mode(
         }
 
         {
-            let active_window = shared_focus
-                .lock()
-                .unwrap()
-                .identity
-                .clone()
-                .unwrap_or_default();
-            if active_window != last_active_window {
+            let generation = shared_focus.lock().unwrap().generation;
+            if generation != last_focus_generation {
                 log_info(&format!(
-                    "[vietc] Window changed: '{}' -> '{}'",
-                    last_active_window, active_window
+                    "[vietc] Focus generation changed: {} -> {}",
+                    last_focus_generation, generation
                 ));
-                last_active_window = active_window.clone();
-                daemon.engine.reset();
-                log_info("[vietc] Reset engine buffer due to window change");
+                last_focus_generation = generation;
+                daemon.reset_composition_state();
             }
         }
 
