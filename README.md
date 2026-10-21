@@ -1,159 +1,128 @@
-<p align="center">
-  <a href="https://github.com/vndangkhoa/vietc/stargazers"><img src="https://img.shields.io/github/stars/vndangkhoa/vietc?style=for-the-badge&logo=apachespark&color=f59e0b" alt="GitHub Stars"></a>
-  <img src="https://img.shields.io/badge/Nền_tảng-Linux_(Wayland_|_X11)-blue?style=for-the-badge&logo=linux&logoColor=white" alt="Platform">
-  <img src="https://img.shields.io/badge/Ngôn_ngữ-Rust_1.85+-orange?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
-  <img src="https://img.shields.io/badge/Phiên_bản-0.1.24-purple?style=for-the-badge" alt="Version">
-  <img src="https://img.shields.io/badge/Kiểm_thử-151_đạt_(100%25)-brightgreen?style=for-the-badge" alt="Tests">
-  <a href="#giấy-phép"><img src="https://img.shields.io/badge/Giấy_phép-MIT-gray?style=for-the-badge" alt="License"></a>
-</p>
+# VietC
 
-<h1 align="center">⌨️ Viet+ (VietC)</h1>
+Bộ gõ tiếng Việt dành cho Linux, hỗ trợ Wayland và X11, được phát triển bằng Rust.
 
-<p align="center">
-  <strong>Bộ gõ tiếng Việt thế hệ mới, hiệu năng cao cho Linux (Wayland & X11).</strong><br>
-  Được phát triển hoàn toàn bằng <b>Rust</b> với cơ chế gõ phím ảo trực tiếp.<br>
-  <i>Zero Underline &bull; Không độ trễ &bull; Không tranh chấp Clipboard &bull; Tự động phục hồi tiếng Anh chuẩn xác.</i>
-</p>
+Dự án hiện tại được phát triển tiếp từ mã nguồn VietC gốc và đã được bổ sung các thay đổi về bảo mật, độ ổn định, kiểm thử runtime, clipboard và hành vi gõ Telex.
 
-<p align="center">
-  <a href="#-cài-đặt-nhanh-1-lệnh-duy-nhất"><b>Cài đặt nhanh</b></a> •
-  <a href="#-so-sánh-với-các-bộ-gõ-khác"><b>So sánh</b></a> •
-  <a href="#-tính-năng-nổi-bật"><b>Tính năng</b></a> •
-  <a href="#-danh-sách-bản-phân-phối-được-hỗ-trợ--tối-ưu"><b>Bản phân phối</b></a> •
-  <a href="#️-phím-tắt--lệnh-điều-khiển"><b>Phím tắt</b></a> •
-  <a href="#-star-history"><b>Star History</b></a> •
-  <a href="README.en.md"><b>🌐 English Docs</b></a>
-</p>
+## Tính năng chính
 
----
+- Hỗ trợ kiểu gõ Telex và VNI.
+- Chuyển đổi chế độ ENG, VNI và TELEX.
+- Hỗ trợ Wayland và X11.
+- Hoạt động dưới dạng systemd user service.
+- Hỗ trợ macro và gõ tắt.
+- Ghi nhớ trạng thái theo ứng dụng.
+- Hỗ trợ nhập Unicode qua `uinput`.
+- Bảo toàn nội dung clipboard khi nhập Unicode.
+- Hỗ trợ Telex lặp phím để hủy dấu và dấu mũ.
+- Hỗ trợ build và kiểm thử bằng Rust workspace.
 
-## ⚡ Giới thiệu
+## Các đầu việc đã thực hiện
 
-Người dùng Linux tại Việt Nam thường xuyên phải đối mặt với các vấn đề nhức nhối khi gõ tiếng Việt trên Wayland: **gạch chân (pre-edit underline) gây gián đoạn**, **xung đột clipboard khi copy/paste**, và **từ tiếng Anh bị nhảy dấu lung tung**.
+### Audit và hardening
 
-**Viet+ (VietC)** giải quyết triệt để các vấn đề trên nhờ cơ chế gửi ký tự trực tiếp qua bàn phím ảo (`wtype` / `/dev/uinput`):
+- Audit daemon, engine, CLI và `uinputd`.
+- Thiết lập baseline và test seam.
+- Bảo vệ privileged uinput socket.
+- Chuyển socket sang `$XDG_RUNTIME_DIR/vietc/uinput.sock`.
+- Giới hạn quyền socket thành `0600`.
+- Xác thực client bằng `SO_PEERCRED`.
+- Chuẩn hóa path truyền vào API C.
+- Thay single-instance PID check bằng RAII `flock`.
+- Xử lý EOF và broken pipe trong CLI.
+- Hoàn thiện release gates.
+- Bổ sung deterministic CI tests.
+- Bổ sung runtime matrix.
+- Bổ sung disposable installation tests.
+- Bổ sung E2E test cho `PING`, `TYPE`, `PASTE`, `BACKSPACE` và `REPLACE`.
+- Kiểm chứng nhập liệu trên Chromium qua CDP.
 
-```
-Nguyeenx DDawng Khoa   ➔   Nguyễn Đăng Khoa
-Khoong cos gif quis    ➔   Không có gì quí
-search for the test    ➔   search for the test  (Tự động bảo toàn thuật ngữ tiếng Anh)
-```
+### Clipboard và Unicode
 
----
+- Loại bỏ delayed clipboard restoration.
+- Khôi phục clipboard đồng bộ sau khi nhập Unicode.
+- Bổ sung regression tests bảo toàn clipboard.
+- Kiểm chứng modifier được giải phóng sau thao tác nhập liệu.
 
-## 📊 So sánh với các bộ gõ khác
+### Telex lặp phím
 
-| Tính năng | 🚀 **Viet+ (VietC)** | 🎋 IBus-Bamboo | 🐧 Fcitx5-Unikey |
-| :--- | :---: | :---: | :---: |
-| **Ngôn ngữ phát triển** | **100% Rust** | Go / C | C++ |
-| **Hiện tượng gạch chân (Pre-edit)** | **❌ Hoàn toàn không (Zero Underline)** | ⚠️ Thường gặp trên Wayland | ⚠️ Hay giật khung popup |
-| **Tranh chấp Clipboard khi gõ** | **❌ Không dùng Clipboard** | ⚠️ Thỉnh thoảng bị kẹt | ❌ Không dùng Clipboard |
-| **Tự động phục hồi tiếng Anh** | **✅ Tự động theo âm vị học + từ điển** | ⚠️ Bán tự động / Phím tắt | ❌ Thủ công |
-| **Tối ưu Wayland / Hyprland** | **✅ Direct `wtype` (0ms delay)** | ⚠️ Phụ thuộc module IBus | ⚠️ Cần cài đặt fcitx5-wayland |
-| **Bộ nhớ tiêu thụ (RAM)** | **⚡ ~8–12 MB** | ~25–40 MB | ~30–50 MB |
-| **Dịch vụ chạy nền (Daemon)** | **systemd user service (Rootless)** | IBus daemon | Fcitx daemon |
+- Loại bỏ auto-restore khi nhấn Space.
+- Giữ nguyên composition tại word boundary.
+- Hủy dấu bằng cách lặp lại phím trigger.
+- Hỗ trợ `projject` thành `project`.
+- Hỗ trợ `tesst` thành `test`.
+- Ngăn mark Telex backtrack xuyên qua nguyên âm khác.
+- Giữ nguyên `readme` khi nhập bằng Telex.
+- Bổ sung regression tests cho tone, mark và state machine.
 
----
+### Kiểm thử và chất lượng
 
-## 🚀 Cài đặt nhanh (1 lệnh duy nhất)
+- Chạy toàn bộ workspace tests.
+- Chạy Rustfmt.
+- Chạy Clippy strict với `-D warnings`.
+- Chạy `cargo audit`.
+- Build release toàn workspace.
+- Kiểm chứng daemon bằng systemd user service.
+- Ghi lại commit rollback độc lập cho từng nhóm thay đổi.
 
-Cài đặt Viet+ ngay lập tức trên Arch Linux, CachyOS, Fedora, Ubuntu, Debian, Pop!_OS:
+Danh sách triển khai và bằng chứng kiểm thử được lưu trong [`tasks/implementation-log.md`](tasks/implementation-log.md).
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/install.sh | bash
-```
+## Phím tắt và điều khiển
 
-### Chuyển đổi chế độ gõ
-- Nhấn **`Ctrl + Space`** (hoặc `Ctrl + Shift`) để xoay vòng: **⚪ ENG (Tiếng Anh) ➔ 🔴 VNI ➔ 🔵 TELEX ➔ ⚪ ENG**
-- Hoặc click trực tiếp vào biểu tượng khay hệ thống (**EN / VN / TLX**).
-- Điều khiển qua dòng lệnh: `vietcctl status` | `vietcctl cycle` | `vietcctl method telex`
+| Thao tác | Phím tắt hoặc lệnh |
+|---|---|
+| Chuyển chế độ nhập | `Ctrl + Space` hoặc `Ctrl + Shift` |
+| Xem trạng thái | `vietcctl status` |
+| Chuyển sang Telex | `vietcctl method telex` |
+| Chuyển sang VNI | `vietcctl method vni` |
+| Khởi động lại dịch vụ | `systemctl --user restart vietc.service` |
+| Xem trạng thái dịch vụ | `systemctl --user status vietc.service --no-pager` |
+| Xem log dịch vụ | `journalctl --user -u vietc.service -f` |
 
----
+## Cấu hình
 
-## 🐧 Danh sách bản phân phối được hỗ trợ & tối ưu
+Tệp cấu hình người dùng:
 
-| Hệ điều hành / Hệ sinh thái | Môi trường Desktop / WM | Máy chủ hiển thị | Cơ chế nhập liệu | Trạng thái |
-| :--- | :--- | :--- | :--- | :--- |
-| ⚡ **CachyOS** | KDE Plasma 6 / Hyprland | **Wayland** | `wtype` (Bàn phím ảo trực tiếp) | ✅ **Tối ưu 100%** |
-| 🏹 **Arch Linux** | Hyprland / Sway / KDE / GNOME | **Wayland / X11** | `wtype` / `/dev/uinput` | ✅ **Kiểm thử 100%** |
-| 🚀 **EndeavourOS / Omarchy / Garuda** | Hyprland / KDE Plasma / i3 | **Wayland / X11** | `wtype` / `/dev/uinput` | ✅ **Hỗ trợ hoàn hảo** |
-| 🎩 **Fedora 40/41 / Nobara** | GNOME 46/47 / KDE Plasma | **Wayland** | Hybrid IBus + `wtype` | ✅ **Hỗ trợ hoàn hảo** |
-| 🌿 **Linux Mint** | Cinnamon / XFCE / MATE | **X11** | `/dev/uinput` Direct | ✅ **Hỗ trợ hoàn hảo** |
-| 🪐 **Pop!_OS** | COSMIC Desktop / GNOME | **Wayland / X11** | `wtype` / `/dev/uinput` | ✅ **Hỗ trợ hoàn hảo** |
-| 🟠 **Ubuntu 24.04+ / Debian 12** | GNOME (Mutter) / X11 | **Wayland / X11** | Hybrid IBus + AppIndicator | ✅ **Hỗ trợ hoàn hảo** |
-| 🦎 **Manjaro / openSUSE** | KDE Plasma / XFCE / GNOME | **Wayland / X11** | `wtype` / `/dev/uinput` | ✅ **Hỗ trợ hoàn hảo** |
-
----
-
-## ✨ Tính năng nổi bật
-
-- 🚀 **Zero Underline**: Gõ trực tiếp vào ứng dụng đang kích hoạt. Không dùng bộ đệm tạm thời, không gạch chân gây phân tâm.
-- ⚡ **Direct Wayland Virtual Keyboard**: Sử dụng giao thức `zwp_virtual_keyboard_v1` trên Wayland/Hyprland. Ký tự UTF-8 được gửi trực tiếp với độ trễ 0ms.
-- 🛡️ **Lọc thiết bị phần cứng chuẩn xác**: Tự động nhận diện và chỉ chiếm giữ cổng `/dev/input/by-path/*-event-kbd`, loại bỏ triệt để lỗi lặp chữ từ đầu thu USB 2.4G và bàn phím kép.
-- 🧠 **Nhận diện tiếng Anh thông minh**: Phân tích âm vị học tiếng Việt kết hợp từ điển thuật ngữ kỹ thuật. Giữ nguyên từ tiếng Anh chuẩn khi gõ dấu cách hoặc dấu câu.
-- 🔄 **Xoay vòng 3 chế độ tức thì**: Chuyển đổi mượt mà giữa **⚪ ENG ➔ 🔴 VNI ➔ 🔵 TELEX** kèm thông báo OSD.
-- 🎋 **Lõi biến đổi Bamboo**: Đầy đủ bảng chữ cái tiếng Việt (`â, ă, ê, ô, ơ, ư, đ`), ghép âm thông minh (`uo ➔ ươ`, `ua ➔ ưa`) và đặt dấu chuẩn xác.
-- 📝 **Gõ tắt mở rộng (Macro)**: Hỗ trợ tùy biến viết tắt tốc ký (`ko ➔ không`, `dc ➔ được`, `vs ➔ với`...).
-- 🔒 **Bảo mật & Rootless**: Chạy dưới dạng service người dùng systemd (`vietc.service`), không cần quyền root sau khi phân quyền uinput ban đầu.
-
----
-
-## ⌨️ Phím tắt & Lệnh điều khiển
-
-| Thao tác | Phím tắt / Lệnh |
-| :--- | :--- |
-| **Xoay vòng 3 chế độ** (ENG ➔ VNI ➔ TELEX) | **`Ctrl + Space`** / `Ctrl + Shift` (hoặc click icon khay hệ thống) |
-| **Kiểm tra trạng thái** | `vietcctl status` |
-| **Chuyển chế độ qua CLI** | `vietcctl method telex` / `vietcctl method vni` |
-| **Khởi động lại dịch vụ** | `systemctl --user restart vietc.service` |
-
----
-
-## ⚙️ Cấu hình tùy chỉnh
-
-Tệp cấu hình lưu tại: `~/.config/vietc/config.toml`
-
-```toml
-input_method = "telex"          # "telex" hoặc "vni"
-toggle_key = "space"            # Ctrl+Space bật/tắt tiếng Việt
-start_enabled = true            # Tự bật khi đăng nhập
-grab = true                     # Chiếm quyền evdev trực tiếp
-deduplicate_keys = false        # Cho phép gõ chữ kép Telex (aa, ee, dd)
-
-[auto_restore]
-enabled = true                  # Tự động phục hồi từ tiếng Anh khi nhấn dấu cách
-trigger_keys = ["space", "escape"]
-
-[app_state]
-enabled = false                 # Ghi nhớ trạng thái theo từng ứng dụng
-
-[macros]
-"ko" = "không"
-"dc" = "được"
-"vs" = "với"
-"ng" = "người"
+```text
+~/.config/vietc/config.toml
 ```
 
----
+Các nhóm cấu hình chính:
 
-## 📋 Nhật ký triển khai
+- Kiểu gõ Telex hoặc VNI.
+- Phím chuyển chế độ.
+- Trạng thái khi khởi động.
+- Chế độ keyboard grab.
+- Loại bỏ phím trùng lặp.
+- Ghi nhớ trạng thái theo ứng dụng.
+- Macro và gõ tắt.
 
-Toàn bộ audit, hardening, sửa lỗi clipboard, thay đổi Telex lặp phím, bằng chứng kiểm thử và hướng dẫn rollback được ghi tại [tasks/implementation-log.md](tasks/implementation-log.md).
+## Build từ source
 
-## 🛠️ Build và cài đặt từ mã nguồn local
+Yêu cầu:
 
-Nếu bạn đã clone repository và đang chỉnh sửa mã nguồn local, hãy build và cài đặt trực tiếp từ thư mục dự án. Cách này bảo đảm máy sử dụng đúng phiên bản code bạn vừa sửa, thay vì tải script hoặc binary từ GitHub của tác giả.
+- Linux.
+- Rust 1.85 trở lên.
+- Cargo.
+- Các dependency hệ thống được khai báo trong script cài đặt.
+
+Build release:
 
 ```bash
 cd /home/thanhhd/Git-projects/vietc
-cargo build --release
-sudo ./install.sh
-sudo systemctl daemon-reload
-sudo systemctl restart vietc
-sudo systemctl status vietc --no-pager
+cargo build --workspace --release
 ```
 
-Nếu VietC được cài dưới dạng user service, hãy khởi động lại bằng:
+Chạy kiểm thử:
+
+```bash
+cargo test --workspace --all-targets
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo audit
+```
+
+Khởi động lại user service sau khi build:
 
 ```bash
 systemctl --user daemon-reload
@@ -161,32 +130,29 @@ systemctl --user restart vietc.service
 systemctl --user status vietc.service --no-pager
 ```
 
-Theo dõi log của user service:
+## Cấu trúc dự án
 
-```bash
-journalctl --user -u vietc.service -f
-```
+- `engine/`: bộ xử lý Telex, VNI, composition và state machine.
+- `daemon/`: xử lý thiết bị nhập, focus, replay và output command.
+- `uinputd/`: dịch vụ nhập liệu đặc quyền qua uinput.
+- `cli/`: công cụ điều khiển VietC.
+- `ui/`: giao diện và tray application.
+- `vk/`: công cụ virtual keyboard phục vụ kiểm thử.
+- `scripts/`: script cài đặt và kiểm thử.
+- `tasks/`: kế hoạch, checklist, điều tra kỹ thuật và nhật ký triển khai.
 
-> **Lưu ý:** Không dùng lệnh `curl ... | sudo bash` khi muốn kiểm thử code local, vì lệnh đó tải phiên bản từ GitHub và có thể ghi đè binary vừa build.
+## Tài liệu dự án
 
----
+- [`tasks/plan.md`](tasks/plan.md)
+- [`tasks/todo.md`](tasks/todo.md)
+- [`tasks/implementation-log.md`](tasks/implementation-log.md)
+- [`tasks/cosmic-focus-cache-fix-plan.md`](tasks/cosmic-focus-cache-fix-plan.md)
+- [`tasks/cosmic-focus-cache-fix-todo.md`](tasks/cosmic-focus-cache-fix-todo.md)
+- [`tasks/global-telex-chromium-crash-plan.md`](tasks/global-telex-chromium-crash-plan.md)
+- [`tasks/global-telex-chromium-crash-todo.md`](tasks/global-telex-chromium-crash-todo.md)
+- [`tasks/edge-sigill-vietc-technical-investigation.md`](tasks/edge-sigill-vietc-technical-investigation.md)
 
-## 🌟 Hỗ trợ & Đóng góp
-
-Nếu bạn yêu thích sự mượt mà và tốc độ của Viet+:
-
-- Tặng dự án **1 Star ⭐** trên GitHub để lan tỏa đến cộng đồng Linux Việt Nam!
-- Tham gia thảo luận, báo lỗi hoặc gửi Pull Request tại [GitHub Issues](https://github.com/vndangkhoa/vietc/issues).
-
-<p align="center">
-  <a href="https://star-history.com/#vndangkhoa/vietc&Date">
-    <img src="https://api.star-history.com/svg?repos=vndangkhoa/vietc&type=Date" alt="Viet+ Star History" width="75%">
-  </a>
-</p>
-
----
-
-## 📄 Giấy phép
+## Giấy phép và tác giả
 
 Phát hành dưới **Giấy phép MIT**. Xem chi tiết tại [`LICENSE`](LICENSE).
 
