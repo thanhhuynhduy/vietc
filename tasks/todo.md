@@ -45,11 +45,11 @@
 - [x] Chỉ dọn stale Unix socket thuộc runtime path
 
 - [x] Task 5: Cập nhật installer và upgrade path
-- [ ] Fresh install truyền đúng UID/runtime path
+- [x] Fresh install truyền đúng UID/runtime path
 - [x] Upgrade xử lý socket `0666` cũ
 - [x] Uninstall chỉ xóa artifact được quản lý
 - [x] Rootless mode không bị ảnh hưởng
-- [ ] Restart service hai lần liên tiếp pass
+- [x] Restart service hai lần liên tiếp pass
 
 ### Checkpoint 2
 
