@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use vietc_engine::{Engine, EngineEvent, EventStore, InputEvent, InputMethod};
 
 struct CliState {
@@ -38,17 +38,19 @@ impl CliState {
     }
 }
 
-fn main() {
+fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
     let mut state = CliState::new();
 
     print_help();
 
     loop {
-        print!("> ");
-        io::stdout().flush().unwrap();
+        write!(writer, "> ")?;
+        writer.flush()?;
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+        if reader.read_line(&mut input)? == 0 {
+            return Ok(());
+        }
         let input = input.trim();
 
         if input.is_empty() {
@@ -130,6 +132,14 @@ fn main() {
         let display = apply_backspaces(&output);
         println!("  Screen: {}", display);
     }
+
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    run(&mut stdin.lock(), &mut stdout.lock())
 }
 
 fn print_help() {
@@ -330,4 +340,49 @@ fn apply_backspaces(s: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod phase4_tests {
+    use super::*;
+    use std::io::{Cursor, Error, ErrorKind};
+
+    struct BrokenWriter;
+
+    impl Write for BrokenWriter {
+        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+            Err(Error::new(ErrorKind::BrokenPipe, "closed output"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(Error::new(ErrorKind::BrokenPipe, "closed output"))
+        }
+    }
+
+    #[test]
+    fn eof_exits_cleanly() {
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        assert!(run(&mut input, &mut output).is_ok());
+    }
+
+    #[test]
+    fn quit_preserves_interactive_behavior() {
+        let mut input = Cursor::new(b"quit\n".to_vec());
+        let mut output = Vec::new();
+
+        assert!(run(&mut input, &mut output).is_ok());
+        assert_eq!(String::from_utf8(output).unwrap(), "> ");
+    }
+
+    #[test]
+    fn broken_pipe_is_returned_instead_of_panicking() {
+        let mut input = Cursor::new(b"quit\n".to_vec());
+        let mut output = BrokenWriter;
+
+        let error = run(&mut input, &mut output).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
 }
