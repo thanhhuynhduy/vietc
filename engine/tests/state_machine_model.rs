@@ -1,7 +1,6 @@
 use vietc_engine::{
-    BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, Replacement,
-    ReplacementReason, SpellingValidity, TransformIdentity, TransformKind, TransitionKind,
-    UndoPolicy,
+    BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, SpellingValidity,
+    TransformIdentity, TransformKind, TransitionKind, UndoPolicy,
 };
 
 #[test]
@@ -325,7 +324,7 @@ fn backspace_at_empty_end_of_buffer_is_a_deterministic_edit() {
 }
 
 #[test]
-fn word_boundary_commits_and_auto_restores_invalid_composition() {
+fn word_boundary_commits_without_restoring_invalid_composition() {
     let mut engine = Engine::new(InputMethod::Telex);
     for ch in "cargo".chars() {
         engine.reduce(PhysicalEvent::Printable(ch));
@@ -333,14 +332,7 @@ fn word_boundary_commits_and_auto_restores_invalid_composition() {
 
     let event = engine.reduce(PhysicalEvent::WordBoundary(' '));
 
-    let replacement = match event {
-        Some(EngineEvent::Replace(replacement)) => replacement,
-        other => panic!("expected semantic replacement, got {other:?}"),
-    };
-    assert_eq!(replacement.version, Replacement::VERSION);
-    assert_eq!(replacement.delete_before_cursor, 4);
-    assert_eq!(replacement.insert, "cargo");
-    assert_eq!(replacement.reason, ReplacementReason::AutoRestore);
+    assert_eq!(event, None);
     let state = engine.state();
     assert!(state.raw_keys.is_empty());
     assert!(state.visible.is_empty());

@@ -73,23 +73,20 @@ fn untransformed_english_passes_through() {
 }
 
 #[test]
-fn process_key_restores_on_flush() {
-    // Drive the per-keystroke engine API and confirm the flush commits English.
+fn process_key_keeps_composed_word_on_flush() {
     let mut engine = Engine::new(InputMethod::Telex);
     engine.set_enabled(true);
     for ch in "cargo".chars() {
         engine.process_key(ch);
     }
-    // Mid-word the buffer is the Vietnamese composition.
+
     assert_eq!(engine.buffer(), "cảgo");
-    // On flush the engine should emit a Replace back to the raw English word.
+
     let event = engine.process_key(' ');
-    match event {
-        Some(vietc_engine::EngineEvent::Replace(replacement)) => {
-            assert_eq!(replacement.insert, "cargo");
-        }
-        other => panic!("expected Replace to 'cargo', got {other:?}"),
-    }
+    assert!(
+        event.is_none(),
+        "flush must keep the composed word instead of restoring raw keystrokes, got {event:?}"
+    );
 }
 
 #[test]

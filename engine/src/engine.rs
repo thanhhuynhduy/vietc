@@ -404,21 +404,12 @@ impl Engine {
                 return Some(self.replacement(prev_len, expansion, ReplacementReason::Macro));
             }
 
-            let raw = self.raw_buffer.clone();
             self.reset();
             self.last_transition = Some(TransitionKind::Commit);
             if prev_len > 0 {
-                // Auto-restore: if the committed word is English / not valid
-                // Vietnamese, revert to the raw keystrokes the user typed. This
-                // genuinely changes the on-screen word, so a Replace is needed.
-                if self.auto_restore && Engine::should_restore_word(&previous, &raw) {
-                    return Some(self.replacement(prev_len, raw, ReplacementReason::AutoRestore));
-                }
-                // Normal case: the composed word is already correctly on screen.
-                // Re-typing it would trigger a redundant backspace + retype that
-                // races against the separately-forwarded flush char, eating
-                // spaces and merging words. Finalize and let the flush char
-                // through untouched.
+                // The composed word is already correctly on screen. Finalize it
+                // and let the flush character through unchanged. Telex transforms
+                // are cancelled explicitly by repeating their trigger key.
             }
             return None;
         }

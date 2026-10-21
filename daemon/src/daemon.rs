@@ -462,12 +462,6 @@ impl Daemon {
     }
 
     pub fn word_to_commit(&self) -> String {
-        if self.config.auto_restore.enabled {
-            let raw = self.event_store.raw_keystrokes();
-            if Engine::should_restore_word(&self.screen_output, &raw) {
-                return raw;
-            }
-        }
         self.screen_output.clone()
     }
 
@@ -590,8 +584,31 @@ mod tests {
     }
 
     #[test]
-    fn slow_english_project_restores_before_space_is_committed() {
-        assert_eq!(simulate("project "), "project ");
+    fn single_tone_trigger_is_not_auto_restored_on_space() {
+        let config = Config {
+            input_method: "telex".to_string(),
+            auto_restore: crate::config::AutoRestoreConfig {
+                enabled: true,
+                trigger_keys: vec!["space".to_string(), "escape".to_string()],
+            },
+            ..Config::default()
+        };
+        let mut daemon = Daemon::new(
+            config,
+            PathBuf::from("/tmp/vietc_no_auto_restore_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.keymap_mode = true;
+        daemon.engine.set_enabled(true);
+
+        let mut screen = String::new();
+        for ch in "project ".chars() {
+            screen.push(ch);
+            let commands = daemon.replay_and_inject(ch);
+            apply(&mut screen, &commands);
+        }
+
+        assert_eq!(screen, "prọect ");
     }
 
     #[test]
