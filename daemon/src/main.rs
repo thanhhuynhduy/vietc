@@ -83,7 +83,14 @@ impl Drop for IbusRestartGuard {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     install_signal_handlers();
-    ensure_single_instance("vietc-daemon");
+    let _instance_lock = match ensure_single_instance("vietc-daemon") {
+        Ok(lock) => lock,
+        Err(signal::InstanceLockError::AlreadyRunning) => {
+            eprintln!("[vietc-daemon] Another instance is already running. Exiting.");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     // Restart IBus on clean exit if we stopped it.
     let _ibus_guard = IbusRestartGuard;
 

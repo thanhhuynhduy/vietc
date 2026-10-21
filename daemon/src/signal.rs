@@ -18,88 +18,129 @@ pub fn install_signal_handlers() {
     }
 }
 
-fn is_matching_process(name: &str, pid: i32) -> bool {
-    if unsafe { libc::kill(pid, 0) } != 0 {
-        return false;
-    }
-    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
-        let trimmed = comm.trim();
-        return trimmed == name
-            || trimmed == "vietc"
-            || trimmed == "vietc-daemon"
-            || trimmed == "vietc-tray";
-    }
-    false
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::os::unix::io::{AsRawFd, RawFd};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub enum InstanceLockError {
+    AlreadyRunning,
+    Open(std::io::Error),
+    Lock(std::io::Error),
+    Write(std::io::Error),
 }
 
-pub fn ensure_single_instance(name: &str) {
-    let uid = unsafe { libc::getuid() };
-    let path_str = format!("/tmp/{}-{}.lock", name, uid);
-    let path = std::path::Path::new(&path_str);
-    let path_c = std::ffi::CString::new(path_str.as_str()).unwrap();
-    let fd = unsafe {
-        libc::open(
-            path_c.as_ptr(),
-            libc::O_CREAT | libc::O_RDWR | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        eprintln!("[{}] Failed to open lock file", name);
-        std::process::exit(1);
-    }
-    let res = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-    if res == 0 {
-        let pid = unsafe { libc::getpid() };
-        let _ = std::fs::write(path, format!("{}", pid));
-        return;
-    }
-    if res < 0 {
-        let err = unsafe { *libc::__errno_location() };
-        if err == libc::EAGAIN || err == libc::EWOULDBLOCK {
-            if let Ok(pid_str) = std::fs::read_to_string(path) {
-                if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                    let is_active = is_matching_process(name, pid);
-                    if !is_active {
-                        eprintln!(
-                            "[{}] Stale or non-matching lock from PID {}, clearing and retrying...",
-                            name, pid
-                        );
-                        unsafe { libc::close(fd) };
-                        let _ = std::fs::remove_file(path);
-                        let path_c2 = std::ffi::CString::new(path_str.as_str()).unwrap();
-                        let fd2 = unsafe {
-                            libc::open(
-                                path_c2.as_ptr(),
-                                libc::O_CREAT | libc::O_RDWR | libc::O_CLOEXEC,
-                                0o600,
-                            )
-                        };
-                        if fd2 >= 0 {
-                            let res2 = unsafe { libc::flock(fd2, libc::LOCK_EX | libc::LOCK_NB) };
-                            if res2 == 0 {
-                                let cur_pid = unsafe { libc::getpid() };
-                                let _ = std::fs::write(path, format!("{}", cur_pid));
-                                return;
-                            }
-                            unsafe { libc::close(fd2) };
-                        }
-                    } else {
-                        eprintln!(
-                            "[{}] Another instance (PID {}) is running. Exiting.",
-                            name, pid
-                        );
-                        std::process::exit(0);
-                    }
-                }
-            }
-            eprintln!(
-                "[{}] Another instance is already running (errno={}). Exiting.",
-                name, err
-            );
-        } else {
-            eprintln!("[{}] Lock error (errno={}). Exiting.", name, err);
+impl std::fmt::Display for InstanceLockError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyRunning => write!(formatter, "another instance is already running"),
+            Self::Open(error) => write!(formatter, "cannot open lock file: {}", error),
+            Self::Lock(error) => write!(formatter, "cannot acquire instance lock: {}", error),
+            Self::Write(error) => write!(formatter, "cannot write lock owner PID: {}", error),
         }
-        std::process::exit(0);
+    }
+}
+
+impl std::error::Error for InstanceLockError {}
+
+pub struct InstanceLock {
+    file: File,
+}
+
+impl AsRawFd for InstanceLock {
+    fn as_raw_fd(&self) -> RawFd {
+        self.file.as_raw_fd()
+    }
+}
+
+impl Drop for InstanceLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .map_err(InstanceLockError::Open)?;
+
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result != 0 {
+        let error = std::io::Error::last_os_error();
+        return if error.kind() == std::io::ErrorKind::WouldBlock {
+            Err(InstanceLockError::AlreadyRunning)
+        } else {
+            Err(InstanceLockError::Lock(error))
+        };
+    }
+
+    file.set_len(0).map_err(InstanceLockError::Write)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(InstanceLockError::Write)?;
+    write!(file, "{}", std::process::id()).map_err(InstanceLockError::Write)?;
+    file.flush().map_err(InstanceLockError::Write)?;
+
+    Ok(InstanceLock { file })
+}
+
+pub fn ensure_single_instance(name: &str) -> Result<InstanceLock, InstanceLockError> {
+    let uid = unsafe { libc::getuid() };
+    let path = PathBuf::from(format!("/tmp/{}-{}.lock", name, uid));
+    acquire_instance_lock(&path)
+}
+
+#[cfg(test)]
+mod phase3_tests {
+    use super::*;
+    use std::fs::OpenOptions;
+    use std::os::unix::io::AsRawFd;
+
+    #[test]
+    fn contender_cannot_acquire_lock_when_pid_text_is_stale() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("vietc.lock");
+
+        let holder = acquire_instance_lock(&lock_path).unwrap();
+        std::fs::write(&lock_path, "999999").unwrap();
+
+        let contender = acquire_instance_lock(&lock_path);
+
+        assert!(matches!(contender, Err(InstanceLockError::AlreadyRunning)));
+        drop(holder);
+    }
+
+    #[test]
+    fn dropping_guard_releases_kernel_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("vietc.lock");
+
+        let holder = acquire_instance_lock(&lock_path).unwrap();
+        drop(holder);
+
+        let replacement = acquire_instance_lock(&lock_path);
+        assert!(replacement.is_ok());
+    }
+
+    #[test]
+    fn pid_is_written_through_the_locked_file_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_path = directory.path().join("vietc.lock");
+
+        let guard = acquire_instance_lock(&lock_path).unwrap();
+        let file = OpenOptions::new().read(true).open(&lock_path).unwrap();
+
+        assert!(guard.as_raw_fd() >= 0);
+        assert_eq!(
+            std::fs::read_to_string(&lock_path).unwrap(),
+            std::process::id().to_string()
+        );
+
+        drop(file);
+        drop(guard);
     }
 }
