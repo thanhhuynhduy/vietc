@@ -5,16 +5,25 @@ use std::path::PathBuf;
 
 use super::inject::{InjectResult, KeyInjector};
 
-fn socket_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".vietc").join("uinput.sock")
+fn socket_path_from_runtime_dir(runtime_dir: &std::path::Path) -> PathBuf {
+    runtime_dir.join("vietc").join("uinput.sock")
+}
+
+fn socket_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .map(|runtime_dir| socket_path_from_runtime_dir(&runtime_dir))
 }
 
 pub struct UinputClient;
 
 impl UinputClient {
     fn send_command(cmd: &str) -> InjectResult {
-        match UnixStream::connect(socket_path()) {
+        let Some(socket_path) = socket_path() else {
+            return InjectResult::Failed;
+        };
+
+        match UnixStream::connect(socket_path) {
             Ok(mut stream) => {
                 if writeln!(stream, "{}", cmd).is_err() {
                     return InjectResult::Failed;
@@ -35,7 +44,9 @@ impl UinputClient {
     }
 
     pub fn is_available() -> bool {
-        UnixStream::connect(socket_path()).is_ok()
+        socket_path()
+            .and_then(|path| UnixStream::connect(path).ok())
+            .is_some()
     }
 }
 
@@ -66,5 +77,20 @@ impl KeyInjector for UinputClient {
 
     fn update_pasted_text(&self, _text: &str) -> InjectResult {
         InjectResult::Success
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socket_path_matches_uinputd_runtime_contract() {
+        let runtime_dir = std::path::Path::new("/run/user/1000");
+
+        assert_eq!(
+            socket_path_from_runtime_dir(runtime_dir),
+            runtime_dir.join("vietc").join("uinput.sock")
+        );
     }
 }

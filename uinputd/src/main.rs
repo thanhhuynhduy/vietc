@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -390,23 +391,151 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-fn find_socket_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let dir = format!("{}/.vietc", home);
-    let _ = fs::create_dir_all(&dir);
-
-    if unsafe { libc::getuid() == 0 } {
-        let socket = format!("{}/uinput.sock", dir);
-        unsafe {
-            let _ = libc::chown(socket.as_ptr() as *const libc::c_char, 0, 0);
-        }
-        socket
-    } else {
-        format!("{}/uinput.sock", dir)
-    }
+fn runtime_socket_path(runtime_root: &Path) -> PathBuf {
+    runtime_root.join("vietc").join("uinput.sock")
 }
 
-fn handle_client(stream: UnixStream, uinput: &UinputDevice) {
+fn find_socket_path() -> Result<PathBuf, String> {
+    let runtime_root = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| "XDG_RUNTIME_DIR is not set; refusing an insecure fallback".to_string())?;
+    let dir = runtime_root.join("vietc");
+
+    fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "Cannot create socket directory {}: {}",
+            dir.display(),
+            error
+        )
+    })?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|error| {
+        format!(
+            "Cannot set socket directory permissions on {}: {}",
+            dir.display(),
+            error
+        )
+    })?;
+
+    Ok(runtime_socket_path(&runtime_root))
+}
+
+fn bind_socket(path: &Path, mode: u32) -> Result<UnixListener, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            fs::remove_file(path).map_err(|error| {
+                format!("Cannot remove stale socket {}: {}", path.display(), error)
+            })?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "Refusing to replace non-socket path {}",
+                path.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Cannot inspect socket path {}: {}",
+                path.display(),
+                error
+            ));
+        }
+    }
+
+    let listener = UnixListener::bind(path)
+        .map_err(|error| format!("Cannot bind socket {}: {}", path.display(), error))?;
+
+    if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+        let cleanup_result = fs::remove_file(path);
+        return Err(match cleanup_result {
+            Ok(()) => format!(
+                "Cannot set socket permissions on {}: {}",
+                path.display(),
+                error
+            ),
+            Err(cleanup_error) => format!(
+                "Cannot set socket permissions on {}: {}; cleanup failed: {}",
+                path.display(),
+                error,
+                cleanup_error
+            ),
+        });
+    }
+
+    Ok(listener)
+}
+
+#[cfg(test)]
+fn authorize_and_dispatch<F>(
+    peer_uid: libc::uid_t,
+    allowed_uid: libc::uid_t,
+    dispatch: F,
+) -> Result<(), String>
+where
+    F: FnOnce(),
+{
+    if peer_uid != allowed_uid {
+        return Err(format!(
+            "peer UID {} is not authorized; expected {}",
+            peer_uid, allowed_uid
+        ));
+    }
+
+    dispatch();
+    Ok(())
+}
+
+fn peer_uid(stream: &UnixStream) -> Result<libc::uid_t, String> {
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut credentials_len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            &mut credentials as *mut libc::ucred as *mut libc::c_void,
+            &mut credentials_len,
+        )
+    };
+
+    if result != 0 {
+        return Err(format!(
+            "Cannot read peer credentials: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if credentials_len as usize != std::mem::size_of::<libc::ucred>() {
+        return Err("Peer credentials have an unexpected size".to_string());
+    }
+
+    Ok(credentials.uid)
+}
+
+#[cfg(test)]
+fn authorize_stream_and_dispatch<F>(
+    stream: &UnixStream,
+    allowed_uid: libc::uid_t,
+    dispatch: F,
+) -> Result<(), String>
+where
+    F: FnOnce(),
+{
+    authorize_and_dispatch(peer_uid(stream)?, allowed_uid, dispatch)
+}
+
+fn handle_client(
+    stream: UnixStream,
+    allowed_uid: libc::uid_t,
+    uinput: &UinputDevice,
+) -> Result<(), String> {
+    let peer_uid = peer_uid(&stream)?;
+    if peer_uid != allowed_uid {
+        return Err(format!(
+            "peer UID {} is not authorized; expected {}",
+            peer_uid, allowed_uid
+        ));
+    }
+
     let reader = BufReader::new(&stream);
     let mut writer = &stream;
 
@@ -471,26 +600,51 @@ fn handle_client(stream: UnixStream, uinput: &UinputDevice) {
             let _ = writeln!(writer, "ERR unknown command");
         }
     }
+
+    Ok(())
 }
 
 fn main() {
-    let socket_path = find_socket_path();
-    let path = Path::new(&socket_path);
-
-    let _ = fs::remove_file(path);
-
-    let listener = match UnixListener::bind(path) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("[vietc-uinputd] Cannot bind socket {}: {}", socket_path, e);
+    let socket_path = match find_socket_path() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("[vietc-uinputd] {}", error);
             std::process::exit(1);
         }
     };
 
-    // Make socket world-writable so non-root daemon can connect
-    unsafe {
-        let _ = libc::chmod(socket_path.as_ptr() as *const libc::c_char, 0o666);
-    }
+    let runtime_root = match socket_path.parent().and_then(Path::parent) {
+        Some(path) => path,
+        None => {
+            eprintln!(
+                "[vietc-uinputd] Cannot determine runtime directory owner from {}",
+                socket_path.display()
+            );
+            std::process::exit(1);
+        }
+    };
+    let allowed_uid = match fs::metadata(runtime_root) {
+        Ok(metadata) => {
+            use std::os::unix::fs::MetadataExt;
+            metadata.uid()
+        }
+        Err(error) => {
+            eprintln!(
+                "[vietc-uinputd] Cannot inspect runtime directory {}: {}",
+                runtime_root.display(),
+                error
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let listener = match bind_socket(&socket_path, 0o600) {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("[vietc-uinputd] {}", error);
+            std::process::exit(1);
+        }
+    };
 
     let uinput = match UinputDevice::new("vietc") {
         Ok(d) => d,
@@ -500,16 +654,151 @@ fn main() {
         }
     };
 
-    eprintln!("[vietc-uinputd] Listening on {}", socket_path);
+    eprintln!("[vietc-uinputd] Listening on {}", socket_path.display());
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                handle_client(stream, &uinput);
+                if let Err(error) = handle_client(stream, allowed_uid, &uinput) {
+                    eprintln!("[vietc-uinputd] Rejected connection: {}", error);
+                }
             }
             Err(e) => {
                 eprintln!("[vietc-uinputd] Connection error: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod phase0_tests {
+    use super::*;
+
+    #[test]
+    fn authorized_peer_reaches_dispatcher() {
+        let mut dispatched = false;
+
+        let result = authorize_and_dispatch(1000, 1000, || {
+            dispatched = true;
+        });
+
+        assert!(result.is_ok());
+        assert!(dispatched);
+    }
+
+    #[test]
+    fn unauthorized_peer_is_rejected_before_dispatch() {
+        let mut dispatched = false;
+
+        let result = authorize_and_dispatch(1001, 1000, || {
+            dispatched = true;
+        });
+
+        assert!(result.is_err());
+        assert!(!dispatched);
+    }
+
+    #[test]
+    fn socket_permissions_are_applied_after_bind() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let test_dir =
+            std::env::temp_dir().join(format!("vietc-uinputd-phase1-{}", std::process::id()));
+        let socket_path = test_dir.join("uinput.sock");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir(&test_dir).unwrap();
+
+        let listener = bind_socket(&socket_path, 0o600).unwrap();
+        let mode = fs::metadata(&socket_path).unwrap().permissions().mode() & 0o777;
+
+        assert_eq!(mode, 0o600);
+
+        drop(listener);
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn bind_failure_does_not_remove_preexisting_regular_file() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "vietc-uinputd-phase1-existing-{}",
+            std::process::id()
+        ));
+        let socket_path = test_dir.join("uinput.sock");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir(&test_dir).unwrap();
+        fs::write(&socket_path, b"keep me").unwrap();
+
+        let result = bind_socket(&socket_path, 0o600);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&socket_path).unwrap(), b"keep me");
+
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn runtime_socket_path_is_private_and_canonical() {
+        let runtime_root = Path::new("/run/user/1000");
+
+        let socket_path = runtime_socket_path(runtime_root);
+
+        assert_eq!(socket_path, runtime_root.join("vietc").join("uinput.sock"));
+    }
+
+    #[test]
+    fn authorized_unix_peer_reaches_dispatcher() {
+        let test_dir =
+            std::env::temp_dir().join(format!("vietc-uinputd-phase2-peer-{}", std::process::id()));
+        let socket_path = test_dir.join("uinput.sock");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir(&test_dir).unwrap();
+
+        let listener = bind_socket(&socket_path, 0o600).unwrap();
+        let client = UnixStream::connect(&socket_path).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let expected_uid = unsafe { libc::getuid() };
+        let mut dispatched = false;
+
+        authorize_stream_and_dispatch(&server, expected_uid, || {
+            dispatched = true;
+        })
+        .unwrap();
+
+        assert!(dispatched);
+
+        drop(client);
+        drop(server);
+        drop(listener);
+        fs::remove_dir_all(&test_dir).unwrap();
+    }
+
+    #[test]
+    fn unix_peer_is_rejected_before_dispatch_when_uid_is_not_allowed() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "vietc-uinputd-phase2-reject-{}",
+            std::process::id()
+        ));
+        let socket_path = test_dir.join("uinput.sock");
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir(&test_dir).unwrap();
+
+        let listener = bind_socket(&socket_path, 0o600).unwrap();
+        let client = UnixStream::connect(&socket_path).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let current_uid = unsafe { libc::getuid() };
+        let denied_uid = current_uid.saturating_add(1);
+        let mut dispatched = false;
+
+        let result = authorize_stream_and_dispatch(&server, denied_uid, || {
+            dispatched = true;
+        });
+
+        assert!(result.is_err());
+        assert!(!dispatched);
+
+        drop(client);
+        drop(server);
+        drop(listener);
+        fs::remove_dir_all(&test_dir).unwrap();
     }
 }

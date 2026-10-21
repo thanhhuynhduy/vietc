@@ -113,6 +113,13 @@ rm -f /usr/local/bin/vietc /usr/local/bin/vietc-daemon /usr/local/bin/vietcctl \
 
 # Remove user local binaries if present
 if [ -n "$USER_HOME" ]; then
+    LEGACY_UINPUT_SOCKET="$USER_HOME/.vietc/uinput.sock"
+    if [ -S "$LEGACY_UINPUT_SOCKET" ]; then
+        rm -f -- "$LEGACY_UINPUT_SOCKET"
+    elif [ -e "$LEGACY_UINPUT_SOCKET" ] || [ -L "$LEGACY_UINPUT_SOCKET" ]; then
+        echo "Refusing to remove non-socket legacy path: $LEGACY_UINPUT_SOCKET" >&2
+    fi
+
     rm -f "$USER_HOME/.local/bin/vietc" "$USER_HOME/.local/bin/vietc-daemon" \
           "$USER_HOME/.local/bin/vietcctl" "$USER_HOME/.local/bin/vietc-tray" \
           "$USER_HOME/.local/bin/vietc-uinputd" "$USER_HOME/.local/bin/vietc-cli"

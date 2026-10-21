@@ -232,6 +232,20 @@ fi
 
 INSTALLING_USER="${SUDO_USER:-$USER}"
 
+cleanup_legacy_uinput_socket() {
+    local user_home
+    user_home="$(getent passwd "$INSTALLING_USER" 2>/dev/null | cut -d: -f6 || true)"
+    [ -n "$user_home" ] || return 0
+
+    local legacy_socket="$user_home/.vietc/uinput.sock"
+    if [ -S "$legacy_socket" ]; then
+        rm -f -- "$legacy_socket"
+    elif [ -e "$legacy_socket" ] || [ -L "$legacy_socket" ]; then
+        echo "Refusing to remove non-socket legacy path: $legacy_socket" >&2
+        return 1
+    fi
+}
+
 # Architecture
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -517,6 +531,7 @@ pkill -9 -x vietcctl 2>/dev/null || true
 pkill -9 -x vietc-uinputd 2>/dev/null || true
 pkill -9 -x vietc-cli 2>/dev/null || true
 sleep 0.5
+cleanup_legacy_uinput_socket
 
 # Install binaries (using install -m 755 to safely replace running binaries without Text file busy)
 t installing_bins
