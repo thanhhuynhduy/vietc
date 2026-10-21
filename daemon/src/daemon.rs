@@ -590,6 +590,45 @@ mod tests {
     }
 
     #[test]
+    fn slow_english_project_restores_before_space_is_committed() {
+        assert_eq!(simulate("project "), "project ");
+    }
+
+    #[test]
+    fn repeated_tone_trigger_cancels_tone_and_keeps_one_literal_trigger() {
+        let config = Config {
+            input_method: "telex".to_string(),
+            ..Config::default()
+        };
+        let mut daemon = Daemon::new(
+            config,
+            PathBuf::from("/tmp/vietc_repeated_tone_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.keymap_mode = true;
+        daemon.engine.set_enabled(true);
+
+        let mut screen = String::new();
+        for ch in "tesst".chars() {
+            screen.push(ch);
+            let commands = daemon.replay_and_inject(ch);
+            apply(&mut screen, &commands);
+        }
+
+        assert_eq!(screen, "test");
+
+        daemon.replay_reset();
+        screen.clear();
+        for ch in "projject".chars() {
+            screen.push(ch);
+            let commands = daemon.replay_and_inject(ch);
+            apply(&mut screen, &commands);
+        }
+
+        assert_eq!(screen, "project");
+    }
+
+    #[test]
     fn focus_change_resets_engine_and_daemon_visible_revisions_together() {
         let mut daemon = Daemon::new(
             Config::default(),
