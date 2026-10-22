@@ -7,13 +7,13 @@
 **Description:** Liệt kê các input/output hiện đang hỗ trợ, free-order mong muốn, English fallback và chuỗi không hợp lệ.
 
 **Acceptance criteria:**
-- [ ] Có bảng mark, tone, nucleus, coda, casing và boundary.
-- [ ] Mỗi behavior có expected output hoặc expected literal fallback.
-- [ ] `dduojwc`, `dduocwj`, `neues`, `neesu` nằm trong matrix.
+- [x] Có bảng mark, tone, nucleus, coda, casing và boundary.
+- [x] Mỗi behavior có expected output hoặc expected literal fallback.
+- [x] `dduojwc`, `dduocwj`, `neues`, `neesu` nằm trong matrix.
 
 **Verification:**
-- [ ] Review matrix trước khi viết parser.
-- [ ] Không có expected behavior mơ hồ.
+- [x] Review matrix trước khi viết parser.
+- [x] Không có expected behavior mơ hồ.
 
 **Dependencies:** None
 
@@ -28,12 +28,12 @@
 **Description:** Chuyển behavior matrix thành data-driven tests chạy trên engine hiện tại.
 
 **Acceptance criteria:**
-- [ ] Golden tests bao phủ các quy tắc Telex hiện có.
-- [ ] English words và boundary cases có regression tests.
-- [ ] Test báo rõ input nào lệch output.
+- [x] Golden tests bao phủ các quy tắc Telex hiện có.
+- [x] English words và boundary cases có regression tests.
+- [x] Test báo rõ input nào lệch output.
 
 **Verification:**
-- [ ] `cargo test -p vietc-engine`
+- [x] `cargo test -p vietc-engine`
 
 **Dependencies:** Task 1
 
@@ -45,9 +45,9 @@
 
 ## Checkpoint 1
 
-- [ ] Golden suite pass trên baseline.
-- [ ] Các thay đổi behavior mong muốn được allowlist rõ ràng.
-- [ ] Không bắt đầu migration nếu baseline chưa ổn định.
+- [x] Golden suite pass trên baseline.
+- [x] Các thay đổi behavior mong muốn được allowlist rõ ràng.
+- [x] Không bắt đầu migration nếu baseline chưa ổn định.
 
 ## Phase 2: Xây domain model và parser thuần
 
@@ -56,13 +56,13 @@
 **Description:** Tạo các type biểu diễn raw keys, mark, tone và cấu trúc âm tiết mà không render Unicode sớm.
 
 **Acceptance criteria:**
-- [ ] Tone và mark là hai trạng thái độc lập.
-- [ ] Type có invariant rõ ràng.
-- [ ] Không phụ thuộc IBus, Wayland, X11 hoặc uinput.
+- [x] Tone và mark là hai trạng thái độc lập.
+- [x] Type có invariant rõ ràng.
+- [x] Không phụ thuộc IBus, Wayland, X11 hoặc uinput.
 
 **Verification:**
-- [ ] Unit tests cho construction và boundary.
-- [ ] `cargo clippy -p vietc-engine --all-targets -- -D warnings`
+- [x] Unit tests cho construction và boundary.
+- [x] `cargo clippy -p vietc-engine --all-targets -- -D warnings`
 
 **Dependencies:** Task 2
 
@@ -78,13 +78,13 @@
 **Description:** Cài parser xác định ranh giới và cấu trúc âm tiết từ raw sequence.
 
 **Acceptance criteria:**
-- [ ] Parse đúng onset/nucleus/coda của corpus.
-- [ ] Xử lý `qu` và `gi` như glide theo điều kiện.
-- [ ] Không parse qua whitespace hoặc punctuation boundary.
+- [x] Parse đúng onset/nucleus/coda của corpus.
+- [x] Xử lý `qu` và `gi` như glide theo điều kiện.
+- [x] Không parse qua whitespace hoặc punctuation boundary.
 
 **Verification:**
-- [ ] Unit tests theo từng nhóm âm tiết.
-- [ ] Fuzz/property smoke test không panic.
+- [x] Unit tests theo từng nhóm âm tiết.
+- [x] Fuzz/property smoke test không panic.
 
 **Dependencies:** Task 3
 
@@ -102,13 +102,13 @@
 **Description:** Áp dụng tất cả mark rule trên parsed nucleus, không dùng backtrack toàn buffer.
 
 **Acceptance criteria:**
-- [ ] Hỗ trợ `aa`, `aw`, `ee`, `oo`, `ow`, `uw`, `uo+w`, `ua+w`, `dd`.
-- [ ] Mark trigger hợp lệ không phụ thuộc thứ tự với tone.
-- [ ] Trigger không áp dụng được có deterministic fallback.
+- [x] Hỗ trợ `aa`, `aw`, `ee`, `oo`, `ow`, `uw`, `uo+w`, `ua+w`, `dd`.
+- [x] Mark trigger hợp lệ không phụ thuộc thứ tự với tone.
+- [x] Trigger không áp dụng được có deterministic fallback.
 
 **Verification:**
-- [ ] Mark matrix tests pass.
-- [ ] `readme` và English corpus giữ nguyên.
+- [x] Mark matrix tests pass.
+- [x] `readme` và English corpus giữ nguyên.
 
 **Dependencies:** Task 4
 
@@ -124,13 +124,13 @@
 **Description:** Chọn tone cuối cùng có hiệu lực và đặt nó trên nucleus sau khi mark đã được giải quyết.
 
 **Acceptance criteria:**
-- [ ] Đủ năm tone.
-- [ ] Đúng vị trí cho nucleus đơn, đôi và ba nguyên âm.
-- [ ] Tone tự di chuyển khi mark làm thay đổi nucleus.
+- [x] Đủ năm tone.
+- [x] Đúng vị trí cho nucleus đơn, đôi và ba nguyên âm.
+- [x] Tone tự di chuyển khi mark làm thay đổi nucleus.
 
 **Verification:**
-- [ ] Tone placement matrix pass.
-- [ ] `dduojwc -> được` và các hoán vị policy cho phép pass.
+- [x] Tone placement matrix pass.
+- [x] `dduojwc -> được` và các hoán vị policy cho phép pass.
 
 **Dependencies:** Task 5
 
@@ -145,13 +145,13 @@
 **Description:** Render parsed syllable thành Unicode và tính replacement theo ký tự.
 
 **Acceptance criteria:**
-- [ ] Casing được giữ.
-- [ ] Delete count theo Unicode scalar/contract hiện hành, không theo byte.
-- [ ] Output ổn định với cùng raw input.
+- [x] Casing được giữ.
+- [x] Delete count theo Unicode scalar/contract hiện hành, không theo byte.
+- [x] Output ổn định với cùng raw input.
 
 **Verification:**
-- [ ] Renderer tests.
-- [ ] Replacement integration tests.
+- [x] Renderer tests.
+- [x] Replacement integration tests.
 
 **Dependencies:** Tasks 5, 6
 
@@ -164,9 +164,9 @@
 
 ## Checkpoint 2
 
-- [ ] Parser mới có thể render toàn bộ golden corpus.
-- [ ] Các mismatch được phân loại thành bug, behavior mới hoặc fallback.
-- [ ] Không có panic trong generated-input smoke tests.
+- [x] Parser mới có thể render toàn bộ golden corpus.
+- [x] Các mismatch được phân loại thành bug, behavior mới hoặc fallback.
+- [x] Không có panic trong generated-input smoke tests.
 
 ## Phase 4: Chứng minh tính tổng quát
 
@@ -175,13 +175,13 @@
 **Description:** Sinh các thứ tự trigger hợp lệ thay vì viết test riêng từng từ.
 
 **Acceptance criteria:**
-- [ ] Các hoán vị mark/tone hợp lệ hội tụ cùng output.
-- [ ] Generator bao phủ toàn bộ mark và tone classes.
-- [ ] Hoán vị ngoài policy không âm thầm tạo từ khác.
+- [x] Các hoán vị mark/tone hợp lệ hội tụ cùng output.
+- [x] Generator bao phủ toàn bộ mark và tone classes.
+- [x] Hoán vị ngoài policy không âm thầm tạo từ khác.
 
 **Verification:**
-- [ ] Chạy permutation suite.
-- [ ] Báo seed/input khi thất bại.
+- [x] Chạy permutation suite.
+- [x] Báo seed/input khi thất bại.
 
 **Dependencies:** Task 7
 
@@ -196,13 +196,13 @@
 **Description:** Chứng minh live input, replay và thao tác xóa dùng cùng semantics.
 
 **Acceptance criteria:**
-- [ ] Replay bằng live output.
-- [ ] Backspace từng raw key trả về state trước đó.
-- [ ] Trigger không vượt boundary hoặc focus reset.
+- [x] Replay bằng live output.
+- [x] Backspace từng raw key trả về state trước đó.
+- [x] Trigger không vượt boundary hoặc focus reset.
 
 **Verification:**
-- [ ] Property tests pass.
-- [ ] Existing replay tests pass.
+- [x] Property tests pass.
+- [x] Existing replay tests pass.
 
 **Dependencies:** Task 8
 
@@ -219,13 +219,13 @@
 **Description:** Chạy parser mới song song engine cũ trong test/debug để đo mismatch mà chưa đổi production output.
 
 **Acceptance criteria:**
-- [ ] Mismatch report có raw keys, legacy output và new output.
-- [ ] Allowlist chỉ chứa thay đổi behavior đã phê duyệt.
-- [ ] Production release không có chi phí shadow nếu flag tắt.
+- [x] Mismatch report có raw keys, legacy output và new output.
+- [x] Allowlist chỉ chứa thay đổi behavior đã phê duyệt.
+- [x] Production release không có chi phí shadow nếu flag tắt.
 
 **Verification:**
-- [ ] Golden suite chạy shadow mode.
-- [ ] Mismatch ngoài allowlist bằng 0.
+- [x] Golden suite chạy shadow mode.
+- [x] Mismatch ngoài allowlist bằng 0.
 
 **Dependencies:** Task 9
 
@@ -241,14 +241,14 @@
 **Description:** Dùng raw recomposition làm production path nhưng giữ public Engine contract.
 
 **Acceptance criteria:**
-- [ ] `EngineEvent`, macro, auto-restore, undo và flush giữ contract.
-- [ ] Không đổi protocol của daemon/uinputd.
-- [ ] Có feature flag hoặc rollback path tạm thời.
+- [x] `EngineEvent`, macro, auto-restore, undo và flush giữ contract.
+- [x] Không đổi protocol của daemon/uinputd.
+- [x] Có feature flag hoặc rollback path tạm thời.
 
 **Verification:**
-- [ ] `cargo test --workspace`
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] `git diff --check`
+- [x] `cargo test --workspace`
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`
+- [x] `git diff --check`
 
 **Dependencies:** Task 10
 
@@ -262,9 +262,9 @@
 
 ## Checkpoint 3
 
-- [ ] Workspace tests pass.
-- [ ] Shadow mismatch ngoài allowlist bằng 0.
-- [ ] Không thay đổi API/protocol desktop.
+- [x] Workspace tests pass.
+- [x] Shadow mismatch ngoài allowlist bằng 0.
+- [x] Không thay đổi API/protocol desktop.
 - [ ] Code review trước runtime rollout.
 
 ## Phase 6: COSMIC runtime validation
@@ -275,17 +275,27 @@
 
 **Acceptance criteria:**
 - [ ] Text editor, terminal, Chromium, Firefox và Electron pass.
-- [ ] Focus change, typing nhanh, backspace, paste và restart daemon pass.
-- [ ] Evidence được lưu theo runtime test convention.
+- [x] Controlled application matrix pass cho Chromium, Chrome, Electron, GTK, Qt và terminal trên Pop!_OS COSMIC.
+- [x] Direct-uinput protocol pass cho PING, TYPE, PASTE, BACKSPACE và REPLACE.
+- [ ] Controlled focus-switch stress chưa PASS: lần chạy duy nhất exit 101 do harness chưa nhận diện `ydotool`; deterministic contract đã PASS và harness đã được sửa nhưng không phát lại privileged suite trên cùng environment.
+- [ ] Controlled fast-input stress chưa PASS sau bounded production run mới: exit 101 do timeout. Trace direct-uinput xác nhận replacement đầu từng fail khi clipboard restore read-back diễn ra quá sớm; sau khi chuyển sang bounded polling, production transaction đã `applied`, nhưng chưa chạy lại privileged suite theo giới hạn một lần.
+- [x] Evidence được lưu theo runtime test convention.
 
 **Verification:**
-- [ ] Chạy privileged runtime suite với environment flags hiện có.
-- [ ] Không có mismatch giữa expected và observed text.
+- [x] Deterministic runtime suite sau khi triển khai stress tests: 43 passed, 0 failed, exit 0.
+- [x] Hai deterministic contract riêng cho focus-switch và fast-input pass, exit 0.
+- [ ] Focus-switch privileged stress: 0 passed, 1 failed, exit 101.
+- [ ] Fast-input privileged stress mới: 0 passed, 1 failed, exit 101 (`TimedOut`). Production trace trước fix ghi `Unicode insertion failed: clipboard unavailable`; trace sau fix ghi transaction đầu `applied`, nhưng automated observable scenario chưa được chạy lại.
+- [ ] Firefox vẫn FAILED với `TargetCopyFailed`.
+- [ ] COSMIC Edit vẫn FAILED vì daemonize ra ngoài owned process group.
+- [x] Process do stress fixture tạo đã được teardown; không kill process không chứng minh được ownership.
+
+**Terminal condition:** Task 12 dừng ở **BLOCKED/PARTIAL**. Không tự động retry privileged stress trên cùng environment. Chỉ tiếp tục khi blocker Firefox/COSMIC Edit hoặc external runtime environment đã thay đổi và có thể tạo evidence mới.
 
 **Dependencies:** Task 11
 
 **Files likely touched:**
-- `daemon/tests/runtime.rs`
+- `daemon/tests/runtime/mod.rs`
 - runtime evidence artifacts theo convention
 
 **Estimated scope:** M
@@ -300,13 +310,13 @@
 - [ ] Không có behavior khác Pop!_OS do integration layer.
 
 **Verification:**
-- [ ] Runtime evidence đầy đủ.
-- [ ] So sánh kết quả hai distro.
+- [ ] Runtime evidence đầy đủ. Blocked: cần chạy trên host Fedora COSMIC thật.
+- [ ] So sánh kết quả hai distro. Blocked cho tới khi có Fedora artifacts.
 
 **Dependencies:** Task 12
 
 **Files likely touched:**
-- `daemon/tests/runtime.rs`
+- `daemon/tests/runtime/mod.rs`
 - `docs/wayland-rootless.md`
 - `packaging/README.md`
 
@@ -368,3 +378,19 @@
 - [ ] Fedora COSMIC runtime matrix pass.
 - [ ] Legacy special-case path đã được xóa.
 - [ ] Rollback strategy và runtime evidence đã được review.
+### Runtime bugfix verification: casing và clipboard
+
+- [x] Fail-first regression chứng minh Caps Lock state không cập nhật trên production evdev path: exit 101 trước fix.
+- [x] Theo dõi Caps Lock press/toggle và dịch chữ theo `Shift XOR Caps Lock` trước Engine recomposition.
+- [x] Regression bao phủ `TIEENGS`, `DDUOWNGF`, `DDUOJWC`, `NEESU`, câu nhiều từ, Caps+Shift và toggle giữa hai từ.
+- [x] Fail-first regression chứng minh socket command có thể ACK trước verified clipboard restore: exit 101 trước fix.
+- [x] Direct uinput và socket uinputd restore đồng bộ, verify read-back, không ghi đè user change và cleanup failure/timeout.
+- [x] `git diff --check`: exit 0.
+- [x] `cargo test -p vietc-engine`: exit 0.
+- [x] `cargo test -p vietc-engine --features bamboo-telex-rollback`: exit 0.
+- [x] `cargo test -p vietc-uinputd`: exit 0.
+- [x] `cargo test -p vietc-daemon`: exit 0.
+- [x] `cargo test --workspace`: exit 0.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`: exit 0.
+- [x] Release daemon rebuilt/restarted; MainPID `1931295`, binary và SHA-256 recorded.
+- [ ] Privileged user scenarios chưa PASS: bounded socket verification exit 101 vì stale socket không có listener; production daemon thực tế dùng direct uinput backend.

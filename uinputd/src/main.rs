@@ -6,8 +6,8 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const UINPUT_MAX_NAME_SIZE: usize = 80;
 const UI_SET_EVBIT: u64 = 0x40045564;
@@ -16,6 +16,19 @@ const UI_DEV_CREATE: u64 = 0x5501;
 const UI_DEV_DESTROY: u64 = 0x5502;
 const UI_DEV_SETUP: u64 = 0x405c5503;
 const EV_KEY: u16 = 0x01;
+const CLIPBOARD_TRACE_LIMIT: usize = 128;
+static NEXT_CLIPBOARD_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
+static CLIPBOARD_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn trace_clipboard(sequence_id: u64, phase: &str, detail: &str) {
+    let trace_index = CLIPBOARD_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if trace_index < CLIPBOARD_TRACE_LIMIT {
+        eprintln!(
+            "[vietc-uinputd] clipboard trace={} sequence_id={} phase={} {}",
+            trace_index, sequence_id, phase, detail
+        );
+    }
+}
 
 fn ioctl(fd: i32, request: u64, arg: u64) -> Result<i32, String> {
     let result = unsafe { libc::ioctl(fd, request, arg) };
@@ -103,6 +116,7 @@ struct ClipState {
 struct UinputDevice {
     fd: i32,
     clip: Arc<ClipState>,
+    transaction_lock: Mutex<()>,
 }
 
 impl UinputDevice {
@@ -143,7 +157,11 @@ impl UinputDevice {
         });
 
         eprintln!("[vietc-uinputd] Device '{}' created", name);
-        Ok(Self { fd, clip })
+        Ok(Self {
+            fd,
+            clip,
+            transaction_lock: Mutex::new(()),
+        })
     }
 
     fn send_event(&self, type_: u16, code: u16, value: i32) {
@@ -275,31 +293,92 @@ impl UinputDevice {
         }
     }
 
-    fn paste_unicode(&self, text: &str) {
+    fn paste_unicode_unlocked(&self, text: &str, sequence_id: u64) -> bool {
+        let snapshot = read_clipboard();
+        trace_clipboard(
+            sequence_id,
+            "snapshot",
+            if snapshot.is_some() {
+                "state=present"
+            } else {
+                "state=empty-or-unavailable"
+            },
+        );
+
         {
             let mut state = self.clip.inner.lock().unwrap();
-            state.begin(read_clipboard(), text);
-            copy_to_clipboard(text);
+            state.begin(snapshot, text);
         }
 
-        std::thread::sleep(Duration::from_millis(5));
+        trace_clipboard(sequence_id, "temporary-text", "state=writing");
+        if !copy_to_clipboard(text) {
+            self.clip.inner.lock().unwrap().finish(None);
+            trace_clipboard(sequence_id, "temporary-text", "state=write-failed");
+            return false;
+        }
+        if read_clipboard().as_deref() != Some(text) {
+            self.clip.inner.lock().unwrap().finish(None);
+            trace_clipboard(sequence_id, "temporary-text", "state=read-back-failed");
+            return false;
+        }
+        trace_clipboard(sequence_id, "temporary-text", "state=verified");
+
         self.send_key(29, 1);
-        std::thread::sleep(Duration::from_millis(2));
         self.send_key(47, 1);
         self.send_key(47, 0);
         self.send_key(29, 0);
+        trace_clipboard(sequence_id, "paste", "state=sent");
 
-        // Wait until the target has consumed Ctrl+V, then restore the user's
-        // clipboard before returning. This prevents an immediate manual paste
-        // from seeing the temporary Vietnamese composition text.
-        std::thread::sleep(Duration::from_millis(50));
         let action = {
             let mut state = self.clip.inner.lock().unwrap();
             let current = read_clipboard();
             state.finish(current.as_deref())
         };
-        if let ClipboardInjectionAction::Restore(saved) = action {
-            copy_to_clipboard(&saved);
+        match action {
+            ClipboardInjectionAction::Restore(saved) => {
+                trace_clipboard(sequence_id, "restore", "state=writing");
+                let restored = restore_clipboard_verified(&saved);
+                trace_clipboard(
+                    sequence_id,
+                    "verified-read-back",
+                    if restored {
+                        "state=restored"
+                    } else {
+                        "state=failed"
+                    },
+                );
+                restored
+            }
+            ClipboardInjectionAction::SkipRestore => {
+                trace_clipboard(
+                    sequence_id,
+                    "restore",
+                    "state=skipped-user-clipboard-changed",
+                );
+                true
+            }
+        }
+    }
+
+    fn paste_unicode(&self, text: &str) -> bool {
+        let sequence_id = NEXT_CLIPBOARD_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
+        let _transaction = self.transaction_lock.lock().unwrap();
+        self.paste_unicode_unlocked(text, sequence_id)
+    }
+
+    fn replace(&self, count: usize, text: &str) -> bool {
+        let sequence_id = NEXT_CLIPBOARD_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
+        let _transaction = self.transaction_lock.lock().unwrap();
+        self.backspace_n(count);
+
+        let is_ascii = text
+            .bytes()
+            .all(|byte| UinputDevice::char_to_keycode(byte).is_some());
+        if is_ascii {
+            self.type_ascii(text);
+            true
+        } else {
+            self.paste_unicode_unlocked(text, sequence_id)
         }
     }
 }
@@ -328,28 +407,44 @@ fn read_clipboard() -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn copy_to_clipboard(text: &str) {
+fn copy_to_clipboard(text: &str) -> bool {
     let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
-    if is_wayland {
-        if let Ok(mut child) = Command::new("wl-copy")
+    let child = if is_wayland {
+        Command::new("wl-copy")
             .stdin(std::process::Stdio::piped())
             .spawn()
-        {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            let _ = child.wait();
-        }
-    } else if let Ok(mut child) = Command::new("xclip")
-        .args(["-selection", "clipboard"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(text.as_bytes());
-        }
+    } else {
+        Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+    };
+    let Ok(mut child) = child else {
+        return false;
+    };
+    let Some(mut stdin) = child.stdin.take() else {
         let _ = child.wait();
+        return false;
+    };
+    if stdin.write_all(text.as_bytes()).is_err() {
+        drop(stdin);
+        let _ = child.wait();
+        return false;
     }
+    drop(stdin);
+    child.wait().map(|status| status.success()).unwrap_or(false)
+}
+
+fn restore_clipboard_verified_with(
+    expected: &str,
+    mut write: impl FnMut(&str) -> bool,
+    mut read: impl FnMut() -> Option<String>,
+) -> bool {
+    write(expected) && read().as_deref() == Some(expected)
+}
+
+fn restore_clipboard_verified(expected: &str) -> bool {
+    restore_clipboard_verified_with(expected, copy_to_clipboard, read_clipboard)
 }
 
 fn runtime_socket_path(runtime_root: &Path) -> PathBuf {
@@ -527,16 +622,13 @@ fn handle_client(
                 let _ = writeln!(writer, "ERR bad count");
                 continue;
             };
-            uinput.backspace_n(count);
-            let is_ascii = text
-                .bytes()
-                .all(|byte| UinputDevice::char_to_keycode(byte).is_some());
-            if is_ascii {
-                uinput.type_ascii(text);
+            let success = uinput.replace(count, text);
+            let response = if success {
+                "OK"
             } else {
-                uinput.paste_unicode(text);
-            }
-            let _ = writeln!(writer, "OK");
+                "ERR injection failed"
+            };
+            let _ = writeln!(writer, "{response}");
         } else if let Some(n_str) = line.strip_prefix("BACKSPACE:") {
             if let Ok(n) = n_str.parse::<usize>() {
                 uinput.backspace_n(n);
@@ -548,15 +640,32 @@ fn handle_client(
             let is_ascii = text
                 .bytes()
                 .all(|b| UinputDevice::char_to_keycode(b).is_some());
-            if is_ascii {
+            let success = if is_ascii {
                 uinput.type_ascii(text);
+                true
             } else {
-                uinput.paste_unicode(text);
-            }
-            let _ = writeln!(writer, "OK");
+                uinput.paste_unicode(text)
+            };
+            let _ = writeln!(
+                writer,
+                "{}",
+                if success {
+                    "OK"
+                } else {
+                    "ERR injection failed"
+                }
+            );
         } else if let Some(text) = line.strip_prefix("PASTE:") {
-            uinput.paste_unicode(text);
-            let _ = writeln!(writer, "OK");
+            let success = uinput.paste_unicode(text);
+            let _ = writeln!(
+                writer,
+                "{}",
+                if success {
+                    "OK"
+                } else {
+                    "ERR injection failed"
+                }
+            );
         } else {
             let _ = writeln!(writer, "ERR unknown command");
         }
@@ -645,6 +754,89 @@ mod phase0_tests {
         assert_eq!(
             action,
             ClipboardInjectionAction::Restore("copied text".to_string())
+        );
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn unicode_command_ack_requires_verified_clipboard_restore() {
+        let mut state = ClipboardInjectionState::default();
+        state.begin(Some("user clipboard".to_string()), "đ");
+        let action = state.finish(Some("đ"));
+
+        assert_eq!(
+            action,
+            ClipboardInjectionAction::Restore("user clipboard".to_string())
+        );
+
+        let clipboard = std::cell::RefCell::new("đ".to_string());
+        let restore_verified = restore_clipboard_verified_with(
+            "user clipboard",
+            |text| {
+                *clipboard.borrow_mut() = text.to_string();
+                true
+            },
+            || Some(clipboard.borrow().clone()),
+        );
+        assert!(restore_verified);
+        assert_eq!(*clipboard.borrow(), "user clipboard");
+    }
+
+    #[test]
+    fn consecutive_unicode_replacements_preserve_original_clipboard() {
+        let mut state = ClipboardInjectionState::default();
+
+        state.begin(Some("user copy".to_string()), "tiếng");
+        assert_eq!(
+            state.finish(Some("tiếng")),
+            ClipboardInjectionAction::Restore("user copy".to_string())
+        );
+
+        state.begin(Some("user copy".to_string()), "Việt");
+        assert_eq!(
+            state.finish(Some("Việt")),
+            ClipboardInjectionAction::Restore("user copy".to_string())
+        );
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn user_clipboard_change_during_injection_is_not_overwritten() {
+        let mut state = ClipboardInjectionState::default();
+
+        state.begin(Some("old copy".to_string()), "tiếng");
+        assert_eq!(
+            state.finish(Some("new user copy")),
+            ClipboardInjectionAction::SkipRestore
+        );
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn failed_or_timed_out_injection_cleans_transaction_state() {
+        let mut state = ClipboardInjectionState::default();
+
+        state.begin(Some("user copy".to_string()), "tiếng");
+        assert_eq!(state.finish(None), ClipboardInjectionAction::SkipRestore);
+        assert!(!state.is_active());
+
+        state.begin(Some("next copy".to_string()), "Việt");
+        assert_eq!(
+            state.finish(Some("Việt")),
+            ClipboardInjectionAction::Restore("next copy".to_string())
+        );
+    }
+
+    #[test]
+    fn overlapping_replacement_does_not_replace_original_snapshot() {
+        let mut state = ClipboardInjectionState::default();
+
+        state.begin(Some("user copy".to_string()), "tiếng");
+        state.begin(Some("tiếng".to_string()), "Việt");
+
+        assert_eq!(
+            state.finish(Some("Việt")),
+            ClipboardInjectionAction::Restore("user copy".to_string())
         );
         assert!(!state.is_active());
     }

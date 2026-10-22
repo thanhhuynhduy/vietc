@@ -2,6 +2,7 @@
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,9 +13,21 @@ use super::inject::{InjectResult, KeyInjector};
 /// only triggers a single restore once the user pauses — the user's clipboard
 /// is never pasted into the text while the target app might still be reading
 /// our freshly pasted word.
-const RESTORE_DEBOUNCE: Duration = Duration::from_millis(600);
 const CLIPBOARD_READY_TIMEOUT: Duration = Duration::from_millis(250);
 const CLIPBOARD_READY_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const CLIPBOARD_TRACE_LIMIT: usize = 128;
+static NEXT_CLIPBOARD_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
+static CLIPBOARD_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn trace_clipboard(sequence_id: u64, phase: &str, detail: &str) {
+    let trace_index = CLIPBOARD_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+    if trace_index < CLIPBOARD_TRACE_LIMIT {
+        eprintln!(
+            "[vietc] clipboard trace={} sequence_id={} phase={} {}",
+            trace_index, sequence_id, phase, detail
+        );
+    }
+}
 
 const UINPUT_MAX_NAME_SIZE: usize = 80;
 const UI_SET_EVBIT: u64 = 0x40045564;
@@ -940,63 +953,94 @@ impl UinputInjector {
     ///
     /// Returns whether the text was successfully copied to the clipboard.
     fn paste_via_clipboard(&self, text: &str) -> bool {
+        let sequence_id = NEXT_CLIPBOARD_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
         let t_total = std::time::Instant::now();
         let _clipboard_io = self.clip.io_lock.lock().unwrap();
+
         let needs_snapshot = {
             let mut st = self.clip.inner.lock().unwrap();
             st.restore_due = None;
             !st.burst.is_active()
         };
         let current_clipboard = needs_snapshot.then(Self::read_clipboard).flatten();
+        trace_clipboard(
+            sequence_id,
+            "snapshot",
+            if current_clipboard.is_some() {
+                "state=present"
+            } else {
+                "state=empty-or-unavailable"
+            },
+        );
+
         {
             let mut st = self.clip.inner.lock().unwrap();
             st.burst.begin_injection(current_clipboard, text);
         }
 
+        trace_clipboard(sequence_id, "temporary-text", "state=writing");
         if !Self::copy_to_clipboard(text) {
-            let mut st = self.clip.inner.lock().unwrap();
-            st.restore_due = Some(Instant::now());
-            drop(st);
-            self.clip.cv.notify_all();
+            self.clip.inner.lock().unwrap().burst.reset();
+            trace_clipboard(sequence_id, "temporary-text", "state=write-failed");
             return false;
         }
 
-        let ready_deadline = Instant::now() + CLIPBOARD_READY_TIMEOUT;
-        loop {
-            if Self::read_clipboard().as_deref() == Some(text) {
-                break;
-            }
-            if Instant::now() >= ready_deadline {
-                let mut st = self.clip.inner.lock().unwrap();
-                st.restore_due = Some(Instant::now());
-                drop(st);
-                self.clip.cv.notify_all();
-                return false;
-            }
-            std::thread::sleep(CLIPBOARD_READY_POLL_INTERVAL);
+        if !Self::wait_for_clipboard_value(text) {
+            self.clip.inner.lock().unwrap().burst.reset();
+            trace_clipboard(sequence_id, "temporary-text", "state=read-back-failed");
+            return false;
         }
+        trace_clipboard(sequence_id, "temporary-text", "state=verified");
 
         if self.send_ctrl_v().is_err() {
-            let mut st = self.clip.inner.lock().unwrap();
-            st.restore_due = Some(Instant::now());
-            drop(st);
-            self.clip.cv.notify_all();
+            self.clip.inner.lock().unwrap().burst.reset();
+            trace_clipboard(sequence_id, "paste", "state=failed");
             return false;
         }
-        let elapsed = (std::time::Instant::now() - t_total).as_millis();
-        if elapsed > 20 {
-            eprintln!("[vietc] paste took {}ms", elapsed);
-        }
+        trace_clipboard(sequence_id, "paste", "state=sent");
 
-        // Schedule a debounced restore. While the user keeps typing this gets
-        // pushed back, so the user's clipboard is only restored once typing
-        // settles — never overwriting our freshly pasted word mid-stream.
-        {
+        let current_clipboard = Self::read_clipboard();
+        let action = {
             let mut st = self.clip.inner.lock().unwrap();
-            st.restore_due = Some(Instant::now() + RESTORE_DEBOUNCE);
+            st.burst.finish_restore(current_clipboard.as_deref())
+        };
+
+        let success = match action {
+            ClipboardAction::Restore(saved) => {
+                trace_clipboard(sequence_id, "restore", "state=writing");
+                if !Self::copy_to_clipboard(&saved) {
+                    self.clip.inner.lock().unwrap().burst.reset();
+                    trace_clipboard(sequence_id, "restore", "state=write-failed");
+                    false
+                } else if !Self::wait_for_clipboard_value(&saved) {
+                    self.clip.inner.lock().unwrap().burst.reset();
+                    trace_clipboard(sequence_id, "verified-read-back", "state=failed");
+                    false
+                } else {
+                    self.clip.inner.lock().unwrap().burst.complete_restore();
+                    trace_clipboard(sequence_id, "verified-read-back", "state=restored");
+                    true
+                }
+            }
+            ClipboardAction::SkipRestore => {
+                trace_clipboard(
+                    sequence_id,
+                    "restore",
+                    "state=skipped-user-clipboard-changed",
+                );
+                true
+            }
+            ClipboardAction::WriteInjected(_) => false,
+        };
+
+        let elapsed = t_total.elapsed().as_millis();
+        if elapsed > 20 {
+            eprintln!(
+                "[vietc] clipboard sequence_id={} elapsed_ms={}",
+                sequence_id, elapsed
+            );
         }
-        self.clip.cv.notify_all();
-        true
+        success
     }
 
     fn session_path_metadata(path: &Path) -> std::io::Result<SessionPathMetadata> {
@@ -1058,6 +1102,19 @@ impl UinputInjector {
         )
     }
 
+    fn wait_for_clipboard_value(expected: &str) -> bool {
+        let deadline = Instant::now() + CLIPBOARD_READY_TIMEOUT;
+        loop {
+            if Self::read_clipboard().as_deref() == Some(expected) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(CLIPBOARD_READY_POLL_INTERVAL);
+        }
+    }
+
     /// Copy text to clipboard using xclip (X11) or wl-copy (Wayland).
     /// NOTE: direct X11 API is avoided here because it can interact badly with
     /// the evdev keyboard grab and/or focus — xclip is simpler and works reliably
@@ -1084,9 +1141,9 @@ impl UinputInjector {
                     let _ = stdin.write_all(s.as_bytes());
                 }
                 if is_wayland {
-                    // --paste-once: don't wait — child stays alive until the
-                    // compositor reads the data (Ctrl+V arrives later).
-                    // Detach the wait so we don't block.
+                    // wl-copy may retain clipboard ownership after its launcher
+                    // exits. Reap asynchronously while readiness and restoration
+                    // are verified independently by bounded read-back polling.
                     std::thread::spawn(move || {
                         let _ = child.wait();
                     });
@@ -1409,6 +1466,21 @@ mod clipboard_burst_tests {
             ClipboardAction::SkipRestore
         );
         assert!(!state.is_active());
+    }
+
+    #[test]
+    fn each_unicode_command_finishes_its_clipboard_transaction_before_returning() {
+        let mut state = ClipboardBurstState::default();
+
+        for injected in ["đ", "đư", "đườ", "đường"] {
+            state.begin_injection(Some("user clipboard".to_string()), injected);
+            assert_eq!(
+                state.finish_restore(Some(injected)),
+                ClipboardAction::Restore("user clipboard".to_string())
+            );
+            state.complete_restore();
+            assert!(!state.is_active());
+        }
     }
 }
 

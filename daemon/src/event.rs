@@ -113,6 +113,15 @@ pub fn is_toggle_combination_state(key_state: &evdev::AttributeSet<evdev::Key>, 
     key_state.contains(target)
 }
 
+pub fn key_to_char_with_case(key: evdev::Key, shift: bool, caps_lock: bool) -> Option<char> {
+    key_to_char(key).map(|mut ch| {
+        if ch.is_ascii_alphabetic() && (shift ^ caps_lock) {
+            ch = ch.to_ascii_uppercase();
+        }
+        ch
+    })
+}
+
 pub fn key_to_char(key: evdev::Key) -> Option<char> {
     match key {
         evdev::Key::KEY_A => Some('a'),
@@ -260,6 +269,26 @@ mod tests {
         let keys = "Ngayf xuaw, trong mootj khu ruwngf raamj cos mootj con Voi raats hung duwx.";
         let expected = "Ngày xưa, trong một khu rừng rậm có một con Voi rất hung dữ.";
         assert_eq!(render("telex", keys), expected);
+    }
+
+    #[test]
+    fn uppercase_telex_raw_keys_survive_runtime_injection_path() {
+        let raw = [
+            evdev::Key::KEY_T,
+            evdev::Key::KEY_I,
+            evdev::Key::KEY_E,
+            evdev::Key::KEY_E,
+            evdev::Key::KEY_N,
+            evdev::Key::KEY_G,
+            evdev::Key::KEY_S,
+        ];
+        let keys = raw
+            .into_iter()
+            .map(|key| key_to_char_with_case(key, true, false).expect("printable key"))
+            .collect::<String>();
+
+        assert_eq!(keys, "TIEENGS");
+        assert_eq!(render("telex", &keys), "TIẾNG");
     }
 
     #[test]

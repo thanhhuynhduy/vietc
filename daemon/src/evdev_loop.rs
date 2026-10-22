@@ -1,8 +1,11 @@
 use std::collections::HashSet;
 use std::fs;
 use std::os::unix::io::AsRawFd;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+static CAPS_SHIFT_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
+const CAPS_SHIFT_TRACE_LIMIT: usize = 96;
 
 use crate::daemon::Daemon;
 use crate::display;
@@ -11,6 +14,7 @@ use crate::display::DisplayServer;
 use crate::event::{
     is_caps_lock_on, is_flush_char, is_modifier_held_shift, is_modifier_pressed,
     is_toggle_combination_state, is_toggle_key, is_vn_control_key, key_to_char,
+    key_to_char_with_case,
 };
 use crate::focus::{should_expire_unknown_composition, SharedFocusSnapshot};
 use crate::inject::{create_injector, execute_commands};
@@ -21,6 +25,23 @@ pub struct EvdevSharedState {
     pub focus: SharedFocusSnapshot,
     pub config_changed: Arc<std::sync::atomic::AtomicBool>,
     pub status_changed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+fn update_keyboard_state(
+    key_state: &mut evdev::AttributeSet<evdev::Key>,
+    caps_lock: &mut bool,
+    key: evdev::Key,
+    value: i32,
+) {
+    if value == 1 {
+        key_state.insert(key);
+    } else if value == 0 {
+        key_state.remove(key);
+    }
+
+    if key == evdev::Key::KEY_CAPSLOCK && value == 1 {
+        *caps_lock = !*caps_lock;
+    }
 }
 
 pub fn run_with_evdev(
@@ -192,7 +213,7 @@ pub fn run_with_evdev(
             }
 
             let (ref mut device, ref _name) = devices[i];
-            let caps = device_states[i].1;
+            let mut caps = device_states[i].1;
             let mut key_state = std::mem::take(&mut device_states[i].0);
 
             let event_list = match device.fetch_events() {
@@ -218,11 +239,30 @@ pub fn run_with_evdev(
                 let value = event.value();
                 let key = evdev::Key(keycode);
 
-                // Update key state dynamically
-                if value == 1 {
-                    key_state.insert(key);
-                } else if value == 0 {
-                    key_state.remove(key);
+                // Update modifier and lock state before translating this event.
+                update_keyboard_state(&mut key_state, &mut caps, key, value);
+
+                if matches!(
+                    key,
+                    evdev::Key::KEY_CAPSLOCK
+                        | evdev::Key::KEY_LEFTSHIFT
+                        | evdev::Key::KEY_RIGHTSHIFT
+                ) {
+                    let trace_index = CAPS_SHIFT_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if trace_index < CAPS_SHIFT_TRACE_LIMIT {
+                        let action = match value {
+                            0 => "release",
+                            1 => "press",
+                            2 => "repeat",
+                            _ => "unknown",
+                        };
+                        log_info(&format!(
+                            "[vietc] keyboard-state trace={trace_index} device={i} key={key:?} action={action} value={value} caps_led={} left_shift={} right_shift={}",
+                            caps,
+                            key_state.contains(evdev::Key::KEY_LEFTSHIFT),
+                            key_state.contains(evdev::Key::KEY_RIGHTSHIFT),
+                        ));
+                    }
                 }
 
                 // Completely bypass all IME processing for terminal emulators, IDE terminals, and games
@@ -336,7 +376,9 @@ pub fn run_with_evdev(
                         if consumed_keys.contains(&keycode) {
                             consumed_keys.remove(&keycode);
                         }
-                        if let Some(mut ch) = key_to_char(key) {
+                        if let Some(ch) =
+                            key_to_char_with_case(key, is_modifier_held_shift(&key_state), caps)
+                        {
                             let gap = last_key_time.elapsed();
                             last_key_time = std::time::Instant::now();
 
@@ -432,10 +474,6 @@ pub fn run_with_evdev(
                                 }
                             }
 
-                            let shift = is_modifier_held_shift(&key_state);
-                            if ch.is_ascii_alphabetic() && (shift ^ caps) {
-                                ch = ch.to_ascii_uppercase();
-                            }
                             let buf_before = daemon.engine.buffer().chars().count();
                             let commands = daemon.process_key(ch);
                             if !commands.is_empty() {
@@ -498,8 +536,8 @@ pub fn run_with_evdev(
                 }
             }
 
-            // Save updated key state back
-            device_states[i].0 = key_state;
+            // Save updated key and lock state back.
+            device_states[i] = (key_state, caps);
         }
 
         // Remove any devices that errored out (e.g. a uinput virtual keyboard
@@ -619,6 +657,100 @@ mod grabbed_event_stream_tests {
         text.chars()
             .flat_map(|ch| [TestEvent::Press(ch), TestEvent::Release(ch)])
             .collect()
+    }
+
+    fn translated_key(
+        key_state: &evdev::AttributeSet<evdev::Key>,
+        caps_lock: bool,
+        key: evdev::Key,
+    ) -> char {
+        key_to_char_with_case(key, is_modifier_held_shift(key_state), caps_lock)
+            .expect("test key must translate")
+    }
+
+    #[test]
+    fn production_evdev_state_tracks_caps_shift_and_lock_toggles() {
+        let mut key_state = evdev::AttributeSet::new();
+        let mut caps_lock = false;
+
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        assert!(caps_lock);
+        assert_eq!(
+            translated_key(&key_state, caps_lock, evdev::Key::KEY_A),
+            'A'
+        );
+
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_LEFTSHIFT, 1);
+        assert_eq!(
+            translated_key(&key_state, caps_lock, evdev::Key::KEY_A),
+            'a'
+        );
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_LEFTSHIFT, 0);
+
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 0);
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        assert!(!caps_lock);
+        assert_eq!(
+            translated_key(&key_state, caps_lock, evdev::Key::KEY_A),
+            'a'
+        );
+    }
+
+    #[test]
+    fn production_evdev_casing_composes_multiple_words_without_mixed_case() {
+        let cases = [
+            ("TIEENGS", "TIẾNG"),
+            ("DDUOWNGF", "ĐƯỜNG"),
+            ("DDUOJWC", "ĐƯỢC"),
+            ("NEESU", "NẾU"),
+            ("TIEENGS DDUOWNGF DDUOJWC NEESU", "TIẾNG ĐƯỜNG ĐƯỢC NẾU"),
+        ];
+
+        for (raw, expected) in cases {
+            assert_eq!(
+                simulate_grabbed_telex(&physical_stream(raw)),
+                expected,
+                "raw={raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_evdev_caps_toggle_between_words_does_not_mix_case() {
+        let mut key_state = evdev::AttributeSet::new();
+        let mut caps_lock = false;
+        let mut translated = String::new();
+
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        for key in [
+            evdev::Key::KEY_T,
+            evdev::Key::KEY_I,
+            evdev::Key::KEY_E,
+            evdev::Key::KEY_E,
+            evdev::Key::KEY_N,
+            evdev::Key::KEY_G,
+            evdev::Key::KEY_S,
+        ] {
+            translated.push(translated_key(&key_state, caps_lock, key));
+        }
+        translated.push(' ');
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 0);
+        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        for key in [
+            evdev::Key::KEY_N,
+            evdev::Key::KEY_E,
+            evdev::Key::KEY_E,
+            evdev::Key::KEY_S,
+            evdev::Key::KEY_U,
+        ] {
+            translated.push(translated_key(&key_state, caps_lock, key));
+        }
+
+        assert_eq!(translated, "TIEENGS neesu");
+        assert_eq!(
+            simulate_grabbed_telex(&physical_stream(&translated)),
+            "TIẾNG nếu"
+        );
     }
 
     #[test]

@@ -25,8 +25,16 @@ pub enum EngineEvent {
     Paste(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TelexBackend {
+    Recomposition,
+    BambooRollback,
+}
+
 pub struct Engine {
     bamboo: BambooEngine,
+    method: InputMethod,
+    telex_backend: TelexBackend,
     macros: HashMap<String, String>,
     raw_buffer: String,
     paste_mode: bool,
@@ -40,8 +48,19 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(method: InputMethod) -> Self {
+        let telex_backend = if cfg!(feature = "bamboo-telex-rollback") {
+            TelexBackend::BambooRollback
+        } else {
+            TelexBackend::Recomposition
+        };
+        Self::with_telex_backend(method, telex_backend)
+    }
+
+    fn with_telex_backend(method: InputMethod, telex_backend: TelexBackend) -> Self {
         Self {
             bamboo: BambooEngine::new(method),
+            method,
+            telex_backend,
             macros: HashMap::new(),
             raw_buffer: String::new(),
             paste_mode: false,
@@ -108,8 +127,23 @@ impl Engine {
     }
 
     pub fn set_method(&mut self, method: InputMethod) {
+        self.method = method;
         self.bamboo.set_method(method);
         self.reset();
+    }
+
+    fn uses_recomposition(&self) -> bool {
+        self.method == InputMethod::Telex
+            && self.telex_backend == TelexBackend::Recomposition
+            && self.boundary != BoundaryState::Invalidated
+    }
+
+    fn visible_output(&self) -> String {
+        if self.uses_recomposition() {
+            crate::telex::resolve_and_render(&self.raw_buffer)
+        } else {
+            self.bamboo.get_output()
+        }
     }
 
     pub fn enter_paste_mode(&mut self) {
@@ -162,7 +196,7 @@ impl Engine {
             last_output = composing.clone();
         }
 
-        let output = engine.bamboo.get_output();
+        let output = engine.visible_output();
         if !output.is_empty() {
             last_output = output.clone();
         }
@@ -213,17 +247,14 @@ impl Engine {
                     engine.reset();
                 }
                 crate::event::InputEvent::Paste(text) => {
-                    for ch in text.chars() {
-                        if let Some(out) = engine.bamboo.process_key(ch) {
-                            composing = out;
-                        }
-                    }
+                    engine.reduce(PhysicalEvent::Paste(text.clone()));
+                    composing = engine.buffer();
                     last_output = composing.clone();
                 }
             }
         }
 
-        let output = engine.bamboo.get_output();
+        let output = engine.visible_output();
         let output_is_empty = output.is_empty();
         if !output.is_empty() {
             last_output = output;
@@ -394,7 +425,7 @@ impl Engine {
                 return None;
             }
 
-            let previous = self.bamboo.get_output();
+            let previous = self.visible_output();
             let prev_len = previous.chars().count();
 
             // Check for macro
@@ -414,7 +445,7 @@ impl Engine {
             return None;
         }
 
-        let previous = self.bamboo.get_output();
+        let previous = self.visible_output();
         let prev_len = previous.chars().count();
 
         if let Some(undo) = self.bamboo.undo_telex_transform(ch, &self.raw_buffer) {
@@ -481,11 +512,11 @@ impl Engine {
     }
 
     pub fn buffer(&self) -> String {
-        self.bamboo.get_output()
+        self.visible_output()
     }
 
     pub fn state(&self) -> CompositionState {
-        let visible = self.bamboo.get_output();
+        let visible = self.visible_output();
         CompositionState {
             raw_keys: self.raw_buffer.clone(),
             case_shape: case_shape(&self.raw_buffer),

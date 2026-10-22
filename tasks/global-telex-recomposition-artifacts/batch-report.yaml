@@ -1,0 +1,72 @@
+batch_id: "phase-6"
+completed_tasks: []
+blocked_tasks:
+  - task_id: "Task 12"
+    reason: "Deterministic stress contracts pass, but privileged focus-switch and fast-input runs exited 101; Firefox and COSMIC Edit also remain failed."
+    required_task_ids: []
+  - task_id: "Task 13"
+    reason: "Requires execution and persisted evidence from a real Fedora COSMIC host."
+    required_task_ids: ["Task 12"]
+files_changed:
+  Task 12:
+    - file: "daemon/tests/runtime/mod.rs"
+      change_type: "modified"
+      description: "Added deterministic and privileged controlled focus-switch and bounded fast-input stress coverage."
+    - file: "tasks/global-telex-recomposition-todo.md"
+      change_type: "modified"
+      description: "Recorded honest stress failures, blockers, and terminal condition."
+    - file: "tasks/global-telex-recomposition-artifacts/phase6-runtime-report.md"
+      change_type: "modified"
+      description: "Recorded commands, exit codes, exact observed output, environment, cleanup, and evidence paths."
+    - file: "tasks/global-telex-recomposition-artifacts/batch-report.yaml"
+      change_type: "modified"
+      description: "Kept Task 12 blocked with current stress evidence."
+    - file: "tasks/global-telex-recomposition-artifacts/checkpoints/tasks-to-impl.yaml"
+      change_type: "modified"
+      description: "Added terminal condition preventing automatic retry on the same environment."
+evidence_mapping:
+  Task 12:
+    - upstream: "tasks/global-telex-recomposition-todo.md#Task 12"
+      output: "daemon/tests/runtime/mod.rs"
+      evidence: "target/runtime-artifacts/phase6-focus-switch-stress.log"
+    - upstream: "tasks/global-telex-recomposition-todo.md#Task 12"
+      output: "daemon/tests/runtime/mod.rs"
+      evidence: "target/runtime-artifacts/phase6-fast-input-stress.log"
+traceability:
+  - requirement: "Controlled focus-switch stress"
+    task: "Task 12"
+    status: "failed"
+  - requirement: "Controlled fast-input stress"
+    task: "Task 12"
+    status: "failed"
+  - requirement: "Firefox and COSMIC Edit required targets"
+    task: "Task 12"
+    status: "blocked"
+protocol_violation: false
+errors:
+  - "privileged_focus_switch_stress_is_observable_end_to_end exited 101"
+  - "privileged_fast_input_stress_is_observable_end_to_end exited 101; expected được, observed dduojwc"
+warnings:
+  - severity: "HIGH"
+    message: "Task 12 cannot complete while Firefox, COSMIC Edit, focus-switch, and fast-input acceptance criteria remain failed."
+test_results:
+  deterministic_runtime:
+    command: "cargo test -p vietc-daemon --test daemon_suite deterministic_ -- --nocapture"
+    exit_code: 0
+    passed: 43
+    failed: 0
+    skipped: 0
+  focus_switch_stress:
+    exit_code: 101
+    passed: 0
+    failed: 1
+    skipped: 0
+  fast_input_stress:
+    exit_code: 101
+    passed: 0
+    failed: 1
+    skipped: 0
+terminal_condition:
+  stop: true
+  retry_same_environment: false
+  reason: "Remaining blockers depend on Firefox, COSMIC Edit, or external desktop/input environment changes."

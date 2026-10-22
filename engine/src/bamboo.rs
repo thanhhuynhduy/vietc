@@ -558,6 +558,18 @@ fn apply_tone_to_char(ch: char, tone: char) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telex::resolve_and_render;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ShadowMismatch {
+        raw_input: &'static str,
+        legacy_output: String,
+        recomposed_output: String,
+        category: &'static str,
+        approved: bool,
+    }
+
+    const APPROVED_SHADOW_DIFFERENCES: &[&str] = &["dduocwj", "neesu"];
 
     fn process(method: InputMethod, input: &str) -> String {
         let mut engine = BambooEngine::new(method);
@@ -568,6 +580,74 @@ mod tests {
             }
         }
         output
+    }
+
+    #[test]
+    fn phase5_shadow_recomposition_matches_phase1_golden_cases() {
+        let cases = [
+            ("mark", "aa"),
+            ("mark", "aw"),
+            ("mark", "ee"),
+            ("mark", "oo"),
+            ("mark", "ow"),
+            ("mark", "uw"),
+            ("stroke", "dd"),
+            ("tone", "as"),
+            ("tone", "af"),
+            ("tone", "ar"),
+            ("tone", "ax"),
+            ("tone", "aj"),
+            ("nucleus-coda", "tieengs"),
+            ("nucleus-coda", "dduowngf"),
+            ("free-order", "dduojwc"),
+            ("free-order", "neues"),
+            ("free-order", "dduocwj"),
+            ("free-order", "neesu"),
+            ("english-fallback", "teele"),
+            ("english-fallback", "fixx"),
+            ("english-fallback", "addd"),
+            ("english-fallback", "aww"),
+            ("literal-fallback", "readme"),
+            ("literal-fallback", "type"),
+            ("casing", "TIEENGS"),
+            ("casing", "ATXX"),
+        ];
+
+        let mismatches = cases
+            .into_iter()
+            .filter_map(|(category, raw_input)| {
+                let legacy_output = crate::Engine::replay_keystrokes(
+                    InputMethod::Telex,
+                    &HashMap::new(),
+                    &raw_input.chars().collect::<Vec<_>>(),
+                )
+                .0;
+                let recomposed_output = resolve_and_render(raw_input);
+                (legacy_output != recomposed_output).then(|| ShadowMismatch {
+                    raw_input,
+                    legacy_output,
+                    recomposed_output,
+                    category,
+                    approved: APPROVED_SHADOW_DIFFERENCES.contains(&raw_input),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let unapproved = mismatches
+            .iter()
+            .filter(|mismatch| !mismatch.approved)
+            .collect::<Vec<_>>();
+
+        assert!(
+            unapproved.is_empty(),
+            "unapproved shadow mismatches: {unapproved:#?}; all mismatches: {mismatches:#?}"
+        );
+        assert!(
+            mismatches
+                .iter()
+                .all(|mismatch| APPROVED_SHADOW_DIFFERENCES.contains(&mismatch.raw_input)),
+            "shadow allowlist contains no cases beyond approved differences: {mismatches:#?}"
+        );
     }
 
     #[test]

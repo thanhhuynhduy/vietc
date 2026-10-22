@@ -1,0 +1,33 @@
+checkpoint: "phase-6-runtime-validation"
+status: "blocked"
+completed_tasks: []
+blocked_tasks:
+  - task_id: "Task 12"
+    reason: "Privileged focus-switch and fast-input stress failed; Firefox and COSMIC Edit remain failed."
+  - task_id: "Task 13"
+    reason: "A real Fedora COSMIC host is required."
+implemented_files:
+  - "daemon/tests/runtime/mod.rs"
+  - "tasks/global-telex-recomposition-todo.md"
+  - "tasks/global-telex-recomposition-artifacts/phase6-runtime-report.md"
+  - "tasks/global-telex-recomposition-artifacts/batch-report.yaml"
+  - "tasks/global-telex-recomposition-artifacts/checkpoints/tasks-to-impl.yaml"
+verification:
+  - command: "cargo test -p vietc-daemon --test daemon_suite deterministic_ -- --nocapture"
+    exit_code: 0
+    result: "43 passed, 0 failed"
+  - command: "privileged_focus_switch_stress_is_observable_end_to_end"
+    exit_code: 101
+    result: "failed before interaction because ydotool was absent from harness capability list"
+  - command: "privileged_fast_input_stress_is_observable_end_to_end"
+    exit_code: 101
+    result: "expected được, observed dduojwc"
+next_actions:
+  - "Resolve Firefox controlled focus and observable text."
+  - "Resolve COSMIC Edit ownership, focus, observation, and teardown."
+  - "Re-run stress suites only after a relevant environment or blocker change."
+terminal_condition:
+  stop_checkpoint: true
+  automatic_retry: false
+  same_environment_retry: false
+  reason: "Blockers depend on Firefox, COSMIC Edit, or external desktop/input environment."

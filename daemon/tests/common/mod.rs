@@ -2,6 +2,7 @@
 //! Viet+ integration test harness.
 
 pub mod clipboard;
+pub mod cosmic_toplevel;
 pub mod evidence;
 pub mod virtual_keyboard;
 

@@ -644,3 +644,68 @@ fn vni_complex_words() {
     assert_eq!(get_display(&process_input(&mut e, "muo6ng4 ")), "muỗng ");
     assert_eq!(get_display(&process_input(&mut e, "tuye6t5 ")), "tuyệt ");
 }
+
+#[test]
+fn phase4_replay_matches_live_processing_for_golden_inputs() {
+    let macros = std::collections::HashMap::new();
+
+    for input in ["dduojwc", "dduocwj", "neues", "neesu", "TIEENGS"] {
+        let mut engine = Engine::new(InputMethod::Telex);
+        let live = get_display(&process_input(&mut engine, input));
+        let keys: Vec<char> = input.chars().collect();
+        let (replayed, did_flush) = Engine::replay_keystrokes(InputMethod::Telex, &macros, &keys);
+
+        assert_eq!(
+            replayed, live,
+            "input={input:?}, expected={live:?}, actual={replayed:?}, category=replay-live, case_id=phase4-engine-replay"
+        );
+        assert!(!did_flush, "input={input:?}, case_id=phase4-engine-replay");
+    }
+}
+
+#[test]
+fn phase4_backspace_removes_one_raw_key_and_restores_each_prior_state() {
+    for input in ["dduojwc", "dduocwj", "neues", "neesu"] {
+        let mut engine = Engine::new(InputMethod::Telex);
+        for ch in input.chars() {
+            engine.process_key(ch);
+        }
+
+        let prefixes: Vec<String> = (0..=input.chars().count())
+            .map(|length| input.chars().take(length).collect())
+            .collect();
+
+        for expected_raw in prefixes.iter().rev().skip(1) {
+            engine.reduce(crate::state::PhysicalEvent::Backspace);
+            assert_eq!(
+                engine.state().raw_keys,
+                *expected_raw,
+                "input={input:?}, expected={expected_raw:?}, actual={:?}, category=backspace-raw-key, case_id=phase4-engine-backspace",
+                engine.state().raw_keys
+            );
+        }
+    }
+}
+
+#[test]
+fn phase4_focus_change_invalidates_composition_and_prevents_trigger_crossing() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    for ch in "ban".chars() {
+        engine.reduce(crate::state::PhysicalEvent::Printable(ch));
+    }
+
+    engine.reduce(crate::state::PhysicalEvent::FocusChanged);
+    assert!(engine.state().raw_keys.is_empty());
+    assert_eq!(
+        engine.state().boundary,
+        crate::state::BoundaryState::Invalidated
+    );
+
+    engine.reduce(crate::state::PhysicalEvent::Printable('s'));
+    assert_eq!(
+        engine.buffer(),
+        "s",
+        "input=\"ban<focus>s\", expected=\"s\", actual={:?}, category=focus-boundary, case_id=phase4-engine-focus",
+        engine.buffer()
+    );
+}

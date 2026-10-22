@@ -6,6 +6,7 @@ pub mod event;
 mod input_method;
 pub mod spelling;
 mod state;
+pub mod telex;
 
 #[cfg(test)]
 mod tests;

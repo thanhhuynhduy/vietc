@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Explicit capability gates for privileged runtime verification.
 
+use crate::common;
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -178,14 +180,17 @@ impl RuntimeEnvironment {
         mut tool_available: impl FnMut(&str) -> bool,
         uinput_available: bool,
     ) -> Self {
-        const TOOLS: [&str; 12] = [
+        const TOOLS: [&str; 15] = [
             "chromium",
             "chromium-browser",
             "google-chrome",
             "electron",
+            "firefox",
+            "cosmic-edit",
             "zenity",
             "python3",
             "wtype",
+            "ydotool",
             "xdotool",
             "gnome-terminal",
             "konsole",
@@ -1732,32 +1737,57 @@ fn ctrl_v_fallback_has_control_and_observable_treatment_outcomes() {
 }
 
 fn tool_version(program: &str) -> String {
-    let output = match std::process::Command::new(program)
+    let mut child = match std::process::Command::new(program)
         .arg("--version")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
-        Ok(output) => output,
+        Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return "missing".to_string();
         }
         Err(_) => return "installed; version unavailable".to_string(),
     };
 
-    if !output.status.success() {
-        return "installed; version unavailable".to_string();
-    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = match child.wait_with_output() {
+                    Ok(output) => output,
+                    Err(_) => return "installed; version unavailable".to_string(),
+                };
+                if !status.success() {
+                    return "installed; version unavailable".to_string();
+                }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let version = if stdout.is_empty() {
-        String::from_utf8_lossy(&output.stderr).trim().to_string()
-    } else {
-        stdout
-    };
-
-    if version.is_empty() {
-        "installed; version unavailable".to_string()
-    } else {
-        version
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let version = if stdout.is_empty() {
+                    String::from_utf8_lossy(&output.stderr).trim().to_string()
+                } else {
+                    stdout
+                };
+                return if version.is_empty() {
+                    "installed; version unavailable".to_string()
+                } else {
+                    version
+                };
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return "installed; version unavailable".to_string();
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return "installed; version unavailable".to_string();
+            }
+        }
     }
 }
 
@@ -2334,7 +2364,9 @@ fn tool_version_reports_missing_when_program_cannot_be_spawned() {
 enum RuntimeTargetKind {
     Chromium,
     Chrome,
+    Firefox,
     Electron,
+    CosmicEdit,
     Gtk,
     Qt,
     Terminal,
@@ -2345,7 +2377,9 @@ impl RuntimeTargetKind {
         match self {
             Self::Chromium => "chromium",
             Self::Chrome => "google-chrome",
+            Self::Firefox => "firefox",
             Self::Electron => "electron",
+            Self::CosmicEdit => "cosmic-edit",
             Self::Gtk => "zenity",
             Self::Qt => "python3",
             Self::Terminal => "terminal",
@@ -2354,9 +2388,9 @@ impl RuntimeTargetKind {
 
     fn role(self) -> RuntimeProcessRole {
         match self {
-            Self::Chromium | Self::Chrome => RuntimeProcessRole::Browser,
+            Self::Chromium | Self::Chrome | Self::Firefox => RuntimeProcessRole::Browser,
             Self::Electron => RuntimeProcessRole::ElectronMain,
-            Self::Gtk | Self::Qt => RuntimeProcessRole::ToolkitTarget,
+            Self::CosmicEdit | Self::Gtk | Self::Qt => RuntimeProcessRole::ToolkitTarget,
             Self::Terminal => RuntimeProcessRole::TerminalTarget,
         }
     }
@@ -2604,7 +2638,7 @@ fn controlled_display_available(environment: &RuntimeEnvironment) -> bool {
 
 fn detected_terminal(environment: &RuntimeEnvironment) -> Option<&'static str> {
     if environment.session_type == "wayland" {
-        return ["gnome-terminal", "konsole", "kitty"]
+        return ["gnome-terminal", "konsole", "kitty", "xterm"]
             .into_iter()
             .find(|program| environment.has_tool(program));
     }
@@ -2624,7 +2658,11 @@ fn runtime_target_executable(
             Some("chromium-browser")
         }
         RuntimeTargetKind::Chrome if environment.has_tool("google-chrome") => Some("google-chrome"),
+        RuntimeTargetKind::Firefox if environment.has_tool("firefox") => Some("/usr/bin/firefox"),
         RuntimeTargetKind::Electron if environment.has_tool("electron") => Some("electron"),
+        RuntimeTargetKind::CosmicEdit if environment.has_tool("cosmic-edit") => {
+            Some("/usr/bin/cosmic-edit")
+        }
         RuntimeTargetKind::Gtk if environment.has_tool("zenity") => Some("zenity"),
         RuntimeTargetKind::Qt if environment.has_tool("python3") => Some("python3"),
         RuntimeTargetKind::Terminal => detected_terminal(environment),
@@ -2645,12 +2683,18 @@ fn prepare_target_fixture(
 ) -> std::io::Result<()> {
     if matches!(
         target,
-        RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome | RuntimeTargetKind::Electron
+        RuntimeTargetKind::Chromium
+            | RuntimeTargetKind::Chrome
+            | RuntimeTargetKind::Firefox
+            | RuntimeTargetKind::Electron
     ) {
         std::fs::write(
             fixture.profile_dir.join("controlled-target.html"),
-            "<!doctype html><meta charset=utf-8><title>Vietc controlled runtime</title><textarea id=target autofocus aria-label='controlled runtime target'></textarea>",
+            "<!doctype html><meta charset=utf-8><title>Vietc controlled runtime</title><style>html,body,#target{box-sizing:border-box;width:100%;height:100%;margin:0}</style><textarea id=target autofocus aria-label='controlled runtime target'></textarea><script>const target=document.querySelector('#target'); target.focus(); target.select();</script>",
         )?;
+    }
+    if target == RuntimeTargetKind::CosmicEdit {
+        std::fs::write(fixture.profile_dir.join("controlled-target.txt"), "")?;
     }
     Ok(())
 }
@@ -2676,10 +2720,21 @@ fn runtime_target_flags(
             "--remote-allow-origins=http://127.0.0.1".to_string(),
             format!("--app={}", controlled_fixture_url(fixture)),
         ],
+        RuntimeTargetKind::Firefox => {
+            vec!["--new-window".to_string(), controlled_fixture_url(fixture)]
+        }
         RuntimeTargetKind::Electron => vec![
             format!("--user-data-dir={}", fixture.profile_dir.display()),
+            "--remote-debugging-address=127.0.0.1".to_string(),
+            "--remote-debugging-port=0".to_string(),
+            "--remote-allow-origins=http://127.0.0.1".to_string(),
             controlled_fixture_url(fixture),
         ],
+        RuntimeTargetKind::CosmicEdit => vec![fixture
+            .profile_dir
+            .join("controlled-target.txt")
+            .display()
+            .to_string()],
         RuntimeTargetKind::Gtk => vec![
             "--entry".to_string(),
             "--title=Vietc controlled runtime".to_string(),
@@ -2708,10 +2763,18 @@ fn runtime_target_flags(
                 "read -r line; printf '%s\\n' \"$line\"".to_string(),
             ],
             "xterm" => vec![
+                "-T".to_string(),
+                "Vietc controlled runtime".to_string(),
                 "-e".to_string(),
                 "sh".to_string(),
                 "-c".to_string(),
-                "read -r line; printf '%s\\n' \"$line\"".to_string(),
+                format!(
+                    "read -r line; printf '%s\\n' \"$line\" > {}",
+                    fixture
+                        .artifact_dir
+                        .join("application.stdout.log")
+                        .display()
+                ),
             ],
             _ => vec![],
         },
@@ -3149,7 +3212,9 @@ fn runtime_target_requested(
     let name = match target {
         RuntimeTargetKind::Chromium => "chromium",
         RuntimeTargetKind::Chrome => "google-chrome",
+        RuntimeTargetKind::Firefox => "firefox",
         RuntimeTargetKind::Electron => "electron",
+        RuntimeTargetKind::CosmicEdit => "cosmic-edit",
         RuntimeTargetKind::Gtk => "gtk",
         RuntimeTargetKind::Qt => "qt",
         RuntimeTargetKind::Terminal => "terminal",
@@ -3781,6 +3846,42 @@ fn clipboard_write(
     }
 }
 
+fn focus_controlled_terminal(
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+) -> Result<(), RuntimeCommandError> {
+    if environment.session_type != "wayland" || !environment.has_tool("xdotool") {
+        return Ok(());
+    }
+
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let output = std::process::Command::new("xdotool")
+            .args(["search", "--name", "^Vietc controlled runtime$"])
+            .output()
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        if output.status.success() {
+            if let Some(window_id) = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .find(|line| {
+                    !line.is_empty() && line.chars().all(|character| character.is_ascii_digit())
+                })
+            {
+                let mut command = std::process::Command::new("xdotool");
+                command.args(["windowactivate", "--sync", window_id]);
+                let status = run_command_with_timeout(&mut command, timeout)?;
+                if status.success() {
+                    return Ok(());
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    Err(RuntimeCommandError::TimedOut)
+}
+
 fn inject_controlled_text(
     environment: &RuntimeEnvironment,
     text: &str,
@@ -3854,6 +3955,28 @@ fn copy_observable_target_text(
     environment: &RuntimeEnvironment,
     timeout: Duration,
 ) -> Result<String, RuntimeCommandError> {
+    let sentinel = "vietc-clipboard-sentinel";
+    let mut writer = if environment.session_type == "wayland" {
+        std::process::Command::new("wl-copy")
+    } else {
+        let mut command = std::process::Command::new("xclip");
+        command.args(["-selection", "clipboard", "-i"]);
+        command
+    };
+    let mut writer_child = writer
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|_| RuntimeCommandError::SpawnFailed)?;
+    if let Some(mut stdin) = writer_child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(sentinel.as_bytes())
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    }
+    writer_child
+        .wait()
+        .map_err(|_| RuntimeCommandError::WaitFailed)?;
+
     let status = if environment.session_type == "wayland" {
         let mut command = std::process::Command::new("wtype");
         command.args(["-M", "ctrl", "-k", "a", "-k", "c", "-m", "ctrl"]);
@@ -3869,7 +3992,7 @@ fn copy_observable_target_text(
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         let observed = clipboard_read(environment, timeout)?;
-        if !observed.is_empty() {
+        if !observed.is_empty() && observed != sentinel {
             return Ok(observed);
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -3952,6 +4075,106 @@ fn read_controlled_browser_target(cdp: &mut CdpConnection) -> Result<String, Run
         .ok_or(RuntimeCommandError::TargetCopyFailed)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct X11WindowCandidate {
+    window_id: String,
+    pid: u32,
+}
+
+fn process_tree_contains_pid(root_pid: u32, candidate_pid: u32) -> bool {
+    if root_pid == candidate_pid {
+        return true;
+    }
+    discover_owned_process_tree(RuntimeTargetKind::Firefox, root_pid)
+        .iter()
+        .any(|process| process.pid == candidate_pid)
+}
+
+fn select_controlled_firefox_window(
+    candidates: &[X11WindowCandidate],
+    firefox_root_pid: u32,
+) -> Option<X11WindowCandidate> {
+    candidates
+        .iter()
+        .find(|candidate| process_tree_contains_pid(firefox_root_pid, candidate.pid))
+        .cloned()
+}
+
+fn controlled_firefox_window(
+    firefox_root_pid: u32,
+    timeout: Duration,
+) -> Result<X11WindowCandidate, RuntimeCommandError> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let output = std::process::Command::new("xdotool")
+            .args(["search", "--name", "Vietc controlled runtime"])
+            .output()
+            .map_err(|_| RuntimeCommandError::PrerequisiteMissing)?;
+        let candidates = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|window_id| {
+                !window_id.is_empty()
+                    && window_id
+                        .chars()
+                        .all(|character| character.is_ascii_digit())
+            })
+            .filter_map(|window_id| {
+                let output = std::process::Command::new("xdotool")
+                    .args(["getwindowpid", window_id])
+                    .output()
+                    .ok()?;
+                let pid = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse()
+                    .ok()?;
+                Some(X11WindowCandidate {
+                    window_id: window_id.to_string(),
+                    pid,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(window) = select_controlled_firefox_window(&candidates, firefox_root_pid) {
+            return Ok(window);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Err(RuntimeCommandError::TimedOut)
+}
+
+#[test]
+fn deterministic_firefox_window_selection_accepts_descendant_pid_only() {
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "sleep 30 & wait"]);
+    let mut owned =
+        OwnedRuntimeChild::spawn(&mut command).expect("fixture process tree must spawn");
+    std::thread::sleep(Duration::from_millis(30));
+
+    let descendant = discover_owned_process_tree(RuntimeTargetKind::Firefox, owned.pid())
+        .into_iter()
+        .find(|process| process.pid != owned.pid())
+        .expect("fixture must expose a descendant");
+    let candidates = [
+        X11WindowCandidate {
+            window_id: "100".to_string(),
+            pid: std::process::id(),
+        },
+        X11WindowCandidate {
+            window_id: "200".to_string(),
+            pid: descendant.pid,
+        },
+    ];
+
+    assert_eq!(
+        select_controlled_firefox_window(&candidates, owned.pid()),
+        Some(candidates[1].clone())
+    );
+    owned
+        .terminate_and_reap(Duration::from_secs(1))
+        .expect("fixture process tree must be reaped");
+}
+
 fn execute_controlled_scenario(
     target: RuntimeTargetKind,
     fixture: ControlledRuntimeFixture,
@@ -3980,11 +4203,18 @@ fn execute_controlled_scenario(
         .map_err(|_| RuntimeCommandError::ClipboardSnapshotFailed)?;
     trace("clipboard_snapshot:done");
 
+    if target == RuntimeTargetKind::Terminal {
+        trace("terminal_focus:start");
+        focus_controlled_terminal(&environment, operation_timeout)?;
+        trace("terminal_focus:done");
+    }
+
     let mut browser_cdp = None;
     let scenario_result = (|| {
+        let mut firefox_window = None;
         let mut cdp = if matches!(
             target,
-            RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome
+            RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome | RuntimeTargetKind::Electron
         ) {
             trace("cdp_connect:start");
             let mut connection = connect_controlled_browser_cdp(&fixture, operation_timeout)?;
@@ -3996,20 +4226,225 @@ fn execute_controlled_scenario(
             None
         };
 
+        if target == RuntimeTargetKind::Firefox {
+            trace("firefox_wayland_focus:start");
+            let window = controlled_firefox_window(child_pid, operation_timeout)?;
+            let window_id = window.window_id.as_str();
+
+            let mut activate = std::process::Command::new("xdotool");
+            activate.args(["windowactivate", "--sync", window_id]);
+            if !run_command_with_timeout(&mut activate, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+
+            let mut location = std::process::Command::new("xdotool");
+            location.args(["key", "--window", window_id, "--clearmodifiers", "ctrl+l"]);
+            if !run_command_with_timeout(&mut location, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+
+            let fixture_url = controlled_fixture_url(&fixture);
+            let mut navigate = std::process::Command::new("xdotool");
+            navigate.args([
+                "type",
+                "--window",
+                window_id,
+                "--clearmodifiers",
+                "--delay",
+                "1",
+                &fixture_url,
+            ]);
+            if !run_command_with_timeout(&mut navigate, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+
+            let mut submit = std::process::Command::new("xdotool");
+            submit.args(["key", "--window", window_id, "--clearmodifiers", "Return"]);
+            if !run_command_with_timeout(&mut submit, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+
+            std::thread::sleep(Duration::from_secs(1));
+            let mut focus_content = std::process::Command::new("xdotool");
+            focus_content.args([
+                "key",
+                "--window",
+                window_id,
+                "--clearmodifiers",
+                "F6",
+                "Tab",
+            ]);
+            if !run_command_with_timeout(&mut focus_content, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+
+            const FOCUS_PROBE: &str = "vietc-focus-probe";
+            let mut probe = std::process::Command::new("xdotool");
+            probe.args([
+                "type",
+                "--window",
+                window_id,
+                "--clearmodifiers",
+                "--delay",
+                "1",
+                FOCUS_PROBE,
+            ]);
+            if !run_command_with_timeout(&mut probe, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::InputInjectionFailed);
+            }
+
+            let mut select_copy = std::process::Command::new("xdotool");
+            select_copy.args([
+                "key",
+                "--window",
+                window_id,
+                "--clearmodifiers",
+                "ctrl+a",
+                "ctrl+c",
+            ]);
+            if !run_command_with_timeout(&mut select_copy, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::TargetCopyFailed);
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            if clipboard_read(&environment, operation_timeout)
+                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?
+                != FOCUS_PROBE
+            {
+                return Err(RuntimeCommandError::TargetCopyFailed);
+            }
+
+            let mut clear = std::process::Command::new("xdotool");
+            clear.args([
+                "key",
+                "--window",
+                window_id,
+                "--clearmodifiers",
+                "BackSpace",
+            ]);
+            if !run_command_with_timeout(&mut clear, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+            firefox_window = Some(window);
+            trace("firefox_wayland_focus:done");
+        } else if target == RuntimeTargetKind::CosmicEdit {
+            trace("cosmic_native_activate:start");
+            let (editor_x, editor_y) = common::cosmic_toplevel::activate_cosmic_edit(
+                "controlled-target.txt",
+                operation_timeout,
+            )
+            .map_err(|_| RuntimeCommandError::TimedOut)?;
+
+            let mut move_pointer = std::process::Command::new("ydotool");
+            move_pointer.args([
+                "mousemove",
+                "--delay",
+                "50",
+                &editor_x.to_string(),
+                &editor_y.to_string(),
+            ]);
+            if !run_command_with_timeout(&mut move_pointer, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+
+            let mut click_editor = std::process::Command::new("ydotool");
+            click_editor.args(["click", "--delay", "50", "1"]);
+            if !run_command_with_timeout(&mut click_editor, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::ScenarioFailed);
+            }
+
+            std::thread::sleep(Duration::from_millis(250));
+            trace("cosmic_native_activate:done");
+        }
+
         trace("input_injection:start");
-        inject_controlled_text(&environment, CONTROLLED_TEXT, operation_timeout)
-            .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+        if target == RuntimeTargetKind::Firefox {
+            let window_id = firefox_window
+                .as_ref()
+                .ok_or(RuntimeCommandError::InputInjectionFailed)?
+                .window_id
+                .as_str();
+            let mut command = std::process::Command::new("xdotool");
+            command.args([
+                "type",
+                "--window",
+                window_id,
+                "--clearmodifiers",
+                "--delay",
+                "1",
+                CONTROLLED_TEXT,
+            ]);
+            let status = run_command_with_timeout(&mut command, operation_timeout)?;
+            if !status.success() {
+                return Err(RuntimeCommandError::InputInjectionFailed);
+            }
+        } else if target == RuntimeTargetKind::CosmicEdit {
+            let mut command = std::process::Command::new("ydotool");
+            command.args(["type", "--key-delay", "12", CONTROLLED_TEXT]);
+            if !run_command_with_timeout(&mut command, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::InputInjectionFailed);
+            }
+        } else {
+            inject_controlled_text(&environment, CONTROLLED_TEXT, operation_timeout)
+                .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+        }
         trace("input_injection:done");
 
-        let observed_text = match cdp.as_mut() {
-            Some(connection) => read_controlled_browser_target(connection)
-                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?,
-            None if matches!(target, RuntimeTargetKind::Gtk | RuntimeTargetKind::Qt) => {
-                submit_toolkit_target(&environment, operation_timeout)?;
-                read_toolkit_stdout(&fixture, operation_timeout)?
+        let observed_text = if target == RuntimeTargetKind::Firefox {
+            let window_id = firefox_window
+                .as_ref()
+                .ok_or(RuntimeCommandError::TargetCopyFailed)?
+                .window_id
+                .as_str();
+            let mut select_cmd = std::process::Command::new("xdotool");
+            select_cmd.args(["key", "--window", window_id, "--clearmodifiers", "ctrl+a"]);
+            if !run_command_with_timeout(&mut select_cmd, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::TargetCopyFailed);
             }
-            None => copy_observable_target_text(&environment, operation_timeout)
-                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?,
+            std::thread::sleep(Duration::from_millis(200));
+            let mut copy_cmd = std::process::Command::new("xdotool");
+            copy_cmd.args(["key", "--window", window_id, "--clearmodifiers", "ctrl+c"]);
+            if !run_command_with_timeout(&mut copy_cmd, operation_timeout)?.success() {
+                return Err(RuntimeCommandError::TargetCopyFailed);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+            clipboard_read(&environment, operation_timeout)
+                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?
+        } else {
+            match cdp.as_mut() {
+                Some(connection) => read_controlled_browser_target(connection)
+                    .map_err(|_| RuntimeCommandError::TargetCopyFailed)?,
+                None if matches!(
+                    target,
+                    RuntimeTargetKind::Gtk | RuntimeTargetKind::Qt | RuntimeTargetKind::Terminal
+                ) =>
+                {
+                    submit_toolkit_target(&environment, operation_timeout)?;
+                    read_toolkit_stdout(&fixture, operation_timeout)?
+                }
+                None if target == RuntimeTargetKind::CosmicEdit => {
+                    let mut save = std::process::Command::new("ydotool");
+                    save.args(["key", "29:1", "31:1", "31:0", "29:0"]);
+                    if !run_command_with_timeout(&mut save, operation_timeout)?.success() {
+                        return Err(RuntimeCommandError::TargetCopyFailed);
+                    }
+
+                    let target_path = fixture.profile_dir.join("controlled-target.txt");
+                    let deadline = std::time::Instant::now() + operation_timeout;
+                    loop {
+                        if let Ok(value) = std::fs::read_to_string(&target_path) {
+                            if !value.is_empty() {
+                                break value;
+                            }
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            return Err(RuntimeCommandError::TargetCopyFailed);
+                        }
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                }
+                None => copy_observable_target_text(&environment, operation_timeout)
+                    .map_err(|_| RuntimeCommandError::TargetCopyFailed)?,
+            }
         };
         let _ = std::fs::write(
             fixture.artifact_dir.join("observable-value.txt"),
@@ -4040,6 +4475,34 @@ fn execute_controlled_scenario(
         roles: discover_owned_process_tree(target, child_pid),
         browser_cdp,
     })
+}
+
+fn cosmic_edit_reparented_pid(fixture_path: &std::path::Path) -> Option<u32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return None;
+    };
+    let fixture_str = fixture_path.display().to_string();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Ok(cmdline_bytes) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let cmdline = cmdline_bytes
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if cmdline.contains("cosmic-edit") && cmdline.contains(&fixture_str) {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 fn run_controlled_runtime_target(
@@ -4121,8 +4584,35 @@ fn run_controlled_runtime_target(
     };
 
     let mut command = std::process::Command::new(executable);
+    command.args(&flags);
+    if target == RuntimeTargetKind::Firefox {
+        command.env("MOZ_ENABLE_WAYLAND", "0");
+    }
+    if target == RuntimeTargetKind::CosmicEdit {
+        command
+            .env("XDG_CONFIG_HOME", fixture.profile_dir.join("config"))
+            .env("XDG_STATE_HOME", fixture.profile_dir.join("state"))
+            .env("XDG_DATA_HOME", fixture.profile_dir.join("data"));
+        for directory in ["config", "state", "data"] {
+            if let Err(error) = std::fs::create_dir_all(fixture.profile_dir.join(directory)) {
+                return RuntimeTargetResult {
+                    status: RuntimeMatrixStatus::Failed,
+                    reason: format!("COSMIC Edit profile isolation failed: {error}"),
+                    observation: None,
+                };
+            }
+        }
+    }
+    if target == RuntimeTargetKind::CosmicEdit
+        && cosmic_edit_reparented_pid(&fixture.profile_dir.join("controlled-target.txt")).is_some()
+    {
+        return RuntimeTargetResult {
+            status: RuntimeMatrixStatus::Failed,
+            reason: "a COSMIC Edit process already owns the controlled fixture".to_string(),
+            observation: None,
+        };
+    }
     command
-        .args(&flags)
         .stdin(std::process::Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
@@ -4140,8 +4630,56 @@ fn run_controlled_runtime_target(
     };
 
     std::thread::sleep(startup_timeout);
+    let effective_pid = child.pid();
     match child.healthy() {
-        Ok(true) => {}
+        Ok(true) => {
+            if target == RuntimeTargetKind::CosmicEdit {
+                if let Some(editor_pid) =
+                    cosmic_edit_reparented_pid(&fixture.profile_dir.join("controlled-target.txt"))
+                {
+                    let owned_pids = discover_owned_process_tree(target, child.pid())
+                        .into_iter()
+                        .map(|role| role.pid)
+                        .collect::<std::collections::HashSet<_>>();
+                    if !owned_pids.contains(&editor_pid) {
+                        let teardown = child.terminate_and_reap(teardown_timeout);
+                        return RuntimeTargetResult {
+                            status: RuntimeMatrixStatus::Failed,
+                            reason: match teardown {
+                                Ok(()) => format!(
+                                    "COSMIC Edit escaped the owned process group: pid {editor_pid}"
+                                ),
+                                Err(error) => format!(
+                                    "COSMIC Edit escaped the owned process group: pid {editor_pid}; teardown failed: {error:?}"
+                                ),
+                            },
+                            observation: None,
+                        };
+                    }
+                }
+            }
+        }
+        Ok(false) if target == RuntimeTargetKind::CosmicEdit => {
+            let escaped =
+                cosmic_edit_reparented_pid(&fixture.profile_dir.join("controlled-target.txt"));
+            let teardown = child.terminate_and_reap(teardown_timeout);
+            return RuntimeTargetResult {
+                status: RuntimeMatrixStatus::Failed,
+                reason: match (escaped, teardown) {
+                    (Some(pid), Ok(())) => format!(
+                        "COSMIC Edit daemonized outside the owned process group: pid {pid}"
+                    ),
+                    (Some(pid), Err(error)) => format!(
+                        "COSMIC Edit daemonized outside the owned process group: pid {pid}; owned-group teardown failed: {error:?}"
+                    ),
+                    (None, Ok(())) => "COSMIC Edit exited during startup".to_string(),
+                    (None, Err(error)) => format!(
+                        "COSMIC Edit exited during startup; teardown failed: {error:?}"
+                    ),
+                },
+                observation: None,
+            };
+        }
         Ok(false) => {
             return RuntimeTargetResult {
                 status: RuntimeMatrixStatus::Failed,
@@ -4158,10 +4696,15 @@ fn run_controlled_runtime_target(
         }
     }
 
-    let roles = discover_owned_process_tree(target, child.pid());
+    let roles = discover_owned_process_tree(target, effective_pid);
+    let target_version = if target == RuntimeTargetKind::CosmicEdit {
+        "installed; version unavailable".to_string()
+    } else {
+        tool_version(executable)
+    };
     let manifest = render_target_manifest(
         target,
-        &tool_version(executable),
+        &target_version,
         &flags,
         &environment.session_type,
         "controlled-text-sequence-v1",
@@ -4169,7 +4712,7 @@ fn run_controlled_runtime_target(
     );
     let _ = std::fs::write(fixture.artifact_dir.join("target-manifest.txt"), manifest);
 
-    let scenario_pid = child.pid();
+    let scenario_pid = effective_pid;
     let scenario_fixture = fixture.clone();
     let scenario_environment = environment.clone();
     let scenario = run_scenario_with_deadline(scenario_timeout, move || {
@@ -4224,10 +4767,13 @@ fn run_controlled_runtime_target(
         expected_text: CONTROLLED_TEXT.to_string(),
         observed_text: evidence.observed_text,
         process_healthy: {
-            let still_running = child.healthy().unwrap_or(false);
-            let expected_submit_exit =
-                matches!(target, RuntimeTargetKind::Gtk | RuntimeTargetKind::Qt)
-                    && child.completed_successfully();
+            let still_running = child.healthy().unwrap_or(false)
+                || (target == RuntimeTargetKind::CosmicEdit
+                    && std::path::Path::new(&format!("/proc/{effective_pid}")).exists());
+            let expected_submit_exit = matches!(
+                target,
+                RuntimeTargetKind::Gtk | RuntimeTargetKind::Qt | RuntimeTargetKind::Terminal
+            ) && child.completed_successfully();
             (still_running || expected_submit_exit) && !evidence.roles.is_empty()
         },
         clipboard_preserved: evidence.clipboard_preserved,
@@ -4314,7 +4860,9 @@ fn privileged_runtime_targets_execute_controlled_scenarios() {
     for target in [
         RuntimeTargetKind::Chromium,
         RuntimeTargetKind::Chrome,
+        RuntimeTargetKind::Firefox,
         RuntimeTargetKind::Electron,
+        RuntimeTargetKind::CosmicEdit,
         RuntimeTargetKind::Gtk,
         RuntimeTargetKind::Qt,
         RuntimeTargetKind::Terminal,
@@ -4388,7 +4936,9 @@ fn privileged_runtime_matrix_records_exact_ready_and_skip_evidence() {
         "chromium",
         "chromium-browser",
         "google-chrome",
+        "firefox",
         "electron",
+        "cosmic-edit",
         "gnome-terminal",
         "konsole",
         "xterm",
@@ -4718,4 +5268,421 @@ fn privileged_uinput_socket_commands_are_observable_end_to_end() {
     assert_eq!(evidence.after_replace, "hello thời");
     assert!(evidence.clipboard_preserved);
     assert!(evidence.modifiers_released);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FocusSwitchObservation {
+    target: String,
+    expected: String,
+    observed: String,
+}
+
+fn verify_focus_switch_observations(
+    observations: &[FocusSwitchObservation],
+    initial_target: &str,
+    final_target: &str,
+) -> Result<(), &'static str> {
+    if observations.len() < 3 {
+        return Err("focus-switch requires at least three observations");
+    }
+    if initial_target != final_target {
+        return Err("focus-switch did not return to the initial target");
+    }
+    if observations
+        .iter()
+        .any(|observation| observation.expected != observation.observed)
+    {
+        return Err("focus-switch observable text mismatch");
+    }
+    for (index, observation) in observations.iter().enumerate() {
+        if observations.iter().enumerate().any(|(other_index, other)| {
+            index != other_index && observation.observed.contains(&other.expected)
+        }) {
+            return Err("focus-switch leaked text between targets");
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FastInputCase {
+    name: &'static str,
+    raw: &'static str,
+    expected: &'static str,
+}
+
+fn controlled_fast_input_cases() -> [FastInputCase; 7] {
+    [
+        FastInputCase {
+            name: "free-order-tone-mark",
+            raw: "dduojwc",
+            expected: "được",
+        },
+        FastInputCase {
+            name: "mark-then-tone",
+            raw: "neues",
+            expected: "nếu",
+        },
+        FastInputCase {
+            name: "compound-tone",
+            raw: "tieengs",
+            expected: "tiếng",
+        },
+        FastInputCase {
+            name: "boundary",
+            raw: "dduojwc ",
+            expected: "được ",
+        },
+        FastInputCase {
+            name: "backspace",
+            raw: "dduojwcx\u{8}s",
+            expected: "đướcs",
+        },
+        FastInputCase {
+            name: "disabled-literal",
+            raw: "dduojwc",
+            expected: "dduojwc",
+        },
+        FastInputCase {
+            name: "macro-isolation",
+            raw: "ko",
+            expected: "ko",
+        },
+    ]
+}
+
+fn verify_fast_input_observations(
+    observations: &[(&str, &str, &str)],
+    key_delay_ms: u64,
+) -> Result<(), &'static str> {
+    if !(1..=20).contains(&key_delay_ms) {
+        return Err("fast-input key delay is outside the controlled bound");
+    }
+    if observations.is_empty() {
+        return Err("fast-input observations are empty");
+    }
+    if observations
+        .iter()
+        .any(|(_, expected, observed)| expected != observed)
+    {
+        return Err("fast-input observable text mismatch");
+    }
+    Ok(())
+}
+
+fn inject_controlled_keys(
+    environment: &RuntimeEnvironment,
+    text: &str,
+    key_delay_ms: u64,
+    timeout: Duration,
+) -> Result<(), RuntimeCommandError> {
+    let status = if environment.session_type == "wayland" {
+        let mut command = std::process::Command::new("ydotool");
+        command.args(["type", "--key-delay", &key_delay_ms.to_string(), text]);
+        run_command_with_timeout(&mut command, timeout)?
+    } else {
+        let mut command = std::process::Command::new("xdotool");
+        command.args([
+            "type",
+            "--clearmodifiers",
+            "--delay",
+            &key_delay_ms.to_string(),
+            "--",
+            text,
+        ]);
+        run_command_with_timeout(&mut command, timeout)?
+    };
+    if status.success() {
+        Ok(())
+    } else {
+        Err(RuntimeCommandError::InputInjectionFailed)
+    }
+}
+
+fn launch_stress_browser(
+    workspace_root: &Path,
+    run_id: &str,
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+) -> Result<(ControlledRuntimeFixture, OwnedRuntimeChild, CdpConnection), RuntimeCommandError> {
+    let target = RuntimeTargetKind::Chromium;
+    let executable = runtime_target_executable(target, environment)
+        .ok_or(RuntimeCommandError::PrerequisiteMissing)?;
+    let fixture = ControlledRuntimeFixture::isolated(workspace_root, run_id)
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    fixture
+        .prepare(workspace_root)
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    prepare_target_fixture(target, &fixture).map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+
+    let stdout = std::fs::File::create(fixture.artifact_dir.join("application.stdout.log"))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let stderr = std::fs::File::create(fixture.artifact_dir.join("application.stderr.log"))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(runtime_target_flags(target, &fixture, executable))
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
+    let mut child = OwnedRuntimeChild::spawn(&mut command)?;
+    if !child.healthy()? {
+        return Err(RuntimeCommandError::ScenarioFailed);
+    }
+
+    let mut cdp = connect_controlled_browser_cdp(&fixture, timeout)?;
+    prepare_controlled_browser_target(&mut cdp)?;
+    Ok((fixture, child, cdp))
+}
+
+#[test]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, ydotool, Chromium, a running vietc daemon, and writable /dev/uinput"]
+fn privileged_focus_switch_stress_is_observable_end_to_end() {
+    let environment = RuntimeEnvironment::detect_current();
+    assert!(controlled_display_available(&environment));
+    assert!(environment.has_tool("chromium"));
+    assert!(environment.has_tool("ydotool"));
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let timeout = Duration::from_secs(30);
+    let (fixture_a, mut child_a, mut cdp_a) =
+        launch_stress_browser(workspace_root, "focus-switch-a", &environment, timeout)
+            .expect("first controlled target must launch");
+    let (fixture_b, mut child_b, mut cdp_b) =
+        launch_stress_browser(workspace_root, "focus-switch-b", &environment, timeout)
+            .expect("second controlled target must launch");
+
+    let scenario = (|| {
+        cdp_a
+            .command("Page.bringToFront", serde_json::json!({}))
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        prepare_controlled_browser_target(&mut cdp_a)?;
+        inject_controlled_keys(&environment, "dduoj", 12, timeout)?;
+        let first_a = wait_for_controlled_browser_value(
+            &mut cdp_a,
+            "đuọ",
+            timeout,
+            &fixture_a.artifact_dir.join("first-a-timeout.txt"),
+        )?;
+
+        cdp_b
+            .command("Page.bringToFront", serde_json::json!({}))
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        prepare_controlled_browser_target(&mut cdp_b)?;
+        inject_controlled_keys(&environment, "neues", 12, timeout)?;
+        let observed_b = wait_for_controlled_browser_value(
+            &mut cdp_b,
+            "nếu",
+            timeout,
+            &fixture_b.artifact_dir.join("target-b-timeout.txt"),
+        )?;
+
+        cdp_a
+            .command("Page.bringToFront", serde_json::json!({}))
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        inject_controlled_keys(&environment, "wc", 12, timeout)?;
+        let final_a = wait_for_controlled_browser_value(
+            &mut cdp_a,
+            "được",
+            timeout,
+            &fixture_a.artifact_dir.join("final-a-timeout.txt"),
+        )?;
+
+        let observations = [
+            FocusSwitchObservation {
+                target: "chromium-a".to_string(),
+                expected: "đuọ".to_string(),
+                observed: first_a,
+            },
+            FocusSwitchObservation {
+                target: "chromium-b".to_string(),
+                expected: "nếu".to_string(),
+                observed: observed_b,
+            },
+            FocusSwitchObservation {
+                target: "chromium-a".to_string(),
+                expected: "được".to_string(),
+                observed: final_a,
+            },
+        ];
+        verify_focus_switch_observations(&observations, "chromium-a", "chromium-a")
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+
+        std::fs::write(
+            workspace_root.join("target/runtime-artifacts/phase6-focus-switch-observed.txt"),
+            format!(
+                "key_delay_ms=12\ninitial_target=chromium-a\nfinal_target=chromium-a\nobservations={observations:#?}\nstatus=PASS\n"
+            ),
+        )
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        Ok::<(), RuntimeCommandError>(())
+    })();
+
+    let _ = cdp_a.command("Browser.close", serde_json::json!({}));
+    let _ = cdp_b.command("Browser.close", serde_json::json!({}));
+    let teardown_a = child_a.terminate_and_reap(Duration::from_secs(5));
+    let teardown_b = child_b.terminate_and_reap(Duration::from_secs(5));
+    scenario.expect("focus-switch stress must pass exact observation");
+    teardown_a.expect("first controlled target must be reaped");
+    teardown_b.expect("second controlled target must be reaped");
+}
+
+#[test]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, ydotool, Chromium, a running vietc daemon, and writable /dev/uinput"]
+fn privileged_fast_input_stress_is_observable_end_to_end() {
+    let environment = RuntimeEnvironment::detect_current();
+    assert!(controlled_display_available(&environment));
+    assert!(environment.has_tool("chromium"));
+    assert!(environment.has_tool("ydotool"));
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let timeout = Duration::from_secs(30);
+    let key_delay_ms = 8;
+    let (fixture, mut child, mut cdp) =
+        launch_stress_browser(workspace_root, "fast-input", &environment, timeout)
+            .expect("controlled fast-input target must launch");
+
+    let scenario = (|| {
+        let mut observations = Vec::new();
+        for case in controlled_fast_input_cases()
+            .into_iter()
+            .filter(|case| !matches!(case.name, "backspace" | "disabled-literal"))
+        {
+            prepare_controlled_browser_target(&mut cdp)?;
+            inject_controlled_keys(&environment, case.raw, key_delay_ms, timeout)?;
+            let observed = wait_for_controlled_browser_value(
+                &mut cdp,
+                case.expected,
+                timeout,
+                &fixture
+                    .artifact_dir
+                    .join(format!("{}-timeout.txt", case.name)),
+            )?;
+            observations.push((case.name, case.expected.to_string(), observed));
+        }
+
+        prepare_controlled_browser_target(&mut cdp)?;
+        inject_controlled_keys(&environment, "dduojwc", key_delay_ms, timeout)?;
+        wait_for_controlled_browser_value(
+            &mut cdp,
+            "được",
+            timeout,
+            &fixture.artifact_dir.join("backspace-before-timeout.txt"),
+        )?;
+        let mut backspace = std::process::Command::new("ydotool");
+        backspace.args(["key", "--key-delay", "8", "Backspace"]);
+        assert!(run_command_with_timeout(&mut backspace, timeout)?.success());
+        let backspace_observed = wait_for_controlled_browser_value(
+            &mut cdp,
+            "đượ",
+            timeout,
+            &fixture.artifact_dir.join("backspace-after-timeout.txt"),
+        )?;
+        observations.push(("backspace", "đượ".to_string(), backspace_observed));
+
+        let status_path = dirs::config_dir()
+            .ok_or(RuntimeCommandError::PrerequisiteMissing)?
+            .join("vietc/status");
+        std::fs::write(&status_path, "en").map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        std::thread::sleep(Duration::from_secs(1));
+        prepare_controlled_browser_target(&mut cdp)?;
+        inject_controlled_keys(&environment, "dduojwc", key_delay_ms, timeout)?;
+        let disabled = wait_for_controlled_browser_value(
+            &mut cdp,
+            "dduojwc",
+            timeout,
+            &fixture.artifact_dir.join("disabled-timeout.txt"),
+        )?;
+        observations.push(("disabled-literal", "dduojwc".to_string(), disabled));
+        std::fs::write(&status_path, "vn").map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        std::thread::sleep(Duration::from_secs(1));
+
+        let borrowed = observations
+            .iter()
+            .map(|(name, expected, observed)| (*name, expected.as_str(), observed.as_str()))
+            .collect::<Vec<_>>();
+        verify_fast_input_observations(&borrowed, key_delay_ms)
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+
+        std::fs::write(
+            workspace_root.join("target/runtime-artifacts/phase6-fast-input-observed.txt"),
+            format!("key_delay_ms={key_delay_ms}\nobservations={observations:#?}\nstatus=PASS\n"),
+        )
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        Ok::<(), RuntimeCommandError>(())
+    })();
+
+    if let Some(config_dir) = dirs::config_dir() {
+        let _ = std::fs::write(config_dir.join("vietc/status"), "vn");
+    }
+    let _ = cdp.command("Browser.close", serde_json::json!({}));
+    let teardown = child.terminate_and_reap(Duration::from_secs(5));
+    scenario.expect("fast-input stress must pass exact observation");
+    teardown.expect("controlled fast-input target must be reaped");
+}
+
+#[test]
+fn deterministic_focus_switch_rejects_stale_composition_and_cross_target_text() {
+    let valid = [
+        FocusSwitchObservation {
+            target: "chromium-a".to_string(),
+            expected: "alpha-dduoj".to_string(),
+            observed: "alpha-dduoj".to_string(),
+        },
+        FocusSwitchObservation {
+            target: "chromium-b".to_string(),
+            expected: "beta-neues".to_string(),
+            observed: "beta-neues".to_string(),
+        },
+        FocusSwitchObservation {
+            target: "chromium-a".to_string(),
+            expected: "alpha-return".to_string(),
+            observed: "alpha-return".to_string(),
+        },
+    ];
+    assert_eq!(
+        verify_focus_switch_observations(&valid, "chromium-a", "chromium-a"),
+        Ok(())
+    );
+
+    let mut stale = valid.clone();
+    stale[2].observed = "beta-neuesalpha-return".to_string();
+    assert_eq!(
+        verify_focus_switch_observations(&stale, "chromium-a", "chromium-a"),
+        Err("focus-switch observable text mismatch")
+    );
+    assert_eq!(
+        verify_focus_switch_observations(&valid, "chromium-a", "chromium-b"),
+        Err("focus-switch did not return to the initial target")
+    );
+}
+
+#[test]
+fn deterministic_fast_input_requires_bounded_rate_and_exact_observable_output() {
+    let cases = controlled_fast_input_cases();
+    assert_eq!(cases.len(), 7);
+    assert!(cases.iter().any(|case| case.name == "boundary"));
+    assert!(cases.iter().any(|case| case.name == "backspace"));
+    assert!(cases.iter().any(|case| case.name == "disabled-literal"));
+    assert!(cases.iter().any(|case| case.name == "macro-isolation"));
+
+    let observations = cases
+        .iter()
+        .map(|case| (case.name, case.expected, case.expected))
+        .collect::<Vec<_>>();
+    assert_eq!(verify_fast_input_observations(&observations, 8), Ok(()));
+    assert_eq!(
+        verify_fast_input_observations(&observations, 0),
+        Err("fast-input key delay is outside the controlled bound")
+    );
+
+    let mismatched = [("free-order-tone-mark", "được", "dduojwc")];
+    assert_eq!(
+        verify_fast_input_observations(&mismatched, 8),
+        Err("fast-input observable text mismatch")
+    );
 }

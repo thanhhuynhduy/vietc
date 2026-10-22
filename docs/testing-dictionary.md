@@ -667,6 +667,45 @@ The privileged job is informational until suitable desktop runners are registere
 
 ---
 
+## Telex Behavior Matrix
+
+This matrix freezes Phase 1 behavior before parser work. `Baseline` means behavior already covered by the engine before this phase. `Approved new` is an explicitly desired free-order permutation and is kept separate so it cannot be mistaken for historical behavior. “Literal” means the committed output intentionally falls back to ordinary text.
+
+| Area | Contract | Input | Expected committed output | Rule |
+|------|----------|-------|---------------------------|------|
+| Mark | Baseline | `aa` | `â` | Circumflex on `a` |
+| Mark | Baseline | `aw` | `ă` | Breve on `a` |
+| Mark | Baseline | `ee` | `ê` | Circumflex on `e` |
+| Mark | Baseline | `oo` | `ô` | Circumflex on `o` |
+| Mark | Baseline | `ow` | `ơ` | Horn on `o` |
+| Mark | Baseline | `uw` | `ư` | Horn on `u` |
+| Stroke | Baseline | `dd` | `đ` | Telex crossed `d` |
+| Tone | Baseline | `as` | `á` | Sắc |
+| Tone | Baseline | `af` | `à` | Huyền |
+| Tone | Baseline | `ar` | `ả` | Hỏi |
+| Tone | Baseline | `ax` | `ã` | Ngã |
+| Tone | Baseline | `aj` | `ạ` | Nặng |
+| Nucleus and coda | Baseline | `tieengs` | `tiếng` | Tone is placed on the valid nucleus before `ng` |
+| Nucleus and coda | Baseline | `dduowngf` | `đường` | Horned nucleus and tone remain valid with coda `ng` |
+| Free order | Baseline | `dduojwc` | `được` | Tone key may precede a later mark key |
+| Free order | Baseline | `neues` | `nếu` | Mark key may precede a later tone key |
+| Free order | Approved new | `dduocwj` | `được` | The same tone and mark must compose when their order is reversed |
+| Free order | Approved new | `neesu` | `nếu` | The same tone and mark must compose when their order is reversed |
+| English fallback | Baseline | `teele` | `tele` | Repeated vowel transform is undone for an English continuation |
+| English fallback | Baseline | `fixx` | `fix` | Repeated tone key restores the literal English word |
+| English fallback | Baseline | `addd` | `add` | Repeated `d` transform restores the literal English word |
+| English fallback | Baseline | `aww` | `aw` | Repeated mark key restores the literal English word |
+| Invalid or literal | Baseline | `readme` | `readme` | A repeated vowel does not create a mark across another vowel |
+| Invalid or literal | Baseline | `type` | `type` | Untransformed English remains literal |
+| Casing | Baseline | `TIEENGS` | `TIẾNG` | Uppercase composition is preserved |
+| Casing | Baseline | `ATXX` | `ATX` | Uppercase English fallback preserves case |
+| Boundary | Baseline | `tieengs ` | `tiếng ` | Space commits the word and remains literal |
+| Boundary | Baseline | `dduojwc.` | `được.` | Period commits the word and remains literal |
+| Boundary | Baseline | `neues,` | `nếu,` | Comma commits the word and remains literal |
+| Boundary | Baseline | `readme\\n` | `readme\\n` | Newline commits literal input without cross-word composition |
+
+The data-driven regression suite is `engine/tests/telex_golden.rs`. Failure messages include category, contract, and input so a behavior regression identifies the exact matrix row.
+
 ## Running Tests
 
 ```bash
