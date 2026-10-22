@@ -119,6 +119,20 @@ fn repeated_vowel_does_not_create_mark_across_another_vowel() {
 }
 
 #[test]
+fn telex_tone_key_can_be_typed_before_later_mark_key() {
+    let mut engine = Engine::new(InputMethod::Telex);
+
+    assert_eq!(get_display(&process_input(&mut engine, "dduojwc")), "được");
+}
+
+#[test]
+fn telex_mark_key_can_be_typed_before_later_tone_key() {
+    let mut engine = Engine::new(InputMethod::Telex);
+
+    assert_eq!(get_display(&process_input(&mut engine, "neues")), "nếu");
+}
+
+#[test]
 fn replay_keystrokes_reverts_tone_for_english_continuation() {
     let (output, did_flush) = Engine::replay_keystrokes(
         InputMethod::Telex,

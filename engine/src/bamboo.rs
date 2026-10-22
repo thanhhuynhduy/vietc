@@ -126,7 +126,9 @@ impl BambooEngine {
                         if u_ch == 'u' {
                             // Found "uo" pair, replace with "ươ"
                             let u_idx = o_idx - 1;
-                            let old_tone_o = self.composition[o_idx].tone_applied;
+                            let tone = self.composition[o_idx]
+                                .tone_applied
+                                .or(self.composition[u_idx].tone_applied);
                             let was_upper = self.composition[u_idx].is_upper;
                             self.composition.drain(u_idx..=o_idx);
                             self.composition.insert(
@@ -134,7 +136,7 @@ impl BambooEngine {
                                 Transformation {
                                     base_char: 'ư',
                                     mark_applied: Some('ư'),
-                                    tone_applied: old_tone_o,
+                                    tone_applied: None,
                                     is_upper: was_upper,
                                 },
                             );
@@ -143,7 +145,7 @@ impl BambooEngine {
                                 Transformation {
                                     base_char: 'ơ',
                                     mark_applied: Some('ơ'),
-                                    tone_applied: None,
+                                    tone_applied: tone,
                                     is_upper: false,
                                 },
                             );
@@ -211,6 +213,13 @@ impl BambooEngine {
             }
 
             if is_vowel(ch) {
+                // Allow a doubled-vowel mark trigger to cross one adjacent vowel
+                // in the same nucleus, e.g. \"neue\" -> \"nêu\". Do not cross a
+                // vowel reached after consonants, which would turn English words
+                // such as \"readme\" into \"rêadme\".
+                if offset == 0 {
+                    continue;
+                }
                 break;
             }
         }
