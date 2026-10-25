@@ -717,6 +717,62 @@ mod tests {
     }
 
     #[test]
+    fn focus_change_before_boundaries_does_not_commit_previous_target_composition() {
+        for boundary in [' ', '.', '\n'] {
+            let mut daemon = Daemon::new(
+                Config::default(),
+                PathBuf::from("focus-boundary-test.toml"),
+                Arc::new(AtomicBool::new(true)),
+            );
+            daemon.engine.set_enabled(true);
+
+            for ch in "tieeng".chars() {
+                daemon.process_key(ch);
+            }
+            assert!(!daemon.engine.buffer().is_empty());
+
+            daemon.reset_composition_state();
+            let commands = daemon.process_key(boundary);
+            let mut target_b = String::new();
+            apply(&mut target_b, &commands);
+
+            assert!(!target_b.contains("tieeng"));
+            assert!(!target_b.contains("tiếng"));
+            assert!(daemon.event_store.is_empty());
+            assert!(daemon.screen_output.is_empty());
+            assert_eq!(daemon.visible_revision, 0);
+        }
+    }
+
+    #[test]
+    fn closed_target_during_composition_discards_raw_keys_before_next_target() {
+        let mut daemon = Daemon::new(
+            Config::default(),
+            PathBuf::from("closed-target-compose-test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.engine.set_enabled(true);
+
+        for ch in "dduow".chars() {
+            daemon.process_key(ch);
+        }
+        assert!(!daemon.engine.buffer().is_empty());
+
+        daemon.reset_composition_state();
+
+        let mut next_target = String::new();
+        for ch in "moi".chars() {
+            let commands = daemon.process_key(ch);
+            apply(&mut next_target, &commands);
+        }
+
+        assert!(!next_target.contains("dduow"));
+        assert!(!next_target.contains("đư"));
+        assert_eq!(daemon.engine.buffer(), "moi");
+        assert_eq!(daemon.visible_revision, 0);
+    }
+
+    #[test]
     fn focus_change_reset_clears_all_composition_state() {
         let mut daemon = Daemon::new(
             Config::default(),

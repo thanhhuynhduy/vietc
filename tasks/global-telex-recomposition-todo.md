@@ -265,7 +265,7 @@
 - [x] Workspace tests pass.
 - [x] Shadow mismatch ngoài allowlist bằng 0.
 - [x] Không thay đổi API/protocol desktop.
-- [ ] Code review trước runtime rollout.
+- [x] Code review trước runtime rollout: không phát hiện blocking finding trong recomposition production path, rollback feature, replacement semantics, replay/backspace/boundary, English fallback, casing, macro/flush và runtime capability gate. `cargo test -p vietc-engine` PASS; `cargo test -p vietc-engine --features bamboo-telex-rollback` PASS; `cargo clippy -p vietc-engine --all-targets -- -D warnings` PASS; `git diff --check` PASS.
 
 ## Phase 6: COSMIC runtime validation
 
@@ -310,8 +310,43 @@
 - [ ] Không có behavior khác Pop!_OS do integration layer.
 
 **Verification:**
-- [ ] Runtime evidence đầy đủ. Blocked: cần chạy trên host Fedora COSMIC thật.
-- [ ] So sánh kết quả hai distro. Blocked cho tới khi có Fedora artifacts.
+- [ ] Runtime evidence đầy đủ. Đã chạy trên Fedora 44 COSMIC/Wayland, kernel `7.3.0-363.vanilla.fc44.x86_64`; matrix còn PARTIAL do Firefox, COSMIC Edit, Qt, terminal và Electron chưa PASS. Hai privileged stress scenario focus-switch và fast-input đã PASS.
+- [ ] So sánh kết quả hai distro. Fedora tái hiện blocker Firefox `TargetCopyFailed` và COSMIC Edit daemonize ngoài owned process group giống Pop!_OS.
+- [x] `/dev/uinput` writable: mode `0666`, owner `root`, group `input`; user `thanhhd` thuộc group `input` và có ACL `rw-`.
+- [x] Production daemon `/usr/bin/vietc-daemon` đang chạy trực tiếp; không có `vietc-daemon.service`, `vietc-uinputd.service` hoặc `vietc-uinputd.socket`.
+- [x] Google Chrome controlled runtime PASS, exit 0.
+- [x] Chromium controlled runtime PASS sau khi cài package Fedora với executable `chromium-browser`, exit 0.
+- [x] GTK controlled runtime PASS, exit 0.
+- [ ] Firefox controlled runtime FAIL, exit 101: `TargetCopyFailed`.
+- [ ] COSMIC Edit controlled runtime FAIL, exit 101: daemonized outside owned process group.
+- [ ] Qt controlled runtime FAIL, exit 101: target exited during startup.
+- [ ] Terminal controlled runtime FAIL, exit 101: Konsole đã cài nhưng scenario `TimedOut`.
+- [ ] Electron UNAVAILABLE: chưa có executable `electron` được harness hỗ trợ.
+- [x] Focus-switch privileged stress PASS trên Fedora COSMIC: target A `tieengs` → `tiếng`, target B `chaof` → `chào`, quay lại target A vẫn giữ `tiếng`; evidence `target/runtime-artifacts/phase6-focus-switch-observed.txt` và `target/runtime-artifacts/fedora-cosmic-focus-switch-complete-words-final.log`.
+- [x] Fast-input privileged stress PASS trên Fedora COSMIC ở key delay 8 ms: xác minh `được`, `nếu`, `tiếng`, boundary, macro isolation, backspace và disabled literal; evidence `target/runtime-artifacts/phase6-fast-input-observed.txt` và `target/runtime-artifacts/fedora-cosmic-fast-input-virtual-keyboard.log`.
+- [x] Runtime harness chấp nhận cả `chromium` và executable Fedora `chromium-browser` tại capability gate.
+- [x] Evidence được lưu trong `target/runtime-artifacts/fedora-cosmic-*.log`, các `controlled-*-result.txt` và timeout artifacts tương ứng.
+
+**Bước tiếp theo: xử lý Firefox `TargetCopyFailed`**
+
+1. Chạy riêng Firefox controlled runtime trên Fedora COSMIC, không chạy lại toàn matrix.
+2. Tách scenario thành các checkpoint có evidence:
+   - Firefox khởi động và tiến trình còn sống.
+   - Cửa sổ thuộc đúng process tree được tìm thấy.
+   - COSMIC/Wayland keyboard focus thực sự nằm trong cửa sổ Firefox.
+   - Textarea nhận một focus probe ngắn.
+   - Chuỗi controlled input được nhập.
+   - `Ctrl+A`, `Ctrl+C` và clipboard read-back trả về đúng nội dung.
+3. Ghi riêng giá trị lỗi cho từng bước thay vì gộp mọi lỗi thành `TargetCopyFailed`.
+4. Trên Wayland, không coi `xdotool --window` là bằng chứng cửa sổ đã nhận keyboard focus. Nếu X11 window ID không điều khiển được Firefox native Wayland, dùng COSMIC toplevel activation theo title/app-id và xác nhận compositor báo `activated`.
+5. Nếu nhập liệu thành công nhưng copy thất bại, thay clipboard-only observation bằng một target Firefox có observable channel độc lập, hoặc sửa bounded polling cho clipboard read-back.
+6. Nếu focus probe thất bại, lưu title, app-id, PID, process tree, trạng thái activated và giá trị của cả target trước khi kết luận blocker.
+7. Acceptance để đóng block:
+   - Target Firefox nhận đúng controlled text.
+   - Observation đọc lại đúng text, không chỉ dựa vào exit code.
+   - Target và toàn bộ child process được terminate/reap.
+   - Log và result artifact ghi `PASS`, exit 0.
+8. Sau Firefox, xử lý lần lượt COSMIC Edit, Qt, Konsole và Electron. Chỉ khi application matrix Fedora hoàn tất mới so sánh đầy đủ với Pop!_OS và quay lại Task 12.
 
 **Dependencies:** Task 12
 
@@ -394,3 +429,4 @@
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`: exit 0.
 - [x] Release daemon rebuilt/restarted; MainPID `1931295`, binary và SHA-256 recorded.
 - [ ] Privileged user scenarios chưa PASS: bounded socket verification exit 101 vì stale socket không có listener; production daemon thực tế dùng direct uinput backend.
+- [x] Đã thêm privileged long-text scenario 894 từ cho COSMIC Edit, Microsoft Edge và Firefox, observable read-back riêng theo target, configurable 40-250 ms key delay, exact expected/observed artifacts và mismatch summary; scenario vẫn ignored và chưa chạy trong môi trường hiện tại.

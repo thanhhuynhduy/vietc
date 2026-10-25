@@ -1,0 +1,189 @@
+[
+  {
+    "case_id": "VN-MARK-TONE-001",
+    "raw_keystrokes": "dduowngf",
+    "expected_unicode": "đường",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267001,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["type:d", "type:d", "type:u", "type:o", "type:w", "type:n", "type:g", "type:f"]
+  },
+  {
+    "case_id": "VN-FREE-ORDER-001",
+    "raw_keystrokes": "dduojwc",
+    "expected_unicode": "được",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 8,
+    "random_seed": 1447645267002,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["type:d", "type:d", "type:u", "type:o", "type:j", "type:w", "type:c"]
+  },
+  {
+    "case_id": "VN-FREE-ORDER-002",
+    "raw_keystrokes": "dduocwj",
+    "expected_unicode": "được",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 30,
+    "random_seed": 1447645267003,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["type:d", "type:d", "type:u", "type:o", "type:c", "type:w", "type:j"]
+  },
+  {
+    "case_id": "VN-PUNCTUATION-001",
+    "raw_keystrokes": "Chaof, thees giowis: (ddejp) khoong?",
+    "expected_unicode": "Chào, thế giới: (đẹp) không?",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267004,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["word:Chaof", "flush:,", "flush:space", "word:thees", "flush:space", "word:giowis", "flush::", "flush:space", "flush:(", "word:ddejp", "flush:)", "flush:space", "word:khoong", "flush:?"]
+  },
+  {
+    "case_id": "VN-NEWLINE-001",
+    "raw_keystrokes": "Xin chaof\nThees giowis",
+    "expected_unicode": "Xin chào\nThế giới",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 60,
+    "random_seed": 1447645267005,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["word:Xin", "flush:space", "word:chaof", "flush:newline", "word:Thees", "flush:space", "word:giowis"]
+  },
+  {
+    "case_id": "VN-BACKSPACE-001",
+    "raw_keystrokes": "tieengx\bs",
+    "expected_unicode": "tiếng",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267006,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["word:tieengx", "backspace", "type:s"]
+  },
+  {
+    "case_id": "VN-URL-001",
+    "raw_keystrokes": "https://vietc.example/path?q=telex",
+    "expected_unicode": "https://vietc.example/path?q=telex",
+    "allowed_fallback": "literal",
+    "application": "deterministic-engine",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267007,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["literal:url"]
+  },
+  {
+    "case_id": "VN-EMAIL-001",
+    "raw_keystrokes": "hello@example.com",
+    "expected_unicode": "hello@example.com",
+    "allowed_fallback": "literal",
+    "application": "deterministic-engine",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267008,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["literal:email"]
+  },
+  {
+    "case_id": "VN-ENGLISH-001",
+    "raw_keystrokes": "readme type",
+    "expected_unicode": "readme type",
+    "allowed_fallback": "literal",
+    "application": "deterministic-engine",
+    "key_delay_ms": 30,
+    "random_seed": 1447645267009,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["word:readme", "flush:space", "word:type"]
+  },
+  {
+    "case_id": "VN-MACRO-ISOLATION-001",
+    "raw_keystrokes": "brb chaof",
+    "expected_unicode": "be right back chào",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267010,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["macro:brb", "flush:space", "word:chaof"]
+  },
+  {
+    "case_id": "VN-DISABLED-LITERAL-001",
+    "raw_keystrokes": "tieengs",
+    "expected_unicode": "tieengs",
+    "allowed_fallback": "literal",
+    "application": "deterministic-engine-disabled",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267011,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["disable", "literal:tieengs"]
+  },
+  {
+    "case_id": "VN-EDIT-RETYPE-001",
+    "raw_keystrokes": "sai\b\b\btieengs",
+    "expected_unicode": "tiếng",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267012,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["word:sai", "backspace", "backspace", "backspace", "word:tieengs"]
+  },
+  {
+    "case_id": "VN-FOCUS-CHANGE-001",
+    "raw_keystrokes": "con hoor|xin chaof",
+    "expected_unicode": "xin chào",
+    "allowed_fallback": null,
+    "application": "deterministic-focus-model",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267013,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}, {"at_key": 8, "target": "fixture-b"}],
+    "expected_event_sequence": ["word:con", "flush:space", "word:hoor", "focus:fixture-b", "word:xin", "flush:space", "word:chaof"]
+  },
+  {
+    "case_id": "VN-CLIPBOARD-DELAY-001",
+    "raw_keystrokes": "tieengs",
+    "expected_unicode": "tiếng",
+    "allowed_fallback": null,
+    "application": "deterministic-clipboard-model",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267014,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["compose", "clipboard-write", "clipboard-poll:25ms", "paste-ack"]
+  },
+  {
+    "case_id": "VN-TARGET-DELAY-001",
+    "raw_keystrokes": "dduowngf",
+    "expected_unicode": "đường",
+    "allowed_fallback": null,
+    "application": "deterministic-target-model",
+    "key_delay_ms": 15,
+    "random_seed": 1447645267015,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["compose", "target-delay:40ms", "ack"]
+  },
+  {
+    "case_id": "VN-STEADY-001",
+    "raw_keystrokes": "Xin chaof thees giowis",
+    "expected_unicode": "Xin chào thế giới",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 30,
+    "random_seed": 1447645267016,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["schedule:steady", "word:Xin", "word:chaof", "word:thees", "word:giowis"]
+  },
+  {
+    "case_id": "VN-BURST-001",
+    "raw_keystrokes": "Xin chaof thees giowis",
+    "expected_unicode": "Xin chào thế giới",
+    "allowed_fallback": null,
+    "application": "deterministic-engine",
+    "key_delay_ms": 0,
+    "random_seed": 1447645267017,
+    "focus_timeline": [{"at_key": 0, "target": "fixture-a"}],
+    "expected_event_sequence": ["schedule:burst", "word:Xin", "word:chaof", "word:thees", "word:giowis"]
+  }
+]

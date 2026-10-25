@@ -54,15 +54,65 @@ impl VirtualKeyboard {
         }
     }
 
+    fn key_event(&mut self, keycode: u16, value: i32) -> Result<()> {
+        let event = InputEvent::new(EventType::KEY, keycode, value);
+        let sync = InputEvent::new(EventType::SYNCHRONIZATION, 0, 0);
+        self.device.emit(&[event, sync])
+    }
+
+    pub fn key_down(&mut self, keycode: u16) -> Result<()> {
+        self.key_event(keycode, 1)
+    }
+
+    pub fn key_up(&mut self, keycode: u16) -> Result<()> {
+        self.key_event(keycode, 0)
+    }
+
     /// Press and release a key.
     pub fn tap_key(&mut self, keycode: u16) -> Result<()> {
-        let press = InputEvent::new(EventType::KEY, keycode, 1);
-        let release = InputEvent::new(EventType::KEY, keycode, 0);
-        let sync = InputEvent::new(EventType::SYNCHRONIZATION, 0, 0);
-        self.device.emit(&[press, sync])?;
+        self.key_down(keycode)?;
         std::thread::sleep(Duration::from_millis(5));
-        self.device.emit(&[release, sync])?;
-        Ok(())
+        self.key_up(keycode)
+    }
+
+    pub fn modifier_chord(&mut self, modifier: u16, keycode: u16) -> Result<()> {
+        self.key_down(modifier)?;
+        std::thread::sleep(Duration::from_millis(5));
+        let key_result = self.tap_key(keycode);
+        let release_result = self.key_up(modifier);
+        key_result.and(release_result)
+    }
+
+    pub fn ctrl_l(&mut self) -> Result<()> {
+        self.modifier_chord(29, 38)
+    }
+
+    pub fn ctrl_a(&mut self) -> Result<()> {
+        self.modifier_chord(29, 30)
+    }
+
+    pub fn ctrl_c(&mut self) -> Result<()> {
+        self.modifier_chord(29, 46)
+    }
+
+    pub fn ctrl_v(&mut self) -> Result<()> {
+        self.modifier_chord(29, 47)
+    }
+
+    pub fn enter(&mut self) -> Result<()> {
+        self.tap_key(28)
+    }
+
+    pub fn f6(&mut self) -> Result<()> {
+        self.tap_key(64)
+    }
+
+    pub fn tab(&mut self) -> Result<()> {
+        self.tap_key(15)
+    }
+
+    pub fn alt_tab(&mut self) -> Result<()> {
+        self.modifier_chord(56, 15)
     }
 
     /// Type a single character via US layout keycodes.
@@ -96,13 +146,14 @@ impl VirtualKeyboard {
                     | '~'
             );
         if shift {
-            self.tap_key(42)?;
+            self.modifier_chord(42, keycode)
+        } else {
+            self.tap_key(keycode)
         }
-        self.tap_key(keycode)?;
-        if shift {
-            self.tap_key(42)?;
-        }
-        Ok(())
+    }
+
+    pub fn backspace(&mut self) -> Result<()> {
+        self.tap_key(14)
     }
 
     /// Type a string of characters.

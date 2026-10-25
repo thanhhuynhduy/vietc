@@ -18,6 +18,7 @@ pub fn execute_commands(
     injector: &dyn KeyInjector,
     commands: &[OutputCommand],
     visible_revision: &mut u64,
+    focus_generation: u64,
 ) -> TransactionOutcome {
     if commands.is_empty() {
         return TransactionOutcome::Applied {
@@ -61,8 +62,11 @@ pub fn execute_commands(
                 };
             }
 
-            let replacement_result =
-                injector.inject_replacement(replacement.delete_before_cursor, &replacement.insert);
+            let replacement_result = injector.inject_replacement_for_generation(
+                replacement.delete_before_cursor,
+                &replacement.insert,
+                focus_generation,
+            );
             let replacement_elapsed = started.elapsed();
             if replacement_result != InjectResult::Success {
                 if trace {
@@ -116,7 +120,11 @@ pub fn execute_commands(
         }
     }
 
-    if injector.inject_replacement(pending_backspaces, &pending_text) != InjectResult::Success
+    if injector.inject_replacement_for_generation(
+        pending_backspaces,
+        &pending_text,
+        focus_generation,
+    ) != InjectResult::Success
         || injector.flush() != InjectResult::Success
     {
         return TransactionOutcome::Failed;
@@ -218,7 +226,7 @@ mod tests {
         let mut revision = 0;
 
         assert_eq!(
-            execute_commands(&injector, &[replacement(0)], &mut revision),
+            execute_commands(&injector, &[replacement(0)], &mut revision, 0),
             TransactionOutcome::Applied {
                 visible_revision: 1
             }
@@ -237,7 +245,7 @@ mod tests {
         let mut revision = 2;
 
         assert_eq!(
-            execute_commands(&injector, &[replacement(1)], &mut revision),
+            execute_commands(&injector, &[replacement(1)], &mut revision, 0),
             TransactionOutcome::Stale {
                 expected_visible_revision: 1,
                 actual_visible_revision: 2,
@@ -257,7 +265,7 @@ mod tests {
         let mut revision = 0;
 
         assert_eq!(
-            execute_commands(&injector, &[replacement(0)], &mut revision),
+            execute_commands(&injector, &[replacement(0)], &mut revision, 0),
             TransactionOutcome::Failed
         );
         assert_eq!(revision, 0);
@@ -275,7 +283,7 @@ mod tests {
 
         let mut revision = 0;
         assert_eq!(
-            execute_commands(&injector, &commands, &mut revision),
+            execute_commands(&injector, &commands, &mut revision, 0),
             TransactionOutcome::Failed
         );
         assert_eq!(injector.replacement_calls.get(), 1);
@@ -292,7 +300,7 @@ mod tests {
 
         let mut revision = 0;
         assert_eq!(
-            execute_commands(&injector, &commands, &mut revision),
+            execute_commands(&injector, &commands, &mut revision, 0),
             TransactionOutcome::Failed
         );
     }
@@ -362,7 +370,7 @@ mod tests {
             let mut revision = 7;
 
             assert_eq!(
-                execute_commands(&injector, &[replacement(7)], &mut revision),
+                execute_commands(&injector, &[replacement(7)], &mut revision, 0),
                 TransactionOutcome::Failed
             );
             assert_eq!(
@@ -383,7 +391,7 @@ mod tests {
         let mut revision = 3;
 
         assert_eq!(
-            execute_commands(&injector, &[replacement(3)], &mut revision),
+            execute_commands(&injector, &[replacement(3)], &mut revision, 0),
             TransactionOutcome::Applied {
                 visible_revision: 4
             }

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 use std::fmt;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAction {
@@ -59,6 +61,24 @@ pub trait KeyInjector {
     fn set_active_window(&self, _window_class: &str) -> InjectResult {
         InjectResult::Success
     }
+
+    fn bind_focus_generation(&self, _generation: Arc<AtomicU64>) -> InjectResult {
+        InjectResult::Success
+    }
+
+    fn cancel_pending_replacement(&self, _focus_generation: u64, _reason: &str) -> InjectResult {
+        InjectResult::Success
+    }
+
+    fn inject_replacement_for_generation(
+        &self,
+        backspaces: usize,
+        text: &str,
+        _focus_generation: u64,
+    ) -> InjectResult {
+        self.inject_replacement(backspaces, text)
+    }
+
     fn flush(&self) -> InjectResult;
 
     fn send_backspaces(&self, count: usize) -> InjectResult {

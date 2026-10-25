@@ -63,6 +63,7 @@ pub fn run_stdin_mode(
     }
 
     let injector = create_injector(display)?;
+    injector.bind_focus_generation(shared_focus.lock().unwrap().generation_signal.clone());
     let mut buffer = [0u8; 1];
     let mut last_focus_generation = shared_focus.lock().unwrap().generation;
 
@@ -84,6 +85,7 @@ pub fn run_stdin_mode(
                     last_focus_generation, generation
                 ));
                 last_focus_generation = generation;
+                injector.cancel_pending_replacement(generation, "target-changed");
                 daemon.reset_composition_state();
             }
         }
@@ -109,7 +111,12 @@ pub fn run_stdin_mode(
             Ok(_) => {
                 let ch = buffer[0] as char;
                 let commands = daemon.process_key(ch);
-                let outcome = execute_commands(&*injector, &commands, &mut daemon.visible_revision);
+                let outcome = execute_commands(
+                    &*injector,
+                    &commands,
+                    &mut daemon.visible_revision,
+                    last_focus_generation,
+                );
                 if !daemon.handle_transaction_outcome(outcome) {
                     log_info("[vietc] stdin injection failed");
                 }

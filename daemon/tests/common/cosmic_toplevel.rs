@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use wayland_client::{
     event_created_child,
     protocol::{wl_registry, wl_seat},
-    Connection, Dispatch, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
@@ -70,12 +70,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ActivationState {
 impl Dispatch<wl_seat::WlSeat, ()> for ActivationState {
     fn event(
         _: &mut Self,
-        _: &wl_seat::WlSeat,
-        _: wl_seat::Event,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        eprintln!("cosmic-toplevel: seat id={:?} event={event:?}", seat.id());
     }
 }
 
@@ -176,9 +177,15 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for Activ
 
         match event {
             zcosmic_toplevel_handle_v1::Event::State { state } => {
-                toplevel.activated = state
+                let states = state
                     .chunks_exact(4)
-                    .any(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()) == 2);
+                    .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .collect::<Vec<_>>();
+                toplevel.activated = states.contains(&2);
+                eprintln!(
+                    "cosmic-toplevel: state title={:?} states={states:?} activated={}",
+                    toplevel.title, toplevel.activated
+                );
             }
             zcosmic_toplevel_handle_v1::Event::Geometry {
                 output: _,
@@ -206,21 +213,28 @@ impl Dispatch<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, ()> for Act
     }
 }
 
-fn matches_cosmic_edit_toplevel(
+fn matches_controlled_toplevel(
     title: Option<&str>,
     app_id: Option<&str>,
     title_fragment: &str,
+    accepted_app_ids: &[&str],
 ) -> bool {
     title.is_some_and(|title| title.contains(title_fragment))
         && app_id.is_some_and(|app_id| {
-            matches!(
-                app_id.to_ascii_lowercase().as_str(),
-                "com.system76.cosmicedit" | "com.system76.cosmic-edit" | "cosmic-edit"
-            )
+            let app_id = app_id.to_ascii_lowercase();
+            accepted_app_ids.iter().any(|accepted| {
+                let accepted = accepted.to_ascii_lowercase();
+                app_id == accepted || accepted == "chrome-" && app_id.starts_with("chrome-")
+            })
         })
 }
 
-pub fn activate_cosmic_edit(title_fragment: &str, timeout: Duration) -> Result<(i32, i32), String> {
+fn activate_controlled_toplevel(
+    title_fragment: &str,
+    accepted_app_ids: &[&str],
+    require_geometry: bool,
+    timeout: Duration,
+) -> Result<(i32, i32), String> {
     let connection = Connection::connect_to_env().map_err(|error| error.to_string())?;
     let display = connection.display();
     let mut queue = connection.new_event_queue();
@@ -238,10 +252,11 @@ pub fn activate_cosmic_edit(title_fragment: &str, timeout: Duration) -> Result<(
             .toplevels
             .iter()
             .find(|toplevel| {
-                matches_cosmic_edit_toplevel(
+                matches_controlled_toplevel(
                     toplevel.title.as_deref(),
                     toplevel.app_id.as_deref(),
                     title_fragment,
+                    accepted_app_ids,
                 )
             })
             .map(|toplevel| {
@@ -252,23 +267,45 @@ pub fn activate_cosmic_edit(title_fragment: &str, timeout: Duration) -> Result<(
                 toplevel.cosmic_handle.clone()
             });
 
+        if matching_handle.is_none() {
+            let discovered = state
+                .toplevels
+                .iter()
+                .map(|toplevel| {
+                    format!(
+                        "title={:?} app_id={:?} activated={} geometry={:?}",
+                        toplevel.title, toplevel.app_id, toplevel.activated, toplevel.geometry
+                    )
+                })
+                .collect::<Vec<_>>();
+            eprintln!(
+                "cosmic-toplevel: no match for title={title_fragment:?} app_ids={accepted_app_ids:?}; discovered={discovered:?}"
+            );
+        }
+
         if let (Some(manager), Some(seat), Some(handle)) =
-            (&state.manager, &state.seat, matching_handle)
+            (state.manager.clone(), state.seat.clone(), matching_handle)
         {
-            manager.activate(&handle, seat);
+            manager.activate(&handle, &seat);
             connection.flush().map_err(|error| error.to_string())?;
 
             while Instant::now() < deadline {
+                manager.activate(&handle, &seat);
+                connection.flush().map_err(|error| error.to_string())?;
                 queue
                     .roundtrip(&mut state)
                     .map_err(|error| error.to_string())?;
-                if let Some((x, y, width, height)) = state
+                if let Some(toplevel) = state
                     .toplevels
                     .iter()
                     .find(|toplevel| toplevel.cosmic_handle == handle && toplevel.activated)
-                    .and_then(|toplevel| toplevel.geometry)
                 {
-                    return Ok((x + width / 2, y + height / 2));
+                    if let Some((x, y, width, height)) = toplevel.geometry {
+                        return Ok((x + width / 2, y + height / 2));
+                    }
+                    if !require_geometry {
+                        return Ok((0, 0));
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
@@ -281,34 +318,91 @@ pub fn activate_cosmic_edit(title_fragment: &str, timeout: Duration) -> Result<(
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    Err("timed out locating the controlled COSMIC Edit toplevel".to_string())
+    Err(format!(
+        "timed out locating controlled toplevel title={title_fragment:?} app_ids={accepted_app_ids:?}"
+    ))
+}
+
+pub fn activate_cosmic_edit(title_fragment: &str, timeout: Duration) -> Result<(i32, i32), String> {
+    activate_controlled_toplevel(
+        title_fragment,
+        &[
+            "com.system76.cosmicedit",
+            "com.system76.cosmic-edit",
+            "cosmic-edit",
+        ],
+        true,
+        timeout,
+    )
+}
+
+pub fn activate_chromium(title_fragment: &str, timeout: Duration) -> Result<(i32, i32), String> {
+    activate_controlled_toplevel(
+        title_fragment,
+        &[
+            "chromium-browser",
+            "chromium",
+            "google-chrome",
+            "microsoft-edge",
+            "microsoft-edge-stable",
+            "microsoft-edge-beta",
+            "microsoft-edge-dev",
+            "chrome-",
+        ],
+        false,
+        timeout,
+    )
+}
+
+pub fn activate_firefox(title_fragment: &str, timeout: Duration) -> Result<(i32, i32), String> {
+    activate_controlled_toplevel(
+        title_fragment,
+        &["firefox", "org.mozilla.firefox"],
+        false,
+        timeout,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::matches_cosmic_edit_toplevel;
+    use super::matches_controlled_toplevel;
 
     #[test]
     fn matches_only_controlled_cosmic_edit_title_and_app_id() {
-        assert!(matches_cosmic_edit_toplevel(
+        let app_ids = [
+            "com.system76.cosmicedit",
+            "com.system76.cosmic-edit",
+            "cosmic-edit",
+        ];
+        assert!(matches_controlled_toplevel(
             Some("controlled-target.txt"),
             Some("com.system76.CosmicEdit"),
             "controlled-target.txt",
+            &app_ids,
         ));
-        assert!(!matches_cosmic_edit_toplevel(
+        assert!(!matches_controlled_toplevel(
             Some("controlled-target.txt"),
             Some("org.mozilla.firefox"),
             "controlled-target.txt",
+            &app_ids,
         ));
-        assert!(!matches_cosmic_edit_toplevel(
+        assert!(!matches_controlled_toplevel(
             Some("unrelated.txt"),
             Some("com.system76.CosmicEdit"),
             "controlled-target.txt",
+            &app_ids,
         ));
-        assert!(!matches_cosmic_edit_toplevel(
+        assert!(!matches_controlled_toplevel(
             Some("controlled-target.txt"),
             None,
             "controlled-target.txt",
+            &app_ids,
+        ));
+        assert!(matches_controlled_toplevel(
+            Some("Vietc controlled runtime focus-switch-a"),
+            Some("chrome-__fixture_controlled-target.html-Default"),
+            "Vietc controlled runtime focus-switch-a",
+            &["chrome-"],
         ));
     }
 }

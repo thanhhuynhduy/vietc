@@ -706,6 +706,21 @@ This matrix freezes Phase 1 behavior before parser work. `Baseline` means behavi
 
 The data-driven regression suite is `engine/tests/telex_golden.rs`. Failure messages include category, contract, and input so a behavior regression identifies the exact matrix row.
 
+## Privileged long-text runtime scenario
+
+The ignored `privileged_long_text_is_exact_in_cosmic_edit_edge_and_firefox` scenario types a controlled 894-word Telex corpus into COSMIC Edit, Microsoft Edge, and Firefox. It requires COSMIC Wayland, a running VietC daemon, writable `/dev/uinput`, and explicit controlled-display opt-in.
+
+```bash
+VIETC_RUNTIME_TESTS=1 \
+VIETC_CONTROLLED_DISPLAY=1 \
+VIETC_LONG_TEXT_KEY_DELAY_MS=85 \
+cargo test -p vietc-daemon --test daemon_suite \
+  privileged_long_text_is_exact_in_cosmic_edit_edge_and_firefox \
+  -- --ignored --nocapture --test-threads=1
+```
+
+`VIETC_LONG_TEXT_KEY_DELAY_MS` accepts 40-250 ms and defaults to 85 ms. Each target writes `target/runtime-artifacts/long-text-<target>.txt` containing the target, key delay, status, word count, mismatch summary, expected text, and observed text. Microsoft Edge detection supports `microsoft-edge`, `microsoft-edge-stable`, `microsoft-edge-beta`, and `microsoft-edge-dev`.
+
 ## Running Tests
 
 ```bash
@@ -735,3 +750,11 @@ sudo cargo test -p vietc-daemon regression_ -- --nocapture
 3. **Write the code** — pure logic tests go in `daemon/src/event.rs`, config tests in `daemon/src/config.rs`, pipeline tests in `daemon/tests/`.
 4. **Verify** — run `cargo test` and confirm the new test passes.
 5. **Cross-distro** — if the test depends on a distro-specific backend, add the backend module before the test.
+
+## Data-driven Vietnamese typing corpus
+
+`daemon/tests/fixtures/vietnamese_typing_corpus.json` is the deterministic corpus for implementation step 2. Every entry records a stable case ID, raw keystrokes, expected Unicode, optional allowed fallback, application or deterministic model, key delay, replay seed, focus timeline, and expected event sequence.
+
+The corpus covers Telex mark/tone and approved free-order permutations, punctuation, newline, backspace and retype editing, URLs, email, English literals, isolated macros, disabled literal mode, modeled focus changes, clipboard and target delays, steady input, and burst input. Runtime-only dimensions are labeled as deterministic models and do not claim real application, focus, clipboard, or transaction evidence.
+
+The word oracle reports the longest matching expected prefix, first differing Unicode scalar and scalar index, first incorrect expected word, and the related transaction ID when supplied. Stress-case failure artifacts include the stable random seed in both filename and payload so the exact case can be replayed.

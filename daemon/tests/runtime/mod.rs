@@ -146,6 +146,79 @@ enum RuntimeCommandError {
     ModifierReleaseFailed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeFailureCategory {
+    EngineMismatch,
+    TransactionFailure,
+    FocusFailure,
+    ObservationFailure,
+    StartupFailure,
+    LifecycleFailure,
+    Unavailable,
+}
+
+impl RuntimeFailureCategory {
+    fn label(self) -> &'static str {
+        match self {
+            Self::EngineMismatch => "ENGINE_MISMATCH",
+            Self::TransactionFailure => "TRANSACTION_FAILURE",
+            Self::FocusFailure => "FOCUS_FAILURE",
+            Self::ObservationFailure => "OBSERVATION_FAILURE",
+            Self::StartupFailure => "STARTUP_FAILURE",
+            Self::LifecycleFailure => "LIFECYCLE_FAILURE",
+            Self::Unavailable => "UNAVAILABLE",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RuntimeFailure {
+    category: RuntimeFailureCategory,
+    checkpoint: String,
+    detail: String,
+}
+
+impl RuntimeFailure {
+    fn new(
+        category: RuntimeFailureCategory,
+        checkpoint: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            category,
+            checkpoint: checkpoint.into(),
+            detail: detail.into(),
+        }
+    }
+
+    fn render(&self) -> String {
+        format!(
+            "category={}; checkpoint={}; detail={}",
+            self.category.label(),
+            self.checkpoint,
+            self.detail
+        )
+    }
+}
+
+fn classify_runtime_command_error(error: &RuntimeCommandError, checkpoint: &str) -> RuntimeFailure {
+    let category = match error {
+        RuntimeCommandError::PrerequisiteMissing => RuntimeFailureCategory::Unavailable,
+        RuntimeCommandError::SpawnFailed => RuntimeFailureCategory::StartupFailure,
+        RuntimeCommandError::ClipboardSnapshotFailed
+        | RuntimeCommandError::ClipboardRestoreFailed
+        | RuntimeCommandError::ClipboardVerificationFailed
+        | RuntimeCommandError::InputInjectionFailed
+        | RuntimeCommandError::ModifierReleaseFailed => RuntimeFailureCategory::TransactionFailure,
+        RuntimeCommandError::TargetCopyFailed => RuntimeFailureCategory::ObservationFailure,
+        RuntimeCommandError::WaitFailed => RuntimeFailureCategory::LifecycleFailure,
+        RuntimeCommandError::TimedOut | RuntimeCommandError::ScenarioFailed => {
+            RuntimeFailureCategory::ObservationFailure
+        }
+    };
+    RuntimeFailure::new(category, checkpoint, format!("{error:?}"))
+}
+
 #[derive(Clone, Debug)]
 struct RuntimeEnvironment {
     runtime_opt_in: bool,
@@ -180,10 +253,14 @@ impl RuntimeEnvironment {
         mut tool_available: impl FnMut(&str) -> bool,
         uinput_available: bool,
     ) -> Self {
-        const TOOLS: [&str; 15] = [
+        const TOOLS: [&str; 19] = [
             "chromium",
             "chromium-browser",
             "google-chrome",
+            "microsoft-edge",
+            "microsoft-edge-stable",
+            "microsoft-edge-beta",
+            "microsoft-edge-dev",
             "electron",
             "firefox",
             "cosmic-edit",
@@ -1791,12 +1868,73 @@ fn tool_version(program: &str) -> String {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UnicodeDivergence {
+    scalar_index: usize,
+    expected_scalar: Option<char>,
+    observed_scalar: Option<char>,
+    first_incorrect_word: Option<String>,
+}
+
+fn first_unicode_divergence(expected: &str, observed: &str) -> Option<UnicodeDivergence> {
+    let expected_scalars: Vec<char> = expected.chars().collect();
+    let observed_scalars: Vec<char> = observed.chars().collect();
+    let scalar_index = expected_scalars
+        .iter()
+        .zip(&observed_scalars)
+        .position(|(expected, observed)| expected != observed)
+        .or_else(|| {
+            (expected_scalars.len() != observed_scalars.len())
+                .then_some(expected_scalars.len().min(observed_scalars.len()))
+        })?;
+
+    let word_start = expected_scalars[..scalar_index.min(expected_scalars.len())]
+        .iter()
+        .rposition(|scalar| scalar.is_whitespace())
+        .map_or(0, |index| index + 1);
+    let first_incorrect_word = expected_scalars[word_start..]
+        .iter()
+        .take_while(|scalar| !scalar.is_whitespace())
+        .collect::<String>();
+
+    Some(UnicodeDivergence {
+        scalar_index,
+        expected_scalar: expected_scalars.get(scalar_index).copied(),
+        observed_scalar: observed_scalars.get(scalar_index).copied(),
+        first_incorrect_word: (!first_incorrect_word.is_empty()).then_some(first_incorrect_word),
+    })
+}
+
+#[derive(Debug, Default)]
 struct RuntimeArtifact {
-    display_server: String,
-    compositor: String,
+    distro: Option<String>,
+    desktop: Option<String>,
+    session_type: Option<String>,
+    display_server: Option<String>,
+    compositor: Option<String>,
+    application: Option<String>,
+    application_version: Option<String>,
+    application_pid_tree: Option<String>,
+    window_title: Option<String>,
+    app_id: Option<String>,
     tools: Vec<(String, String)>,
-    failure_logs: Vec<(String, String)>,
+    raw_key_timestamps: Option<String>,
+    engine_raw_buffers: Option<String>,
+    parsed_syllables: Option<String>,
+    rendered_text: Option<String>,
+    replacement_delete_count: Option<usize>,
+    replacement_inserted_unicode: Option<String>,
+    transaction_id: Option<u64>,
+    transaction_state_transitions: Option<String>,
+    focus_history: Option<String>,
+    focus_generation: Option<u64>,
+    expected_text: Option<String>,
+    observed_text: Option<String>,
+    divergence: Option<UnicodeDivergence>,
+    clipboard_polling_timeline: Option<String>,
+    exit_reason: Option<String>,
+    teardown_result: Option<String>,
+    failures: Vec<(String, RuntimeFailure)>,
 }
 
 impl RuntimeArtifact {
@@ -1811,32 +1949,148 @@ impl RuntimeArtifact {
         Version: Into<String>,
     {
         Self {
-            display_server: display_server.into(),
-            compositor: compositor.into(),
+            display_server: Some(display_server.into()),
+            compositor: Some(compositor.into()),
             tools: tools
                 .into_iter()
                 .map(|(name, version)| (name.into(), version.into()))
                 .collect(),
-            failure_logs: Vec::new(),
+            ..Self::default()
         }
     }
 
-    fn with_failure_log(mut self, scenario: impl Into<String>, message: impl Into<String>) -> Self {
-        self.failure_logs.push((scenario.into(), message.into()));
+    fn with_failure(mut self, scenario: impl Into<String>, failure: RuntimeFailure) -> Self {
+        self.failures.push((scenario.into(), failure));
         self
     }
 
-    fn render(&self) -> String {
-        let mut output = format!(
-            "display_server: {}\ncompositor: {}\ntools:\n",
-            self.display_server, self.compositor
-        );
-        for (name, version) in &self.tools {
-            output.push_str(&format!("  {}: {}\n", name, version));
+    fn with_text_observation(
+        mut self,
+        expected: impl Into<String>,
+        observed: impl Into<String>,
+    ) -> Self {
+        let expected = expected.into();
+        let observed = observed.into();
+        self.divergence = first_unicode_divergence(&expected, &observed);
+        self.expected_text = Some(expected);
+        self.observed_text = Some(observed);
+        self
+    }
+
+    fn render_optional<T: std::fmt::Display>(output: &mut String, name: &str, value: Option<&T>) {
+        match value {
+            Some(value) => output.push_str(&format!("{name}: {value}\n")),
+            None => output.push_str(&format!("{name}: <absent>\n")),
         }
-        output.push_str("failure_logs:\n");
-        for (scenario, message) in &self.failure_logs {
-            output.push_str(&format!("  {}: {}\n", scenario, message));
+    }
+
+    fn render(&self) -> String {
+        let mut output = String::new();
+        Self::render_optional(&mut output, "distro", self.distro.as_ref());
+        Self::render_optional(&mut output, "desktop", self.desktop.as_ref());
+        Self::render_optional(&mut output, "session_type", self.session_type.as_ref());
+        Self::render_optional(&mut output, "display_server", self.display_server.as_ref());
+        Self::render_optional(&mut output, "compositor", self.compositor.as_ref());
+        Self::render_optional(&mut output, "application", self.application.as_ref());
+        Self::render_optional(
+            &mut output,
+            "application_version",
+            self.application_version.as_ref(),
+        );
+        Self::render_optional(
+            &mut output,
+            "application_pid_tree",
+            self.application_pid_tree.as_ref(),
+        );
+        Self::render_optional(&mut output, "window_title", self.window_title.as_ref());
+        Self::render_optional(&mut output, "app_id", self.app_id.as_ref());
+        output.push_str("tools:\n");
+        if self.tools.is_empty() {
+            output.push_str("  <absent>\n");
+        } else {
+            for (name, version) in &self.tools {
+                output.push_str(&format!("  {name}: {version}\n"));
+            }
+        }
+        Self::render_optional(
+            &mut output,
+            "raw_key_timestamps",
+            self.raw_key_timestamps.as_ref(),
+        );
+        Self::render_optional(
+            &mut output,
+            "engine_raw_buffers",
+            self.engine_raw_buffers.as_ref(),
+        );
+        Self::render_optional(
+            &mut output,
+            "parsed_syllables",
+            self.parsed_syllables.as_ref(),
+        );
+        Self::render_optional(&mut output, "rendered_text", self.rendered_text.as_ref());
+        Self::render_optional(
+            &mut output,
+            "replacement_delete_count",
+            self.replacement_delete_count.as_ref(),
+        );
+        Self::render_optional(
+            &mut output,
+            "replacement_inserted_unicode",
+            self.replacement_inserted_unicode.as_ref(),
+        );
+        Self::render_optional(&mut output, "transaction_id", self.transaction_id.as_ref());
+        Self::render_optional(
+            &mut output,
+            "transaction_state_transitions",
+            self.transaction_state_transitions.as_ref(),
+        );
+        Self::render_optional(&mut output, "focus_history", self.focus_history.as_ref());
+        Self::render_optional(
+            &mut output,
+            "focus_generation",
+            self.focus_generation.as_ref(),
+        );
+        Self::render_optional(&mut output, "expected_text", self.expected_text.as_ref());
+        Self::render_optional(&mut output, "observed_text", self.observed_text.as_ref());
+        match &self.divergence {
+            Some(divergence) => {
+                output.push_str(&format!(
+                    "first_difference_scalar_index: {}\nfirst_difference_expected_scalar: {:?}\nfirst_difference_observed_scalar: {:?}\n",
+                    divergence.scalar_index,
+                    divergence.expected_scalar,
+                    divergence.observed_scalar,
+                ));
+                Self::render_optional(
+                    &mut output,
+                    "first_incorrect_word",
+                    divergence.first_incorrect_word.as_ref(),
+                );
+            }
+            None => {
+                output.push_str("first_difference_scalar_index: <absent>\n");
+                output.push_str("first_difference_expected_scalar: <absent>\n");
+                output.push_str("first_difference_observed_scalar: <absent>\n");
+                output.push_str("first_incorrect_word: <absent>\n");
+            }
+        }
+        Self::render_optional(
+            &mut output,
+            "clipboard_polling_timeline",
+            self.clipboard_polling_timeline.as_ref(),
+        );
+        Self::render_optional(&mut output, "exit_reason", self.exit_reason.as_ref());
+        Self::render_optional(
+            &mut output,
+            "teardown_result",
+            self.teardown_result.as_ref(),
+        );
+        output.push_str("failures:\n");
+        if self.failures.is_empty() {
+            output.push_str("  <absent>\n");
+        } else {
+            for (scenario, failure) in &self.failures {
+                output.push_str(&format!("  {scenario}: {}\n", failure.render()));
+            }
         }
         output
     }
@@ -2031,6 +2285,70 @@ fn runtime_gate_reports_missing_uinput_without_pretending_to_pass() {
 }
 
 #[test]
+fn runtime_failure_taxonomy_has_stable_labels_and_checkpointed_rendering() {
+    let categories = [
+        (RuntimeFailureCategory::EngineMismatch, "ENGINE_MISMATCH"),
+        (
+            RuntimeFailureCategory::TransactionFailure,
+            "TRANSACTION_FAILURE",
+        ),
+        (RuntimeFailureCategory::FocusFailure, "FOCUS_FAILURE"),
+        (
+            RuntimeFailureCategory::ObservationFailure,
+            "OBSERVATION_FAILURE",
+        ),
+        (RuntimeFailureCategory::StartupFailure, "STARTUP_FAILURE"),
+        (
+            RuntimeFailureCategory::LifecycleFailure,
+            "LIFECYCLE_FAILURE",
+        ),
+        (RuntimeFailureCategory::Unavailable, "UNAVAILABLE"),
+    ];
+    for (category, label) in categories {
+        assert_eq!(category.label(), label);
+        let rendered = RuntimeFailure::new(category, "focus_probe", "failed").render();
+        assert!(rendered.contains(label));
+        assert!(rendered.contains("checkpoint=focus_probe"));
+    }
+}
+
+#[test]
+fn runtime_artifact_reports_unicode_divergence_by_scalar_and_word() {
+    let artifact =
+        RuntimeArtifact::default().with_text_observation("xin chào thế giới", "xin chao thế giới");
+    let divergence = artifact.divergence.as_ref().expect("texts must diverge");
+    assert_eq!(divergence.scalar_index, 6);
+    assert_eq!(divergence.expected_scalar, Some('à'));
+    assert_eq!(divergence.observed_scalar, Some('a'));
+    assert_eq!(divergence.first_incorrect_word.as_deref(), Some("chào"));
+}
+
+#[test]
+fn runtime_artifact_renders_missing_evidence_explicitly() {
+    let rendered = RuntimeArtifact::default().render();
+    assert!(rendered.contains("distro: <absent>"));
+    assert!(rendered.contains("application_pid_tree: <absent>"));
+    assert!(rendered.contains("raw_key_timestamps: <absent>"));
+    assert!(rendered.contains("transaction_id: <absent>"));
+    assert!(rendered.contains("first_difference_scalar_index: <absent>"));
+    assert!(rendered.contains("teardown_result: <absent>"));
+    assert!(rendered.contains("failures:\n  <absent>"));
+}
+
+#[test]
+fn runtime_command_errors_are_surfaced_with_category_and_checkpoint() {
+    let failure =
+        classify_runtime_command_error(&RuntimeCommandError::TargetCopyFailed, "clipboard_read");
+    assert_eq!(failure.category, RuntimeFailureCategory::ObservationFailure);
+    assert_eq!(failure.checkpoint, "clipboard_read");
+
+    let failure =
+        classify_runtime_command_error(&RuntimeCommandError::TimedOut, "target_observation");
+    assert_eq!(failure.category, RuntimeFailureCategory::ObservationFailure);
+    assert_eq!(failure.checkpoint, "target_observation");
+}
+
+#[test]
 fn runtime_artifact_records_environment_tools_and_failure_logs() {
     let artifact = RuntimeArtifact::new(
         "wayland",
@@ -2041,7 +2359,14 @@ fn runtime_artifact_records_environment_tools_and_failure_logs() {
             ("chromium", "141.0"),
         ],
     )
-    .with_failure_log("wayland-wtype-fallback", "wtype exited with status 1");
+    .with_failure(
+        "wayland-wtype-fallback",
+        RuntimeFailure::new(
+            RuntimeFailureCategory::TransactionFailure,
+            "input_dispatch",
+            "wtype exited with status 1",
+        ),
+    );
     let rendered = artifact.render();
     assert!(rendered.contains("display_server: wayland"));
     assert!(rendered.contains("compositor: gnome"));
@@ -2049,6 +2374,8 @@ fn runtime_artifact_records_environment_tools_and_failure_logs() {
     assert!(rendered.contains("wl-copy: 2.2.1"));
     assert!(rendered.contains("chromium: 141.0"));
     assert!(rendered.contains("wayland-wtype-fallback"));
+    assert!(rendered.contains("category=TRANSACTION_FAILURE"));
+    assert!(rendered.contains("checkpoint=input_dispatch"));
     assert!(rendered.contains("wtype exited with status 1"));
 }
 
@@ -2061,7 +2388,14 @@ fn runtime_artifact_is_written_to_the_requested_path() {
         "cosmic",
         [("wtype", "installed"), ("zenity", "installed")],
     )
-    .with_failure_log("none", "all executed scenarios passed");
+    .with_failure(
+        "none",
+        RuntimeFailure::new(
+            RuntimeFailureCategory::ObservationFailure,
+            "artifact_test",
+            "synthetic persisted failure",
+        ),
+    );
     artifact
         .write_to(&artifact_path)
         .expect("runtime artifact must be persisted");
@@ -2364,6 +2698,7 @@ fn tool_version_reports_missing_when_program_cannot_be_spawned() {
 enum RuntimeTargetKind {
     Chromium,
     Chrome,
+    Edge,
     Firefox,
     Electron,
     CosmicEdit,
@@ -2377,6 +2712,7 @@ impl RuntimeTargetKind {
         match self {
             Self::Chromium => "chromium",
             Self::Chrome => "google-chrome",
+            Self::Edge => "microsoft-edge",
             Self::Firefox => "firefox",
             Self::Electron => "electron",
             Self::CosmicEdit => "cosmic-edit",
@@ -2388,7 +2724,9 @@ impl RuntimeTargetKind {
 
     fn role(self) -> RuntimeProcessRole {
         match self {
-            Self::Chromium | Self::Chrome | Self::Firefox => RuntimeProcessRole::Browser,
+            Self::Chromium | Self::Chrome | Self::Edge | Self::Firefox => {
+                RuntimeProcessRole::Browser
+            }
             Self::Electron => RuntimeProcessRole::ElectronMain,
             Self::CosmicEdit | Self::Gtk | Self::Qt => RuntimeProcessRole::ToolkitTarget,
             Self::Terminal => RuntimeProcessRole::TerminalTarget,
@@ -2658,6 +2996,14 @@ fn runtime_target_executable(
             Some("chromium-browser")
         }
         RuntimeTargetKind::Chrome if environment.has_tool("google-chrome") => Some("google-chrome"),
+        RuntimeTargetKind::Edge => [
+            "microsoft-edge",
+            "microsoft-edge-stable",
+            "microsoft-edge-beta",
+            "microsoft-edge-dev",
+        ]
+        .into_iter()
+        .find(|executable| environment.has_tool(executable)),
         RuntimeTargetKind::Firefox if environment.has_tool("firefox") => Some("/usr/bin/firefox"),
         RuntimeTargetKind::Electron if environment.has_tool("electron") => Some("electron"),
         RuntimeTargetKind::CosmicEdit if environment.has_tool("cosmic-edit") => {
@@ -2685,12 +3031,22 @@ fn prepare_target_fixture(
         target,
         RuntimeTargetKind::Chromium
             | RuntimeTargetKind::Chrome
+            | RuntimeTargetKind::Edge
             | RuntimeTargetKind::Firefox
             | RuntimeTargetKind::Electron
     ) {
+        let run_id = fixture
+            .profile_dir
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("runtime");
+        let title = format!("Vietc controlled runtime {run_id}");
         std::fs::write(
             fixture.profile_dir.join("controlled-target.html"),
-            "<!doctype html><meta charset=utf-8><title>Vietc controlled runtime</title><style>html,body,#target{box-sizing:border-box;width:100%;height:100%;margin:0}</style><textarea id=target autofocus aria-label='controlled runtime target'></textarea><script>const target=document.querySelector('#target'); target.focus(); target.select();</script>",
+            format!(
+                "<!doctype html><meta charset=utf-8><title>{title}</title><style>html,body,#target{{box-sizing:border-box;width:100%;height:100%;margin:0}}</style><textarea id=target autofocus aria-label='controlled runtime target'></textarea><script>const target=document.querySelector('#target'); target.focus(); target.select();</script>"
+            ),
         )?;
     }
     if target == RuntimeTargetKind::CosmicEdit {
@@ -2705,7 +3061,7 @@ fn runtime_target_flags(
     executable: &str,
 ) -> Vec<String> {
     match target {
-        RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome => vec![
+        RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome | RuntimeTargetKind::Edge => vec![
             format!("--user-data-dir={}", fixture.profile_dir.display()),
             "--no-sandbox".to_string(),
             "--no-first-run".to_string(),
@@ -3212,6 +3568,7 @@ fn runtime_target_requested(
     let name = match target {
         RuntimeTargetKind::Chromium => "chromium",
         RuntimeTargetKind::Chrome => "google-chrome",
+        RuntimeTargetKind::Edge => "microsoft-edge",
         RuntimeTargetKind::Firefox => "firefox",
         RuntimeTargetKind::Electron => "electron",
         RuntimeTargetKind::CosmicEdit => "cosmic-edit",
@@ -4214,7 +4571,10 @@ fn execute_controlled_scenario(
         let mut firefox_window = None;
         let mut cdp = if matches!(
             target,
-            RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome | RuntimeTargetKind::Electron
+            RuntimeTargetKind::Chromium
+                | RuntimeTargetKind::Chrome
+                | RuntimeTargetKind::Edge
+                | RuntimeTargetKind::Electron
         ) {
             trace("cdp_connect:start");
             let mut connection = connect_controlled_browser_cdp(&fixture, operation_timeout)?;
@@ -4860,6 +5220,7 @@ fn privileged_runtime_targets_execute_controlled_scenarios() {
     for target in [
         RuntimeTargetKind::Chromium,
         RuntimeTargetKind::Chrome,
+        RuntimeTargetKind::Edge,
         RuntimeTargetKind::Firefox,
         RuntimeTargetKind::Electron,
         RuntimeTargetKind::CosmicEdit,
@@ -5009,13 +5370,7 @@ fn wayland_wtype_success_is_observable_at_runtime() {
             ("zenity", tool_version("zenity")),
         ],
     )
-    .with_failure_log(
-        "wayland-wtype-success",
-        format!(
-            "PASS: expected={:?}; observed={:?}; inject_result={}",
-            result.expected_text, result.observed_text, result.inject_result
-        ),
-    );
+    .with_text_observation(&result.expected_text, &result.observed_text);
     artifact
         .write_to(&artifact_directory.join("wayland-wtype-success.txt"))
         .expect("Wayland runtime artifact must be persisted");
@@ -5296,7 +5651,9 @@ fn verify_focus_switch_observations(
     }
     for (index, observation) in observations.iter().enumerate() {
         if observations.iter().enumerate().any(|(other_index, other)| {
-            index != other_index && observation.observed.contains(&other.expected)
+            index != other_index
+                && observation.target != other.target
+                && observation.observed.contains(&other.expected)
         }) {
             return Err("focus-switch leaked text between targets");
         }
@@ -5370,16 +5727,64 @@ fn verify_fast_input_observations(
     Ok(())
 }
 
+fn activate_stress_browser(
+    fixture: &ControlledRuntimeFixture,
+    timeout: Duration,
+) -> Result<(), RuntimeCommandError> {
+    let run_id = fixture
+        .profile_dir
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    let title = format!("Vietc controlled runtime {run_id}");
+    common::cosmic_toplevel::activate_chromium(&title, timeout)
+        .map(|_| ())
+        .map_err(|_| RuntimeCommandError::TimedOut)
+}
+
+fn switch_stress_browser(timeout: Duration) -> Result<(), RuntimeCommandError> {
+    let mut keyboard =
+        common::virtual_keyboard::VirtualKeyboard::create("vietc-phase6-focus-switch-vk")
+            .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+    keyboard
+        .wait_for_devnode(timeout)
+        .ok_or(RuntimeCommandError::InputInjectionFailed)?;
+    std::thread::sleep(Duration::from_secs(1));
+    keyboard
+        .alt_tab()
+        .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+    std::thread::sleep(Duration::from_millis(750));
+    Ok(())
+}
+
 fn inject_controlled_keys(
     environment: &RuntimeEnvironment,
     text: &str,
     key_delay_ms: u64,
     timeout: Duration,
 ) -> Result<(), RuntimeCommandError> {
-    let status = if environment.session_type == "wayland" {
-        let mut command = std::process::Command::new("ydotool");
-        command.args(["type", "--key-delay", &key_delay_ms.to_string(), text]);
-        run_command_with_timeout(&mut command, timeout)?
+    if environment.session_type == "wayland" {
+        let mut keyboard =
+            common::virtual_keyboard::VirtualKeyboard::create("vietc-phase6-runtime-vk")
+                .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+        keyboard
+            .wait_for_devnode(timeout)
+            .ok_or(RuntimeCommandError::InputInjectionFailed)?;
+
+        // Keep the virtual device alive long enough for the production daemon's
+        // 100 ms hotplug scan to discover and grab it before emitting keys.
+        std::thread::sleep(Duration::from_secs(1));
+        for ch in text.chars() {
+            keyboard
+                .type_char(ch)
+                .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+            std::thread::sleep(Duration::from_millis(key_delay_ms));
+        }
+        // Do not destroy the uinput device until the daemon has drained the
+        // emitted events; dropping it immediately produces ENODEV and loses input.
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(())
     } else {
         let mut command = std::process::Command::new("xdotool");
         command.args([
@@ -5390,22 +5795,27 @@ fn inject_controlled_keys(
             "--",
             text,
         ]);
-        run_command_with_timeout(&mut command, timeout)?
-    };
-    if status.success() {
-        Ok(())
-    } else {
-        Err(RuntimeCommandError::InputInjectionFailed)
+        if run_command_with_timeout(&mut command, timeout)?.success() {
+            Ok(())
+        } else {
+            Err(RuntimeCommandError::InputInjectionFailed)
+        }
     }
 }
 
-fn launch_stress_browser(
+fn launch_stress_browser_target(
     workspace_root: &Path,
     run_id: &str,
+    target: RuntimeTargetKind,
     environment: &RuntimeEnvironment,
     timeout: Duration,
 ) -> Result<(ControlledRuntimeFixture, OwnedRuntimeChild, CdpConnection), RuntimeCommandError> {
-    let target = RuntimeTargetKind::Chromium;
+    if !matches!(
+        target,
+        RuntimeTargetKind::Chromium | RuntimeTargetKind::Chrome | RuntimeTargetKind::Edge
+    ) {
+        return Err(RuntimeCommandError::PrerequisiteMissing);
+    }
     let executable = runtime_target_executable(target, environment)
         .ok_or(RuntimeCommandError::PrerequisiteMissing)?;
     let fixture = ControlledRuntimeFixture::isolated(workspace_root, run_id)
@@ -5435,13 +5845,27 @@ fn launch_stress_browser(
     Ok((fixture, child, cdp))
 }
 
+fn launch_stress_browser(
+    workspace_root: &Path,
+    run_id: &str,
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+) -> Result<(ControlledRuntimeFixture, OwnedRuntimeChild, CdpConnection), RuntimeCommandError> {
+    launch_stress_browser_target(
+        workspace_root,
+        run_id,
+        RuntimeTargetKind::Chromium,
+        environment,
+        timeout,
+    )
+}
+
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, ydotool, Chromium, a running vietc daemon, and writable /dev/uinput"]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, Chromium, a running vietc daemon, and writable /dev/uinput"]
 fn privileged_focus_switch_stress_is_observable_end_to_end() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(controlled_display_available(&environment));
-    assert!(environment.has_tool("chromium"));
-    assert!(environment.has_tool("ydotool"));
+    assert!(environment.has_tool("chromium") || environment.has_tool("chromium-browser"));
 
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -5455,37 +5879,69 @@ fn privileged_focus_switch_stress_is_observable_end_to_end() {
             .expect("second controlled target must launch");
 
     let scenario = (|| {
-        cdp_a
-            .command("Page.bringToFront", serde_json::json!({}))
-            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
         prepare_controlled_browser_target(&mut cdp_a)?;
-        inject_controlled_keys(&environment, "dduoj", 12, timeout)?;
-        let first_a = wait_for_controlled_browser_value(
+        activate_stress_browser(&fixture_a, timeout)?;
+        std::thread::sleep(Duration::from_millis(750));
+        inject_controlled_keys(&environment, "tieengs", 12, timeout)?;
+        let first_a = match wait_for_controlled_browser_value(
             &mut cdp_a,
-            "đuọ",
+            "tiếng",
             timeout,
             &fixture_a.artifact_dir.join("first-a-timeout.txt"),
-        )?;
+        ) {
+            Ok(observed) => observed,
+            Err(error) => {
+                let observed_a = read_controlled_browser_target(&mut cdp_a)
+                    .unwrap_or_else(|_| "<unavailable>".to_string());
+                let observed_b = read_controlled_browser_target(&mut cdp_b)
+                    .unwrap_or_else(|_| "<unavailable>".to_string());
+                let _ = std::fs::write(
+                    fixture_a
+                        .artifact_dir
+                        .join("first-a-cross-target-timeout.txt"),
+                    format!(
+                        "expected_a={:?}\nobserved_a={:?}\nobserved_b={:?}\n",
+                        "tiếng", observed_a, observed_b
+                    ),
+                );
+                return Err(error);
+            }
+        };
 
-        cdp_b
-            .command("Page.bringToFront", serde_json::json!({}))
-            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
         prepare_controlled_browser_target(&mut cdp_b)?;
-        inject_controlled_keys(&environment, "neues", 12, timeout)?;
-        let observed_b = wait_for_controlled_browser_value(
+        activate_stress_browser(&fixture_b, timeout)?;
+        std::thread::sleep(Duration::from_millis(750));
+        inject_controlled_keys(&environment, "chaof", 12, timeout)?;
+        let observed_b = match wait_for_controlled_browser_value(
             &mut cdp_b,
-            "nếu",
+            "chào",
             timeout,
             &fixture_b.artifact_dir.join("target-b-timeout.txt"),
-        )?;
+        ) {
+            Ok(observed) => observed,
+            Err(error) => {
+                let observed_a = read_controlled_browser_target(&mut cdp_a)
+                    .unwrap_or_else(|_| "<unavailable>".to_string());
+                let observed_b = read_controlled_browser_target(&mut cdp_b)
+                    .unwrap_or_else(|_| "<unavailable>".to_string());
+                let _ = std::fs::write(
+                    fixture_b
+                        .artifact_dir
+                        .join("target-b-cross-target-timeout.txt"),
+                    format!(
+                        "expected_b={:?}\nobserved_a={:?}\nobserved_b={:?}\n",
+                        "chào", observed_a, observed_b
+                    ),
+                );
+                return Err(error);
+            }
+        };
 
-        cdp_a
-            .command("Page.bringToFront", serde_json::json!({}))
-            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-        inject_controlled_keys(&environment, "wc", 12, timeout)?;
+        activate_stress_browser(&fixture_a, timeout)?;
+        std::thread::sleep(Duration::from_millis(750));
         let final_a = wait_for_controlled_browser_value(
             &mut cdp_a,
-            "được",
+            "tiếng",
             timeout,
             &fixture_a.artifact_dir.join("final-a-timeout.txt"),
         )?;
@@ -5493,17 +5949,17 @@ fn privileged_focus_switch_stress_is_observable_end_to_end() {
         let observations = [
             FocusSwitchObservation {
                 target: "chromium-a".to_string(),
-                expected: "đuọ".to_string(),
+                expected: "tiếng".to_string(),
                 observed: first_a,
             },
             FocusSwitchObservation {
                 target: "chromium-b".to_string(),
-                expected: "nếu".to_string(),
+                expected: "chào".to_string(),
                 observed: observed_b,
             },
             FocusSwitchObservation {
                 target: "chromium-a".to_string(),
-                expected: "được".to_string(),
+                expected: "tiếng".to_string(),
                 observed: final_a,
             },
         ];
@@ -5513,7 +5969,7 @@ fn privileged_focus_switch_stress_is_observable_end_to_end() {
         std::fs::write(
             workspace_root.join("target/runtime-artifacts/phase6-focus-switch-observed.txt"),
             format!(
-                "key_delay_ms=12\ninitial_target=chromium-a\nfinal_target=chromium-a\nobservations={observations:#?}\nstatus=PASS\n"
+                "key_delay_ms=12\ninitial_target=chromium-a\ninitial_input=tieengs\ninitial_expected=tiếng\nsecond_target=chromium-b\nsecond_input=chaof\nsecond_expected=chào\nfinal_target=chromium-a\nfinal_expected=tiếng\nobservations={observations:#?}\nstatus=PASS\n"
             ),
         )
         .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
@@ -5530,12 +5986,11 @@ fn privileged_focus_switch_stress_is_observable_end_to_end() {
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, ydotool, Chromium, a running vietc daemon, and writable /dev/uinput"]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, Chromium, a running vietc daemon, and writable /dev/uinput"]
 fn privileged_fast_input_stress_is_observable_end_to_end() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(controlled_display_available(&environment));
-    assert!(environment.has_tool("chromium"));
-    assert!(environment.has_tool("ydotool"));
+    assert!(environment.has_tool("chromium") || environment.has_tool("chromium-browser"));
 
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -5553,6 +6008,7 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
             .filter(|case| !matches!(case.name, "backspace" | "disabled-literal"))
         {
             prepare_controlled_browser_target(&mut cdp)?;
+            activate_stress_browser(&fixture, timeout)?;
             inject_controlled_keys(&environment, case.raw, key_delay_ms, timeout)?;
             let observed = wait_for_controlled_browser_value(
                 &mut cdp,
@@ -5566,6 +6022,7 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
         }
 
         prepare_controlled_browser_target(&mut cdp)?;
+        activate_stress_browser(&fixture, timeout)?;
         inject_controlled_keys(&environment, "dduojwc", key_delay_ms, timeout)?;
         wait_for_controlled_browser_value(
             &mut cdp,
@@ -5573,9 +6030,19 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
             timeout,
             &fixture.artifact_dir.join("backspace-before-timeout.txt"),
         )?;
-        let mut backspace = std::process::Command::new("ydotool");
-        backspace.args(["key", "--key-delay", "8", "Backspace"]);
-        assert!(run_command_with_timeout(&mut backspace, timeout)?.success());
+
+        let mut backspace =
+            common::virtual_keyboard::VirtualKeyboard::create("vietc-phase6-backspace-vk")
+                .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+        backspace
+            .wait_for_devnode(timeout)
+            .ok_or(RuntimeCommandError::InputInjectionFailed)?;
+        std::thread::sleep(Duration::from_secs(1));
+        backspace
+            .backspace()
+            .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
+        std::thread::sleep(Duration::from_millis(500));
+
         let backspace_observed = wait_for_controlled_browser_value(
             &mut cdp,
             "đượ",
@@ -5590,6 +6057,7 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
         std::fs::write(&status_path, "en").map_err(|_| RuntimeCommandError::ScenarioFailed)?;
         std::thread::sleep(Duration::from_secs(1));
         prepare_controlled_browser_target(&mut cdp)?;
+        activate_stress_browser(&fixture, timeout)?;
         inject_controlled_keys(&environment, "dduojwc", key_delay_ms, timeout)?;
         let disabled = wait_for_controlled_browser_value(
             &mut cdp,
@@ -5623,6 +6091,354 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
     let teardown = child.terminate_and_reap(Duration::from_secs(5));
     scenario.expect("fast-input stress must pass exact observation");
     teardown.expect("controlled fast-input target must be reaped");
+}
+
+const LONG_TEXT_MIN_WORDS: usize = 700;
+const LONG_TEXT_MAX_WORDS: usize = 1000;
+const DEFAULT_LONG_TEXT_KEY_DELAY_MS: u64 = 85;
+const MIN_LONG_TEXT_KEY_DELAY_MS: u64 = 40;
+const MAX_LONG_TEXT_KEY_DELAY_MS: u64 = 250;
+
+fn long_text_key_delay_ms() -> u64 {
+    std::env::var("VIETC_LONG_TEXT_KEY_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|delay| (MIN_LONG_TEXT_KEY_DELAY_MS..=MAX_LONG_TEXT_KEY_DELAY_MS).contains(delay))
+        .unwrap_or(DEFAULT_LONG_TEXT_KEY_DELAY_MS)
+}
+
+fn controlled_long_text_input() -> String {
+    const PARAGRAPH: &str = "Mooix sangs, laapj trinhf vieen moowr mays, docj email, kieemr tra lichj hopj vaf xem dashboard cuar duwj ans. Sau ddoos, hoj pull source code, chayj test, review pull request vaf ghi chus casc looix caanf suwar. Mootj soos teen tieengs Anh nhu test, suite, status, issue, user, feature, release, database vaf service dduocwj giuwx nguyeen ddeer phast hieenj truowngf hopwj Telex dieenx giair nhaamf. Trong lucs lamf vieecj, Minh vieets hamf mowis, Huowng capj nhaatj API, conf An kieemr tra log treen mooi truowngf staging. Car nhoms trao ddooir bawngf tieengs Vieetj cos chuwx hoa vaf chuwx thuowngf, vis duj Hoom Nay Chungs Tooi Suwar Looix, rooif xasc nhaanj keets quar bawngf unit test, integration test vaf cargo check. Buooir chieeuf, moi nguowif xuwr lys phanr hooif, toois uuw hieeuj nawng, capj nhaatj taif lieeuj, chuaanr bij banr phast hanhf vaf toongr keets nhuwngx vieecj ddax hoanf thanhf.";
+    std::iter::repeat_n(PARAGRAPH, 6)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn controlled_long_text() -> String {
+    const PARAGRAPH: &str = "Mỗi sáng, lập trình viên mở máy, đọc email, kiểm tra lịch họp và xem dashboard của dự án. Sau đó, họ pull source code, chạy test, review pull request và ghi chú các lỗi cần sửa. Một số tên tiếng Anh như test, suite, status, issue, user, feature, release, database và service được giữ nguyên để phát hiện trường hợp Telex diễn giải nhầm. Trong lúc làm việc, Minh viết hàm mới, Hương cập nhật API, còn An kiểm tra log trên môi trường staging. Cả nhóm trao đổi bằng tiếng Việt có chữ hoa và chữ thường, ví dụ Hôm Nay Chúng Tôi Sửa Lỗi, rồi xác nhận kết quả bằng unit test, integration test và cargo check. Buổi chiều, mọi người xử lý phản hồi, tối ưu hiệu năng, cập nhật tài liệu, chuẩn bị bản phát hành và tổng kết những việc đã hoàn thành.";
+    std::iter::repeat_n(PARAGRAPH, 6)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn summarize_text_mismatch(expected: &str, observed: &str) -> String {
+    if expected == observed {
+        return "none".to_string();
+    }
+
+    let first_difference = expected
+        .chars()
+        .zip(observed.chars())
+        .position(|(expected, observed)| expected != observed)
+        .unwrap_or_else(|| expected.chars().count().min(observed.chars().count()));
+    format!(
+        "first_difference_char={first_difference}; expected_chars={}; observed_chars={}",
+        expected.chars().count(),
+        observed.chars().count()
+    )
+}
+
+fn render_long_text_artifact(
+    target: RuntimeTargetKind,
+    key_delay_ms: u64,
+    expected: &str,
+    observed: Option<&str>,
+    status: RuntimeMatrixStatus,
+    error: Option<&str>,
+) -> String {
+    let observed = observed.unwrap_or("");
+    format!(
+        "target={target:?}\nkey_delay_ms={key_delay_ms}\nstatus={}\nerror={}\nword_count={}\nmismatch_summary={}\nexpected_text={expected:?}\nobserved_text={observed:?}\n",
+        status.label(),
+        error.unwrap_or("none"),
+        expected.split_whitespace().count(),
+        summarize_text_mismatch(expected, observed),
+    )
+}
+
+fn selected_long_text_targets() -> Result<Vec<RuntimeTargetKind>, String> {
+    let configured = std::env::var("VIETC_LONG_TEXT_TARGETS")
+        .unwrap_or_else(|_| "cosmic-edit,microsoft-edge,firefox".to_string());
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| match name {
+            "cosmic-edit" => Ok(RuntimeTargetKind::CosmicEdit),
+            "microsoft-edge" => Ok(RuntimeTargetKind::Edge),
+            "firefox" => Ok(RuntimeTargetKind::Firefox),
+            _ => Err(format!("unsupported VIETC_LONG_TEXT_TARGETS value: {name}")),
+        })
+        .collect()
+}
+
+#[test]
+fn deterministic_long_text_fixture_has_required_length_language_and_telex_risks() {
+    let input = controlled_long_text_input();
+    let text = controlled_long_text();
+    let word_count = text.split_whitespace().count();
+
+    assert_eq!(input.split_whitespace().count(), word_count);
+    assert!(
+        input.is_ascii(),
+        "physical Telex input must contain only ASCII"
+    );
+    assert!((LONG_TEXT_MIN_WORDS..=LONG_TEXT_MAX_WORDS).contains(&word_count));
+    for required in [
+        "Mỗi sáng",
+        "Hôm Nay Chúng Tôi Sửa Lỗi",
+        "test",
+        "suite",
+        "status",
+        "user",
+        "feature",
+        "database",
+        "service",
+    ] {
+        assert!(
+            text.contains(required),
+            "missing controlled corpus token {required:?}"
+        );
+    }
+}
+
+#[test]
+fn deterministic_long_text_delay_and_artifact_are_bounded_and_exact() {
+    assert!((MIN_LONG_TEXT_KEY_DELAY_MS..=MAX_LONG_TEXT_KEY_DELAY_MS)
+        .contains(&long_text_key_delay_ms()));
+
+    let expected = controlled_long_text();
+    let artifact = render_long_text_artifact(
+        RuntimeTargetKind::Edge,
+        DEFAULT_LONG_TEXT_KEY_DELAY_MS,
+        &expected,
+        Some(&expected),
+        RuntimeMatrixStatus::Pass,
+        None,
+    );
+    assert!(artifact.contains("target=Edge"));
+    assert!(artifact.contains("key_delay_ms=85"));
+    assert!(artifact.contains("status=PASS"));
+    assert!(artifact.contains("mismatch_summary=none"));
+    assert!(artifact.contains(&format!("expected_text={expected:?}")));
+    assert!(artifact.contains(&format!("observed_text={expected:?}")));
+
+    assert!(summarize_text_mismatch("test", "tést").contains("first_difference_char=1"));
+}
+
+fn write_long_text_result(
+    artifact_directory: &Path,
+    target: RuntimeTargetKind,
+    key_delay_ms: u64,
+    expected: &str,
+    observed: Option<&str>,
+    status: RuntimeMatrixStatus,
+    error: Option<&str>,
+) -> Result<(), RuntimeCommandError> {
+    std::fs::create_dir_all(artifact_directory).map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    std::fs::write(
+        artifact_directory.join(format!("long-text-{}.txt", target.executable())),
+        render_long_text_artifact(target, key_delay_ms, expected, observed, status, error),
+    )
+    .map_err(|_| RuntimeCommandError::ScenarioFailed)
+}
+
+fn activate_long_text_target(
+    target: RuntimeTargetKind,
+    fixture: &ControlledRuntimeFixture,
+    timeout: Duration,
+) -> Result<(), RuntimeCommandError> {
+    let run_id = fixture
+        .profile_dir
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .ok_or(RuntimeCommandError::ScenarioFailed)?;
+    let title = format!("Vietc controlled runtime {run_id}");
+
+    match target {
+        RuntimeTargetKind::Edge => common::cosmic_toplevel::activate_chromium(&title, timeout),
+        RuntimeTargetKind::Firefox => common::cosmic_toplevel::activate_firefox(&title, timeout),
+        RuntimeTargetKind::CosmicEdit => {
+            common::cosmic_toplevel::activate_cosmic_edit("controlled-target.txt", timeout)
+        }
+        _ => return Err(RuntimeCommandError::PrerequisiteMissing),
+    }
+    .map(|_| ())
+    .map_err(|_| RuntimeCommandError::TimedOut)
+}
+
+fn launch_long_text_target(
+    workspace_root: &Path,
+    target: RuntimeTargetKind,
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+) -> Result<
+    (
+        ControlledRuntimeFixture,
+        OwnedRuntimeChild,
+        Option<CdpConnection>,
+    ),
+    RuntimeCommandError,
+> {
+    let run_id = format!("long-text-{}", target.executable());
+    let fixture = ControlledRuntimeFixture::isolated(workspace_root, &run_id)
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    fixture
+        .prepare(workspace_root)
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    prepare_target_fixture(target, &fixture).map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+
+    let executable = runtime_target_executable(target, environment)
+        .ok_or(RuntimeCommandError::PrerequisiteMissing)?;
+    let stdout = std::fs::File::create(fixture.artifact_dir.join("application.stdout.log"))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let stderr = std::fs::File::create(fixture.artifact_dir.join("application.stderr.log"))
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(runtime_target_flags(target, &fixture, executable))
+        .stdin(std::process::Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr);
+    let mut child = OwnedRuntimeChild::spawn(&mut command)?;
+    if !child.healthy()? {
+        return Err(RuntimeCommandError::ScenarioFailed);
+    }
+
+    let cdp = if target == RuntimeTargetKind::Edge {
+        let mut cdp = connect_controlled_browser_cdp(&fixture, timeout)?;
+        prepare_controlled_browser_target(&mut cdp)?;
+        Some(cdp)
+    } else {
+        None
+    };
+    Ok((fixture, child, cdp))
+}
+
+fn observe_long_text_target(
+    target: RuntimeTargetKind,
+    fixture: &ControlledRuntimeFixture,
+    cdp: Option<&mut CdpConnection>,
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+) -> Result<String, RuntimeCommandError> {
+    match target {
+        RuntimeTargetKind::Edge => {
+            read_controlled_browser_target(cdp.ok_or(RuntimeCommandError::TargetCopyFailed)?)
+        }
+        RuntimeTargetKind::CosmicEdit => {
+            let mut save =
+                common::virtual_keyboard::VirtualKeyboard::create("vietc-long-text-save")
+                    .map_err(|_| RuntimeCommandError::TargetCopyFailed)?;
+            save.wait_for_devnode(timeout)
+                .ok_or(RuntimeCommandError::TargetCopyFailed)?;
+            std::thread::sleep(Duration::from_secs(1));
+            save.modifier_chord(29, 31)
+                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?;
+
+            let target_path = fixture.profile_dir.join("controlled-target.txt");
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&target_path) {
+                    if !text.is_empty() {
+                        return Ok(text);
+                    }
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(RuntimeCommandError::TimedOut);
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        RuntimeTargetKind::Firefox => copy_observable_target_text(environment, timeout),
+        _ => Err(RuntimeCommandError::PrerequisiteMissing),
+    }
+}
+
+#[test]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, COSMIC Wayland, COSMIC Edit, Microsoft Edge, Firefox, a running vietc daemon, and writable /dev/uinput"]
+fn privileged_long_text_is_exact_in_cosmic_edit_edge_and_firefox() {
+    let environment = RuntimeEnvironment::detect_current();
+    assert!(controlled_display_available(&environment));
+    assert_eq!(environment.session_type, "wayland");
+    assert!(environment.desktop.to_ascii_uppercase().contains("COSMIC"));
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let artifact_directory = workspace_root.join("target/runtime-artifacts");
+    let key_delay_ms = long_text_key_delay_ms();
+    let input = controlled_long_text_input();
+    let typing_timeout = Duration::from_millis(
+        (input.chars().count() as u64 * key_delay_ms)
+            .saturating_add(Duration::from_secs(30).as_millis() as u64),
+    );
+    let launch_timeout = Duration::from_secs(30);
+    let observe_timeout = Duration::from_secs(30);
+    let teardown_timeout = Duration::from_secs(5);
+    let expected = controlled_long_text();
+    let targets = selected_long_text_targets().expect("long-text target selection must be valid");
+
+    for target in targets {
+        let mut observed = None;
+        let mut child = None;
+        let mut cdp = None;
+        let scenario = (|| {
+            let (fixture, launched_child, launched_cdp) =
+                launch_long_text_target(workspace_root, target, &environment, launch_timeout)?;
+            child = Some(launched_child);
+            cdp = launched_cdp;
+
+            activate_long_text_target(target, &fixture, launch_timeout)?;
+            std::thread::sleep(Duration::from_secs(1));
+            inject_controlled_keys(&environment, &input, key_delay_ms, typing_timeout)?;
+            observed = Some(observe_long_text_target(
+                target,
+                &fixture,
+                cdp.as_mut(),
+                &environment,
+                observe_timeout,
+            )?);
+            if observed.as_deref() == Some(expected.as_str()) {
+                Ok(())
+            } else {
+                Err(RuntimeCommandError::ScenarioFailed)
+            }
+        })();
+
+        if let Some(connection) = cdp.as_mut() {
+            let _ = connection.command("Browser.close", serde_json::json!({}));
+        }
+        let teardown = child
+            .as_mut()
+            .map(|child| child.terminate_and_reap(teardown_timeout))
+            .transpose();
+
+        let final_error = match (&scenario, &teardown) {
+            (Err(error), _) => Some(format!("scenario: {error:?}")),
+            (Ok(()), Err(error)) => Some(format!("teardown: {error:?}")),
+            (Ok(()), Ok(_)) => None,
+        };
+        let status = if final_error.is_none() {
+            RuntimeMatrixStatus::Pass
+        } else {
+            RuntimeMatrixStatus::Failed
+        };
+        write_long_text_result(
+            &artifact_directory,
+            target,
+            key_delay_ms,
+            &expected,
+            observed.as_deref(),
+            status,
+            final_error.as_deref(),
+        )
+        .expect("long-text artifact must always be written");
+
+        scenario.expect("long-text target must match expected text exactly");
+        teardown.expect("long-text target teardown must complete");
+    }
 }
 
 #[test]

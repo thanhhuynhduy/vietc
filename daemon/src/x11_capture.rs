@@ -23,6 +23,7 @@ pub fn run_with_x11_keymap(
 
     let mut capture = X11KeymapCapture::new()?;
     let injector = create_injector(display)?;
+    injector.bind_focus_generation(shared_focus.lock().unwrap().generation_signal.clone());
     let mut last_focus_generation = shared_focus.lock().unwrap().generation;
     let mut last_window_class = String::new();
     let mut key_state: HashSet<u32> = HashSet::new();
@@ -52,6 +53,7 @@ pub fn run_with_x11_keymap(
             let generation = shared_focus.lock().unwrap().generation;
             if generation != last_focus_generation {
                 last_focus_generation = generation;
+                injector.cancel_pending_replacement(generation, "target-changed");
                 daemon.reset_composition_state();
             }
         }
@@ -149,7 +151,12 @@ pub fn run_with_x11_keymap(
                 if !commands.is_empty() {
                     set_keymap_suppress(true);
                     if !matches!(
-                        execute_commands(&*injector, &commands, &mut daemon.visible_revision),
+                        execute_commands(
+                            &*injector,
+                            &commands,
+                            &mut daemon.visible_revision,
+                            last_focus_generation,
+                        ),
                         crate::commands::TransactionOutcome::Applied { .. }
                     ) {
                         log_info("[vietc] X11 keymap backspace injection failed");
@@ -175,7 +182,12 @@ pub fn run_with_x11_keymap(
                     // back into the engine and corrupt the text.
                     set_keymap_suppress(true);
                     if !matches!(
-                        execute_commands(&*injector, &commands, &mut daemon.visible_revision),
+                        execute_commands(
+                            &*injector,
+                            &commands,
+                            &mut daemon.visible_revision,
+                            last_focus_generation,
+                        ),
                         crate::commands::TransactionOutcome::Applied { .. }
                     ) {
                         log_info("[vietc] X11 keymap injection failed");

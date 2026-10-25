@@ -13,8 +13,9 @@ use super::inject::{InjectResult, KeyInjector};
 /// only triggers a single restore once the user pauses — the user's clipboard
 /// is never pasted into the text while the target app might still be reading
 /// our freshly pasted word.
-const CLIPBOARD_READY_TIMEOUT: Duration = Duration::from_millis(250);
+const CLIPBOARD_READY_TIMEOUT: Duration = Duration::from_millis(750);
 const CLIPBOARD_READY_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const PASTE_OBSERVATION_DELAY: Duration = Duration::from_millis(250);
 const CLIPBOARD_TRACE_LIMIT: usize = 128;
 static NEXT_CLIPBOARD_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
 static CLIPBOARD_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -260,6 +261,17 @@ fn build_desktop_command_with(
     Ok(command)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplacementPhase {
+    Prepared,
+    ClipboardWritten,
+    PasteDispatched,
+    TargetObserved,
+    Applied,
+    ClipboardRestored,
+    Failed,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ClipboardAction {
     WriteInjected(String),
@@ -267,10 +279,18 @@ enum ClipboardAction {
     SkipRestore,
 }
 
+struct ClipboardTransaction {
+    id: u64,
+    focus_generation: u64,
+    saved_clipboard: Option<String>,
+    injected_clipboard: String,
+    phase: ReplacementPhase,
+    started: Instant,
+}
+
 #[derive(Default)]
 struct ClipboardBurstState {
-    saved_clipboard: Option<String>,
-    injected_clipboard: Option<String>,
+    transaction: Option<ClipboardTransaction>,
 }
 
 impl ClipboardBurstState {
@@ -278,26 +298,76 @@ impl ClipboardBurstState {
         &mut self,
         current_clipboard: Option<String>,
         injected_text: &str,
+        focus_generation: u64,
     ) -> ClipboardAction {
-        if self.injected_clipboard.is_none() {
-            self.saved_clipboard = current_clipboard;
-        }
-        self.injected_clipboard = Some(injected_text.to_string());
+        let saved_clipboard = self
+            .transaction
+            .as_ref()
+            .and_then(|transaction| transaction.saved_clipboard.clone())
+            .or(current_clipboard);
+        self.transaction = Some(ClipboardTransaction {
+            id: NEXT_CLIPBOARD_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed),
+            focus_generation,
+            saved_clipboard,
+            injected_clipboard: injected_text.to_string(),
+            phase: ReplacementPhase::Prepared,
+            started: Instant::now(),
+        });
         ClipboardAction::WriteInjected(injected_text.to_string())
     }
 
-    fn finish_restore(&mut self, current_clipboard: Option<&str>) -> ClipboardAction {
-        let still_contains_injected = matches!(
-            (current_clipboard, self.injected_clipboard.as_deref()),
-            (Some(current), Some(injected)) if current == injected
-        );
+    fn transition(&mut self, transaction_id: u64, phase: ReplacementPhase) -> bool {
+        let Some(transaction) = self.transaction.as_mut() else {
+            return false;
+        };
+        if transaction.id != transaction_id {
+            return false;
+        }
 
+        let valid = matches!(
+            (transaction.phase, phase),
+            (
+                ReplacementPhase::Prepared,
+                ReplacementPhase::ClipboardWritten
+            ) | (
+                ReplacementPhase::ClipboardWritten,
+                ReplacementPhase::PasteDispatched
+            ) | (
+                ReplacementPhase::PasteDispatched,
+                ReplacementPhase::TargetObserved
+            ) | (ReplacementPhase::TargetObserved, ReplacementPhase::Applied)
+                | (
+                    ReplacementPhase::Applied,
+                    ReplacementPhase::ClipboardRestored
+                )
+                | (_, ReplacementPhase::Failed)
+        );
+        if valid {
+            transaction.phase = phase;
+        }
+        valid
+    }
+
+    fn mark_failed(&mut self, transaction_id: u64) {
+        let _ = self.transition(transaction_id, ReplacementPhase::Failed);
+    }
+
+    fn finish_restore(&mut self, current_clipboard: Option<&str>) -> ClipboardAction {
+        let Some(transaction) = self.transaction.as_ref() else {
+            return ClipboardAction::SkipRestore;
+        };
+        if transaction.phase != ReplacementPhase::Applied {
+            return ClipboardAction::SkipRestore;
+        }
+
+        let still_contains_injected =
+            current_clipboard == Some(transaction.injected_clipboard.as_str());
         if !still_contains_injected {
             self.reset();
             return ClipboardAction::SkipRestore;
         }
 
-        match self.saved_clipboard.clone() {
+        match transaction.saved_clipboard.clone() {
             Some(saved) => ClipboardAction::Restore(saved),
             None => {
                 self.reset();
@@ -306,17 +376,55 @@ impl ClipboardBurstState {
         }
     }
 
-    fn complete_restore(&mut self) {
+    fn complete_restore(&mut self, transaction_id: u64) -> bool {
+        if !self.transition(transaction_id, ReplacementPhase::ClipboardRestored) {
+            return false;
+        }
         self.reset();
+        true
     }
 
     fn is_active(&self) -> bool {
-        self.injected_clipboard.is_some()
+        self.transaction.is_some()
+    }
+
+    fn transaction_id(&self) -> Option<u64> {
+        self.transaction.as_ref().map(|transaction| transaction.id)
+    }
+
+    fn matches(&self, transaction_id: u64, focus_generation: u64) -> bool {
+        self.transaction.as_ref().is_some_and(|transaction| {
+            transaction.id == transaction_id && transaction.focus_generation == focus_generation
+        })
+    }
+
+    fn cancel_for_focus_change(&mut self, focus_generation: u64) -> bool {
+        let should_cancel = self.transaction.as_ref().is_some_and(|transaction| {
+            transaction.focus_generation != focus_generation
+                && transaction.phase != ReplacementPhase::Applied
+                && transaction.phase != ReplacementPhase::ClipboardRestored
+        });
+        if should_cancel {
+            self.transaction = None;
+        }
+        should_cancel
+    }
+
+    #[cfg(test)]
+    fn phase(&self) -> Option<ReplacementPhase> {
+        self.transaction
+            .as_ref()
+            .map(|transaction| transaction.phase)
+    }
+
+    fn elapsed(&self) -> Option<Duration> {
+        self.transaction
+            .as_ref()
+            .map(|transaction| transaction.started.elapsed())
     }
 
     fn reset(&mut self) {
-        self.saved_clipboard = None;
-        self.injected_clipboard = None;
+        self.transaction = None;
     }
 }
 
@@ -376,6 +484,7 @@ struct ClipState {
     inner: Mutex<ClipInner>,
     io_lock: Mutex<()>,
     cv: Condvar,
+    focus_generation: Mutex<Option<Arc<AtomicU64>>>,
 }
 
 struct ClipboardRestorer {
@@ -491,6 +600,7 @@ impl UinputInjector {
             }),
             io_lock: Mutex::new(()),
             cv: Condvar::new(),
+            focus_generation: Mutex::new(None),
         });
         let restorer = ClipboardRestorer::spawn(Arc::clone(&clip), run_restorer);
 
@@ -732,7 +842,7 @@ impl KeyInjector for UinputInjector {
         }
 
         // Fallback: clipboard copy + paste
-        if self.paste_via_clipboard(s) {
+        if self.paste_via_clipboard(s, self.current_focus_generation()) {
             InjectResult::Success
         } else {
             eprintln!("[vietc] Unicode insertion failed: clipboard unavailable");
@@ -741,8 +851,40 @@ impl KeyInjector for UinputInjector {
     }
 
     fn inject_replacement(&self, backspaces: usize, text: &str) -> InjectResult {
-        self.inject_replacement_atomic(backspaces, text)
+        self.inject_replacement_atomic(backspaces, text, self.current_focus_generation())
     }
+
+    fn bind_focus_generation(&self, generation: Arc<AtomicU64>) -> InjectResult {
+        *self.clip.focus_generation.lock().unwrap() = Some(generation);
+        InjectResult::Success
+    }
+
+    fn cancel_pending_replacement(&self, focus_generation: u64, reason: &str) -> InjectResult {
+        let mut state = self.clip.inner.lock().unwrap();
+        if state.burst.cancel_for_focus_change(focus_generation) {
+            state.restore_due = None;
+            trace_clipboard(
+                0,
+                "cancelled",
+                &format!("focus_generation={focus_generation} reason={reason}"),
+            );
+        }
+        self.clip.cv.notify_all();
+        InjectResult::Success
+    }
+
+    fn inject_replacement_for_generation(
+        &self,
+        backspaces: usize,
+        text: &str,
+        focus_generation: u64,
+    ) -> InjectResult {
+        if self.current_focus_generation() != focus_generation {
+            return InjectResult::Failed;
+        }
+        self.inject_replacement_atomic(backspaces, text, focus_generation)
+    }
+
     fn flush(&self) -> InjectResult {
         InjectResult::Success
     }
@@ -767,6 +909,15 @@ impl KeyInjector for UinputInjector {
 }
 
 impl UinputInjector {
+    fn current_focus_generation(&self) -> u64 {
+        self.clip
+            .focus_generation
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |generation| generation.load(Ordering::Acquire))
+    }
+
     /// Get the original non-root username when running as root.
     /// Checks SUDO_USER (sudo), PKEXEC_UID (pkexec), /proc/self/loginuid,
     /// and falls back to `logname`.
@@ -878,7 +1029,12 @@ impl UinputInjector {
     /// ASCII is injected directly. Unicode is copied to the clipboard and
     /// pasted with Ctrl+V through the same device, avoiding mixed-channel
     /// editing transactions.
-    fn inject_replacement_atomic(&self, backspaces: usize, text: &str) -> InjectResult {
+    fn inject_replacement_atomic(
+        &self,
+        backspaces: usize,
+        text: &str,
+        focus_generation: u64,
+    ) -> InjectResult {
         if text.is_empty() {
             if backspaces == 0 || self.send_backspaces(backspaces).is_ok() {
                 return InjectResult::Success;
@@ -920,7 +1076,7 @@ impl UinputInjector {
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        if self.paste_via_clipboard(text) {
+        if self.paste_via_clipboard(text, focus_generation) {
             InjectResult::Success
         } else {
             eprintln!("[vietc] Unicode insertion failed: clipboard unavailable");
@@ -952,8 +1108,7 @@ impl UinputInjector {
     /// with Ctrl+C, so a subsequent Ctrl+V would paste the wrong thing.
     ///
     /// Returns whether the text was successfully copied to the clipboard.
-    fn paste_via_clipboard(&self, text: &str) -> bool {
-        let sequence_id = NEXT_CLIPBOARD_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
+    fn paste_via_clipboard(&self, text: &str, focus_generation: u64) -> bool {
         let t_total = std::time::Instant::now();
         let _clipboard_io = self.clip.io_lock.lock().unwrap();
 
@@ -963,41 +1118,78 @@ impl UinputInjector {
             !st.burst.is_active()
         };
         let current_clipboard = needs_snapshot.then(Self::read_clipboard).flatten();
+
+        let sequence_id = {
+            let mut st = self.clip.inner.lock().unwrap();
+            st.burst
+                .begin_injection(current_clipboard.clone(), text, focus_generation);
+            st.burst.transaction_id().unwrap()
+        };
         trace_clipboard(
             sequence_id,
-            "snapshot",
+            "prepared",
             if current_clipboard.is_some() {
-                "state=present"
+                "clipboard=present"
             } else {
-                "state=empty-or-unavailable"
+                "clipboard=empty-or-unavailable"
             },
         );
 
-        {
-            let mut st = self.clip.inner.lock().unwrap();
-            st.burst.begin_injection(current_clipboard, text);
-        }
-
-        trace_clipboard(sequence_id, "temporary-text", "state=writing");
+        trace_clipboard(sequence_id, "prepared", "state=writing");
         if !Self::copy_to_clipboard(text) {
-            self.clip.inner.lock().unwrap().burst.reset();
-            trace_clipboard(sequence_id, "temporary-text", "state=write-failed");
+            let mut st = self.clip.inner.lock().unwrap();
+            st.burst.mark_failed(sequence_id);
+            trace_clipboard(sequence_id, "failed", "phase=clipboard-write");
+            st.burst.reset();
             return false;
         }
 
         if !Self::wait_for_clipboard_value(text) {
-            self.clip.inner.lock().unwrap().burst.reset();
-            trace_clipboard(sequence_id, "temporary-text", "state=read-back-failed");
+            let mut st = self.clip.inner.lock().unwrap();
+            st.burst.mark_failed(sequence_id);
+            let elapsed_ms = st.burst.elapsed().map_or(0, |elapsed| elapsed.as_millis());
+            trace_clipboard(
+                sequence_id,
+                "failed",
+                &format!("phase=clipboard-read-back elapsed_ms={elapsed_ms}"),
+            );
+            st.burst.reset();
             return false;
         }
-        trace_clipboard(sequence_id, "temporary-text", "state=verified");
+        {
+            let mut st = self.clip.inner.lock().unwrap();
+            debug_assert!(st
+                .burst
+                .transition(sequence_id, ReplacementPhase::ClipboardWritten));
+        }
+        trace_clipboard(sequence_id, "clipboard_written", "state=verified");
 
         if self.send_ctrl_v().is_err() {
-            self.clip.inner.lock().unwrap().burst.reset();
-            trace_clipboard(sequence_id, "paste", "state=failed");
+            let mut st = self.clip.inner.lock().unwrap();
+            st.burst.mark_failed(sequence_id);
+            trace_clipboard(sequence_id, "failed", "phase=paste-dispatch");
+            st.burst.reset();
             return false;
         }
-        trace_clipboard(sequence_id, "paste", "state=sent");
+        {
+            let mut st = self.clip.inner.lock().unwrap();
+            debug_assert!(st
+                .burst
+                .transition(sequence_id, ReplacementPhase::PasteDispatched));
+            st.restore_due = Some(Instant::now() + CLIPBOARD_READY_TIMEOUT);
+        }
+        trace_clipboard(sequence_id, "paste_dispatched", "state=sent");
+
+        if !Self::wait_for_target_consumption(&self.clip, sequence_id, text, focus_generation) {
+            let mut st = self.clip.inner.lock().unwrap();
+            st.burst.mark_failed(sequence_id);
+            st.restore_due = None;
+            trace_clipboard(sequence_id, "failed", "phase=target-observation");
+            st.burst.reset();
+            return false;
+        }
+        trace_clipboard(sequence_id, "target_observed", "state=clipboard-consumed");
+        trace_clipboard(sequence_id, "applied", "state=ready-to-restore");
 
         let current_clipboard = Self::read_clipboard();
         let action = {
@@ -1017,7 +1209,12 @@ impl UinputInjector {
                     trace_clipboard(sequence_id, "verified-read-back", "state=failed");
                     false
                 } else {
-                    self.clip.inner.lock().unwrap().burst.complete_restore();
+                    self.clip
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .burst
+                        .complete_restore(sequence_id);
                     trace_clipboard(sequence_id, "verified-read-back", "state=restored");
                     true
                 }
@@ -1112,6 +1309,77 @@ impl UinputInjector {
                 return false;
             }
             std::thread::sleep(CLIPBOARD_READY_POLL_INTERVAL);
+        }
+    }
+
+    fn wait_for_target_consumption(
+        state: &ClipState,
+        transaction_id: u64,
+        injected_text: &str,
+        focus_generation: u64,
+    ) -> bool {
+        let observed = Self::poll_paste_observation_with(
+            transaction_id,
+            injected_text,
+            || {
+                let state = state.inner.lock().unwrap();
+                state
+                    .burst
+                    .matches(transaction_id, focus_generation)
+                    .then_some(transaction_id)
+            },
+            Self::read_clipboard,
+            Instant::now,
+            std::thread::sleep,
+        );
+        if !observed {
+            return false;
+        }
+
+        let mut inner = state.inner.lock().unwrap();
+        if !inner.burst.matches(transaction_id, focus_generation) {
+            return false;
+        }
+        if inner
+            .burst
+            .transition(transaction_id, ReplacementPhase::TargetObserved)
+            && inner
+                .burst
+                .transition(transaction_id, ReplacementPhase::Applied)
+        {
+            inner.restore_due = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn poll_paste_observation_with(
+        transaction_id: u64,
+        injected_text: &str,
+        mut active_transaction: impl FnMut() -> Option<u64>,
+        mut read_clipboard: impl FnMut() -> Option<String>,
+        mut now: impl FnMut() -> Instant,
+        mut sleep: impl FnMut(Duration),
+    ) -> bool {
+        let started = now();
+        let deadline = started + CLIPBOARD_READY_TIMEOUT;
+        loop {
+            if active_transaction() != Some(transaction_id) {
+                return false;
+            }
+            if read_clipboard().as_deref() != Some(injected_text) {
+                return false;
+            }
+
+            let current = now();
+            if current.duration_since(started) >= PASTE_OBSERVATION_DELAY {
+                return true;
+            }
+            if current >= deadline {
+                return false;
+            }
+            sleep(CLIPBOARD_READY_POLL_INTERVAL.min(deadline - current));
         }
     }
 
@@ -1291,15 +1559,22 @@ fn run_restorer_with(
                 continue;
             }
 
+            let transaction_id = {
+                let st = state.inner.lock().unwrap();
+                st.burst.transaction_id()
+            };
             let restored_ok = copy_to_clipboard(&restored);
             let mut st = state.inner.lock().unwrap();
             if st.shutdown {
                 st.burst.reset();
                 return;
-            } else if restored_ok {
-                st.burst.complete_restore();
-            } else {
-                st.burst.reset();
+            }
+            if let Some(transaction_id) = transaction_id {
+                if restored_ok {
+                    let _ = st.burst.complete_restore(transaction_id);
+                } else if st.burst.transaction_id() == Some(transaction_id) {
+                    st.burst.reset();
+                }
             }
         }
     }
@@ -1436,19 +1711,29 @@ mod clipboard_burst_tests {
         let mut state = ClipboardBurstState::default();
 
         assert_eq!(
-            state.begin_injection(Some("clipboard A".to_string()), "vietc A"),
+            state.begin_injection(Some("clipboard A".to_string()), "vietc A", 1),
             ClipboardAction::WriteInjected("vietc A".to_string())
         );
+        let id = state.transaction_id().unwrap();
+        assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
+        assert!(state.transition(id, ReplacementPhase::PasteDispatched));
+        assert!(state.transition(id, ReplacementPhase::TargetObserved));
+        assert!(state.transition(id, ReplacementPhase::Applied));
         assert_eq!(
             state.finish_restore(Some("vietc A")),
             ClipboardAction::Restore("clipboard A".to_string())
         );
-        state.complete_restore();
+        assert!(state.complete_restore(id));
 
         assert_eq!(
-            state.begin_injection(Some("clipboard B".to_string()), "vietc B"),
+            state.begin_injection(Some("clipboard B".to_string()), "vietc B", 1),
             ClipboardAction::WriteInjected("vietc B".to_string())
         );
+        let id = state.transaction_id().unwrap();
+        assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
+        assert!(state.transition(id, ReplacementPhase::PasteDispatched));
+        assert!(state.transition(id, ReplacementPhase::TargetObserved));
+        assert!(state.transition(id, ReplacementPhase::Applied));
         assert_eq!(
             state.finish_restore(Some("vietc B")),
             ClipboardAction::Restore("clipboard B".to_string())
@@ -1459,7 +1744,12 @@ mod clipboard_burst_tests {
     fn user_clipboard_change_during_wait_is_not_overwritten() {
         let mut state = ClipboardBurstState::default();
 
-        state.begin_injection(Some("clipboard A".to_string()), "vietc A");
+        state.begin_injection(Some("clipboard A".to_string()), "vietc A", 1);
+        let id = state.transaction_id().unwrap();
+        assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
+        assert!(state.transition(id, ReplacementPhase::PasteDispatched));
+        assert!(state.transition(id, ReplacementPhase::TargetObserved));
+        assert!(state.transition(id, ReplacementPhase::Applied));
 
         assert_eq!(
             state.finish_restore(Some("clipboard B")),
@@ -1469,18 +1759,204 @@ mod clipboard_burst_tests {
     }
 
     #[test]
+    fn clipboard_is_not_restored_before_transaction_is_applied() {
+        let mut state = ClipboardBurstState::default();
+
+        state.begin_injection(Some("user clipboard".to_string()), "tiếng", 1);
+        let id = state.transaction_id().unwrap();
+        assert_eq!(state.phase(), Some(ReplacementPhase::Prepared));
+        assert_eq!(
+            state.finish_restore(Some("tiếng")),
+            ClipboardAction::SkipRestore
+        );
+        assert!(state.is_active());
+
+        assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
+        assert!(state.transition(id, ReplacementPhase::PasteDispatched));
+        assert!(state.transition(id, ReplacementPhase::TargetObserved));
+        assert!(state.transition(id, ReplacementPhase::Applied));
+        assert_eq!(
+            state.finish_restore(Some("tiếng")),
+            ClipboardAction::Restore("user clipboard".to_string())
+        );
+    }
+
+    #[test]
+    fn transaction_ids_are_monotonic_and_stale_transitions_are_rejected() {
+        let mut state = ClipboardBurstState::default();
+
+        state.begin_injection(None, "đ", 1);
+        let id = state.transaction_id().unwrap();
+        let first = state.transaction_id().unwrap();
+        assert!(!state.transition(id, ReplacementPhase::Applied));
+        assert_eq!(state.phase(), Some(ReplacementPhase::Prepared));
+        state.mark_failed(id);
+        assert_eq!(state.phase(), Some(ReplacementPhase::Failed));
+        state.reset();
+
+        state.begin_injection(None, "đường", 1);
+        let second = state.transaction_id().unwrap();
+        assert!(second > first);
+        assert!(!state.transition(first, ReplacementPhase::ClipboardWritten));
+        assert_eq!(state.phase(), Some(ReplacementPhase::Prepared));
+        assert!(!state.complete_restore(first));
+        assert_eq!(state.transaction_id(), Some(second));
+    }
+
+    #[test]
+    fn focus_change_cancels_waiting_transaction_and_rejects_stale_completion() {
+        let mut state = ClipboardBurstState::default();
+        state.begin_injection(Some("user clipboard".to_string()), "tiếng", 7);
+        let stale_id = state.transaction_id().unwrap();
+        assert!(state.transition(stale_id, ReplacementPhase::ClipboardWritten));
+        assert!(state.transition(stale_id, ReplacementPhase::PasteDispatched));
+
+        assert!(state.cancel_for_focus_change(8));
+        assert!(!state.transition(stale_id, ReplacementPhase::TargetObserved));
+        assert!(!state.complete_restore(stale_id));
+        assert!(!state.is_active());
+
+        state.begin_injection(Some("new clipboard".to_string()), "Việt", 8);
+        let current_id = state.transaction_id().unwrap();
+        assert!(current_id > stale_id);
+        assert!(!state.transition(stale_id, ReplacementPhase::Applied));
+        assert!(state.matches(current_id, 8));
+        assert!(!state.matches(current_id, 7));
+        assert_eq!(state.phase(), Some(ReplacementPhase::Prepared));
+    }
+
+    #[test]
+    fn applied_transaction_is_not_cancelled_by_late_focus_change() {
+        let mut state = ClipboardBurstState::default();
+        state.begin_injection(Some("user clipboard".to_string()), "tiếng", 11);
+        let id = state.transaction_id().unwrap();
+        assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
+        assert!(state.transition(id, ReplacementPhase::PasteDispatched));
+        assert!(state.transition(id, ReplacementPhase::TargetObserved));
+        assert!(state.transition(id, ReplacementPhase::Applied));
+
+        assert!(!state.cancel_for_focus_change(12));
+        assert!(state.matches(id, 11));
+        assert_eq!(
+            state.finish_restore(Some("tiếng")),
+            ClipboardAction::Restore("user clipboard".to_string())
+        );
+    }
+
+    #[test]
     fn each_unicode_command_finishes_its_clipboard_transaction_before_returning() {
         let mut state = ClipboardBurstState::default();
 
         for injected in ["đ", "đư", "đườ", "đường"] {
-            state.begin_injection(Some("user clipboard".to_string()), injected);
+            state.begin_injection(Some("user clipboard".to_string()), injected, 1);
+            let id = state.transaction_id().unwrap();
+            assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
+            assert!(state.transition(id, ReplacementPhase::PasteDispatched));
+            assert!(state.transition(id, ReplacementPhase::TargetObserved));
+            assert!(state.transition(id, ReplacementPhase::Applied));
             assert_eq!(
                 state.finish_restore(Some(injected)),
                 ClipboardAction::Restore("user clipboard".to_string())
             );
-            state.complete_restore();
+            assert!(state.complete_restore(id));
             assert!(!state.is_active());
         }
+    }
+}
+#[cfg(test)]
+mod clipboard_observation_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn observe_with_delay(delay: Duration) -> bool {
+        let transaction_id = 42;
+        let elapsed = Cell::new(Duration::ZERO);
+        UinputInjector::poll_paste_observation_with(
+            transaction_id,
+            "injected",
+            || Some(transaction_id),
+            || Some("injected".to_string()),
+            || Instant::now() + elapsed.get(),
+            |duration| {
+                let simulated_delay = duration.min(delay.saturating_sub(elapsed.get()));
+                elapsed.set(elapsed.get() + simulated_delay.max(duration));
+            },
+        )
+    }
+
+    #[test]
+    fn bounded_polling_accepts_supported_clipboard_delays() {
+        for delay_ms in [20, 50, 100, 250] {
+            assert!(observe_with_delay(Duration::from_millis(delay_ms)));
+        }
+    }
+
+    #[test]
+    fn clipboard_unavailable_fails_without_retrying_dispatch() {
+        let reads = Cell::new(0);
+        let result = UinputInjector::poll_paste_observation_with(
+            7,
+            "injected",
+            || Some(7),
+            || {
+                reads.set(reads.get() + 1);
+                None
+            },
+            Instant::now,
+            |_| panic!("unavailable clipboard must fail immediately"),
+        );
+
+        assert!(!result);
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn stale_transaction_aborts_before_observation_completion() {
+        let active = Cell::new(Some(10));
+        let elapsed = Cell::new(Duration::ZERO);
+        let result = UinputInjector::poll_paste_observation_with(
+            10,
+            "injected",
+            || active.get(),
+            || Some("injected".to_string()),
+            || Instant::now() + elapsed.get(),
+            |duration| {
+                elapsed.set(elapsed.get() + duration);
+                active.set(Some(11));
+            },
+        );
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn slow_paste_is_observed_once_without_duplicate_completion() {
+        let elapsed = Cell::new(Duration::ZERO);
+        let reads = Cell::new(0);
+        let result = UinputInjector::poll_paste_observation_with(
+            12,
+            "injected",
+            || Some(12),
+            || {
+                reads.set(reads.get() + 1);
+                Some("injected".to_string())
+            },
+            || Instant::now() + elapsed.get(),
+            |duration| elapsed.set(elapsed.get() + duration),
+        );
+
+        assert!(result);
+        assert!(reads.get() > 1);
+
+        let mut state = ClipboardBurstState::default();
+        state.begin_injection(Some("user".to_string()), "injected", 1);
+        let id = state.transaction_id().unwrap();
+        assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
+        assert!(state.transition(id, ReplacementPhase::PasteDispatched));
+        assert!(state.transition(id, ReplacementPhase::TargetObserved));
+        assert!(state.transition(id, ReplacementPhase::Applied));
+        assert!(state.complete_restore(id));
+        assert!(!state.complete_restore(id));
     }
 }
 
@@ -1765,6 +2241,7 @@ mod restorer_tests {
             }),
             io_lock: Mutex::new(()),
             cv: Condvar::new(),
+            focus_generation: Mutex::new(None),
         });
         let (started_tx, started_rx) = mpsc::channel();
 
@@ -1789,7 +2266,7 @@ mod restorer_tests {
             inner: Mutex::new(ClipInner {
                 burst: {
                     let mut burst = ClipboardBurstState::default();
-                    burst.begin_injection(Some("user clipboard".to_string()), "injected text");
+                    burst.begin_injection(Some("user clipboard".to_string()), "injected text", 1);
                     burst
                 },
                 restore_due: Some(Instant::now()),
@@ -1798,6 +2275,7 @@ mod restorer_tests {
             }),
             io_lock: Mutex::new(()),
             cv: Condvar::new(),
+            focus_generation: Mutex::new(None),
         });
 
         let mut restorer = ClipboardRestorer::spawn(Arc::clone(&state), move |state| {
@@ -1831,7 +2309,11 @@ mod restorer_tests {
             inner: Mutex::new(ClipInner {
                 burst: {
                     let mut burst = ClipboardBurstState::default();
-                    burst.begin_injection(Some("old user clipboard".to_string()), "injected text");
+                    burst.begin_injection(
+                        Some("old user clipboard".to_string()),
+                        "injected text",
+                        1,
+                    );
                     burst
                 },
                 restore_due: Some(Instant::now()),
@@ -1840,6 +2322,7 @@ mod restorer_tests {
             }),
             io_lock: Mutex::new(()),
             cv: Condvar::new(),
+            focus_generation: Mutex::new(None),
         });
         let worker_state = Arc::clone(&state);
 

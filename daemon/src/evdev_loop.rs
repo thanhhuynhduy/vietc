@@ -56,6 +56,8 @@ pub fn run_with_evdev(
         status_changed,
     } = shared;
     let mut injector = create_injector(display)?;
+    let focus_generation_signal = shared_focus.lock().unwrap().generation_signal.clone();
+    injector.bind_focus_generation(focus_generation_signal);
 
     let mut any_grabbed = false;
     if daemon.grab_enabled && !devices.is_empty() {
@@ -120,7 +122,9 @@ pub fn run_with_evdev(
 
     let mut consumed_keys: HashSet<u16> = HashSet::new();
     let mut dedup = crate::key_dedup::DedupState::new();
-    let mut last_focus_generation = shared_focus.lock().unwrap().generation;
+    let initial_focus = shared_focus.lock().unwrap().clone();
+    let mut last_focus_generation = initial_focus.generation;
+    let mut last_focus_target = initial_focus.target;
     let mut last_window_class = String::new();
     let mut password_check_counter: u32 = 0;
     let mut last_key_time = std::time::Instant::now();
@@ -208,6 +212,14 @@ pub fn run_with_evdev(
         // Process events from whichever device(s) have data ready
         let mut dead: Vec<usize> = Vec::new();
         for (i, pfd) in pfds.iter().enumerate() {
+            if (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+                log_info(&format!(
+                    "[vietc] evdev device {} disconnected (poll revents={:#x}) — removing device",
+                    i, pfd.revents
+                ));
+                dead.push(i);
+                continue;
+            }
             if (pfd.revents & libc::POLLIN) == 0 {
                 continue;
             }
@@ -333,8 +345,12 @@ pub fn run_with_evdev(
                                 commands
                             ));
                         }
-                        let outcome =
-                            execute_commands(&*injector, &commands, &mut daemon.visible_revision);
+                        let outcome = execute_commands(
+                            &*injector,
+                            &commands,
+                            &mut daemon.visible_revision,
+                            last_focus_generation,
+                        );
                         if !daemon.handle_transaction_outcome(outcome) {
                             log_info("[vietc] non-grabbed injection failed");
                         }
@@ -406,7 +422,21 @@ pub fn run_with_evdev(
                                     focus.identity,
                                     gap
                                 ));
+                                let previous_generation = last_focus_generation;
+                                let new_target = focus.target.clone();
                                 last_focus_generation = focus.generation;
+                                injector.cancel_pending_replacement(
+                                    last_focus_generation,
+                                    "target-changed",
+                                );
+                                log_info(&format!(
+                                    "[vietc] composition reset: focus_generation={} old_target_generation={} old_target={:?} new_target={:?} reason=target-changed",
+                                    last_focus_generation,
+                                    previous_generation,
+                                    last_focus_target,
+                                    new_target,
+                                ));
+                                last_focus_target = new_target;
                                 if !active_window_class.is_empty() {
                                     last_window_class = active_window_class.clone();
                                 }
@@ -489,7 +519,8 @@ pub fn run_with_evdev(
                                     execute_commands(
                                         &*injector,
                                         &commands,
-                                        &mut daemon.visible_revision
+                                        &mut daemon.visible_revision,
+                                        last_focus_generation,
                                     ),
                                     crate::commands::TransactionOutcome::Applied { .. }
                                 ) {
