@@ -55,6 +55,7 @@ pub fn run_stdin_mode(
                         focus: shared_focus,
                         config_changed,
                         status_changed,
+                        pointer_activity: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                     },
                     display,
                 );

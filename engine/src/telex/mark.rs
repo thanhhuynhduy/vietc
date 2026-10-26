@@ -5,18 +5,49 @@ pub struct MarkResolution {
     pub letters: Vec<char>,
     pub marks: Vec<VowelMark>,
     pub consumed: Vec<bool>,
+    pub mark_undone: bool,
 }
 
 fn lower(ch: char) -> char {
     ch.to_ascii_lowercase()
 }
 
+fn is_base_vowel(ch: char) -> bool {
+    matches!(lower(ch), 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+}
+
+fn is_tone_key(ch: char) -> bool {
+    matches!(lower(ch), 's' | 'f' | 'r' | 'x' | 'j')
+}
+
+fn first_tone_undo_index(raw: &[char]) -> Option<usize> {
+    let mut seen_vowel = false;
+    let mut active_tone: Option<char> = None;
+    for (i, &ch) in raw.iter().enumerate() {
+        let c = lower(ch);
+        if is_base_vowel(c) {
+            seen_vowel = true;
+        } else if seen_vowel && is_tone_key(c) {
+            if active_tone == Some(c) {
+                return Some(i);
+            }
+            active_tone = Some(c);
+        }
+    }
+    None
+}
+
 pub fn resolve(raw: &[char]) -> MarkResolution {
     let mut letters = raw.to_vec();
     let mut marks = vec![VowelMark::None; raw.len()];
     let mut consumed = vec![false; raw.len()];
+    let mut mark_undone = false;
+    let tone_undo_at = first_tone_undo_index(raw);
 
     for i in 1..raw.len() {
+        if tone_undo_at.is_some_and(|undo_idx| i > undo_idx) {
+            break;
+        }
         let current = lower(raw[i]);
         let previous = lower(raw[i - 1]);
 
@@ -48,6 +79,9 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
     }
 
     for i in 0..raw.len() {
+        if tone_undo_at.is_some_and(|undo_idx| i > undo_idx) {
+            break;
+        }
         if lower(raw[i]) != 'w' {
             continue;
         }
@@ -91,12 +125,18 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             .enumerate()
             .filter_map(|(i, &ch)| (lower(ch) == trigger).then_some(i))
             .collect::<Vec<_>>();
-        if positions.len() >= 3 {
+        if positions.len() >= 3
+            && marks[positions[0]] == VowelMark::Circumflex
+            && consumed[positions[1]]
+        {
             let target = positions[0];
             letters[target] = raw[target];
             marks[target] = VowelMark::None;
             consumed[positions[1]] = true;
-            consumed[*positions.last().expect("at least three positions")] = false;
+            for &pos in &positions[2..] {
+                consumed[pos] = false;
+            }
+            mark_undone = true;
         }
     }
 
@@ -106,7 +146,6 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         .filter_map(|(i, &ch)| (lower(ch) == 'w').then_some(i))
         .collect::<Vec<_>>();
     if w_positions.len() >= 2 {
-        let last = *w_positions.last().expect("at least two positions");
         let last_applies_distinct_mark = marks
             .iter()
             .enumerate()
@@ -118,7 +157,10 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
                 }
             }
             consumed[w_positions[0]] = true;
-            consumed[last] = false;
+            for &pos in &w_positions[1..] {
+                consumed[pos] = false;
+            }
+            mark_undone = true;
         }
     }
 
@@ -135,6 +177,7 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             consumed[start] = false;
             consumed[start + 1] = true;
             consumed[start + 2] = false;
+            mark_undone = true;
         }
     }
 
@@ -142,5 +185,6 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         letters,
         marks,
         consumed,
+        mark_undone,
     }
 }

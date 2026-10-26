@@ -141,6 +141,15 @@ enum RuntimeCommandError {
     ClipboardSnapshotFailed,
     InputInjectionFailed,
     TargetCopyFailed,
+    FirefoxProcessDiscoveryFailed,
+    FirefoxToplevelDiscoveryFailed,
+    FirefoxActivationFailed,
+    FirefoxActivatedConfirmationFailed,
+    FirefoxTextareaFocusFailed,
+    FirefoxAsciiFocusProbeFailed,
+    FirefoxControlledInputFailed,
+    FirefoxSelectionCopyFailed,
+    FirefoxClipboardReadBackFailed,
     ClipboardRestoreFailed,
     ClipboardVerificationFailed,
     ModifierReleaseFailed,
@@ -168,6 +177,142 @@ impl RuntimeFailureCategory {
             Self::LifecycleFailure => "LIFECYCLE_FAILURE",
             Self::Unavailable => "UNAVAILABLE",
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimePhase {
+    Startup,
+    FocusAcquisition,
+    InputDispatch,
+    ReplacementCompletion,
+    FinalObservation,
+    Teardown,
+}
+
+impl RuntimePhase {
+    fn checkpoint(self) -> &'static str {
+        match self {
+            Self::Startup => "startup",
+            Self::FocusAcquisition => "focus_acquisition",
+            Self::InputDispatch => "input_dispatch",
+            Self::ReplacementCompletion => "replacement_completion",
+            Self::FinalObservation => "final_observation",
+            Self::Teardown => "teardown",
+        }
+    }
+
+    fn failure_category(self) -> RuntimeFailureCategory {
+        match self {
+            Self::Startup => RuntimeFailureCategory::StartupFailure,
+            Self::FocusAcquisition => RuntimeFailureCategory::FocusFailure,
+            Self::InputDispatch | Self::ReplacementCompletion => {
+                RuntimeFailureCategory::TransactionFailure
+            }
+            Self::FinalObservation => RuntimeFailureCategory::ObservationFailure,
+            Self::Teardown => RuntimeFailureCategory::LifecycleFailure,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FirefoxCheckpoint {
+    ProcessAlive,
+    ProcessDiscovery,
+    ToplevelDiscovery,
+    Activation,
+    ActivatedConfirmation,
+    TextareaFocus,
+    AsciiFocusProbe,
+    ControlledInput,
+    SelectionCopy,
+    ClipboardReadBack,
+    TeardownReap,
+}
+
+impl FirefoxCheckpoint {
+    const ALL: [Self; 11] = [
+        Self::ProcessAlive,
+        Self::ProcessDiscovery,
+        Self::ToplevelDiscovery,
+        Self::Activation,
+        Self::ActivatedConfirmation,
+        Self::TextareaFocus,
+        Self::AsciiFocusProbe,
+        Self::ControlledInput,
+        Self::SelectionCopy,
+        Self::ClipboardReadBack,
+        Self::TeardownReap,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::ProcessAlive => "firefox_process_alive",
+            Self::ProcessDiscovery => "firefox_process_tree_title_app_id_discovery",
+            Self::ToplevelDiscovery => "firefox_cosmic_toplevel_discovery",
+            Self::Activation => "firefox_cosmic_activation",
+            Self::ActivatedConfirmation => "firefox_activated_confirmation",
+            Self::TextareaFocus => "firefox_textarea_focus",
+            Self::AsciiFocusProbe => "firefox_ascii_focus_probe",
+            Self::ControlledInput => "firefox_controlled_input",
+            Self::SelectionCopy => "firefox_selection_copy",
+            Self::ClipboardReadBack => "firefox_bounded_clipboard_read_back",
+            Self::TeardownReap => "firefox_teardown_reap",
+        }
+    }
+
+    fn phase(self) -> RuntimePhase {
+        match self {
+            Self::ProcessAlive => RuntimePhase::Startup,
+            Self::ProcessDiscovery
+            | Self::ToplevelDiscovery
+            | Self::Activation
+            | Self::ActivatedConfirmation
+            | Self::TextareaFocus
+            | Self::AsciiFocusProbe => RuntimePhase::FocusAcquisition,
+            Self::ControlledInput => RuntimePhase::InputDispatch,
+            Self::SelectionCopy | Self::ClipboardReadBack => RuntimePhase::FinalObservation,
+            Self::TeardownReap => RuntimePhase::Teardown,
+        }
+    }
+
+    fn failure(self, detail: impl Into<String>) -> RuntimeFailure {
+        RuntimeFailure::new(self.phase().failure_category(), self.name(), detail)
+    }
+
+    fn timeout_failure(self, elapsed: Duration) -> RuntimeFailure {
+        RuntimeFailure::new(
+            self.phase().failure_category(),
+            self.name(),
+            format!("TimedOut; raw_elapsed_ms={}", elapsed.as_millis()),
+        )
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FirefoxCheckpointEvidence {
+    completed: Vec<FirefoxCheckpoint>,
+}
+
+impl FirefoxCheckpointEvidence {
+    fn from_completed(completed: impl IntoIterator<Item = FirefoxCheckpoint>) -> Self {
+        Self {
+            completed: completed.into_iter().collect(),
+        }
+    }
+
+    fn render(&self) -> String {
+        FirefoxCheckpoint::ALL
+            .into_iter()
+            .map(|checkpoint| {
+                let status = if self.completed.contains(&checkpoint) {
+                    "PASS"
+                } else {
+                    "NOT_RUN"
+                };
+                format!("{}={status}\n", checkpoint.name())
+            })
+            .collect()
     }
 }
 
@@ -201,7 +346,43 @@ impl RuntimeFailure {
     }
 }
 
+fn phase_timeout_failure(phase: RuntimePhase, elapsed: Duration) -> RuntimeFailure {
+    RuntimeFailure::new(
+        phase.failure_category(),
+        phase.checkpoint(),
+        format!("TimedOut; raw_elapsed_ms={}", elapsed.as_millis()),
+    )
+}
+
 fn classify_runtime_command_error(error: &RuntimeCommandError, checkpoint: &str) -> RuntimeFailure {
+    let firefox_checkpoint = match error {
+        RuntimeCommandError::FirefoxProcessDiscoveryFailed => {
+            Some(FirefoxCheckpoint::ProcessDiscovery)
+        }
+        RuntimeCommandError::FirefoxToplevelDiscoveryFailed => {
+            Some(FirefoxCheckpoint::ToplevelDiscovery)
+        }
+        RuntimeCommandError::FirefoxActivationFailed => Some(FirefoxCheckpoint::Activation),
+        RuntimeCommandError::FirefoxActivatedConfirmationFailed => {
+            Some(FirefoxCheckpoint::ActivatedConfirmation)
+        }
+        RuntimeCommandError::FirefoxTextareaFocusFailed => Some(FirefoxCheckpoint::TextareaFocus),
+        RuntimeCommandError::FirefoxAsciiFocusProbeFailed => {
+            Some(FirefoxCheckpoint::AsciiFocusProbe)
+        }
+        RuntimeCommandError::FirefoxControlledInputFailed => {
+            Some(FirefoxCheckpoint::ControlledInput)
+        }
+        RuntimeCommandError::FirefoxSelectionCopyFailed => Some(FirefoxCheckpoint::SelectionCopy),
+        RuntimeCommandError::FirefoxClipboardReadBackFailed => {
+            Some(FirefoxCheckpoint::ClipboardReadBack)
+        }
+        _ => None,
+    };
+    if let Some(checkpoint) = firefox_checkpoint {
+        return checkpoint.failure(format!("{error:?}"));
+    }
+
     let category = match error {
         RuntimeCommandError::PrerequisiteMissing => RuntimeFailureCategory::Unavailable,
         RuntimeCommandError::SpawnFailed => RuntimeFailureCategory::StartupFailure,
@@ -211,6 +392,19 @@ fn classify_runtime_command_error(error: &RuntimeCommandError, checkpoint: &str)
         | RuntimeCommandError::InputInjectionFailed
         | RuntimeCommandError::ModifierReleaseFailed => RuntimeFailureCategory::TransactionFailure,
         RuntimeCommandError::TargetCopyFailed => RuntimeFailureCategory::ObservationFailure,
+        RuntimeCommandError::FirefoxProcessDiscoveryFailed
+        | RuntimeCommandError::FirefoxToplevelDiscoveryFailed
+        | RuntimeCommandError::FirefoxActivationFailed
+        | RuntimeCommandError::FirefoxActivatedConfirmationFailed
+        | RuntimeCommandError::FirefoxTextareaFocusFailed
+        | RuntimeCommandError::FirefoxAsciiFocusProbeFailed => RuntimeFailureCategory::FocusFailure,
+        RuntimeCommandError::FirefoxControlledInputFailed => {
+            RuntimeFailureCategory::TransactionFailure
+        }
+        RuntimeCommandError::FirefoxSelectionCopyFailed
+        | RuntimeCommandError::FirefoxClipboardReadBackFailed => {
+            RuntimeFailureCategory::ObservationFailure
+        }
         RuntimeCommandError::WaitFailed => RuntimeFailureCategory::LifecycleFailure,
         RuntimeCommandError::TimedOut | RuntimeCommandError::ScenarioFailed => {
             RuntimeFailureCategory::ObservationFailure
@@ -1868,6 +2062,15 @@ fn tool_version(program: &str) -> String {
     }
 }
 
+fn longest_matching_expected_prefix(expected: &str, observed: &str) -> String {
+    expected
+        .chars()
+        .zip(observed.chars())
+        .take_while(|(expected, observed)| expected == observed)
+        .map(|(scalar, _)| scalar)
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UnicodeDivergence {
     scalar_index: usize,
@@ -1930,7 +2133,10 @@ struct RuntimeArtifact {
     focus_generation: Option<u64>,
     expected_text: Option<String>,
     observed_text: Option<String>,
+    longest_matching_expected_prefix: Option<String>,
     divergence: Option<UnicodeDivergence>,
+    phase_timings: Vec<(RuntimePhase, Duration)>,
+    raw_elapsed: Option<Duration>,
     clipboard_polling_timeline: Option<String>,
     exit_reason: Option<String>,
     teardown_result: Option<String>,
@@ -1971,6 +2177,8 @@ impl RuntimeArtifact {
     ) -> Self {
         let expected = expected.into();
         let observed = observed.into();
+        self.longest_matching_expected_prefix =
+            Some(longest_matching_expected_prefix(&expected, &observed));
         self.divergence = first_unicode_divergence(&expected, &observed);
         self.expected_text = Some(expected);
         self.observed_text = Some(observed);
@@ -2052,6 +2260,27 @@ impl RuntimeArtifact {
         );
         Self::render_optional(&mut output, "expected_text", self.expected_text.as_ref());
         Self::render_optional(&mut output, "observed_text", self.observed_text.as_ref());
+        Self::render_optional(
+            &mut output,
+            "longest_matching_expected_prefix",
+            self.longest_matching_expected_prefix.as_ref(),
+        );
+        output.push_str("phase_timings_ms:\n");
+        if self.phase_timings.is_empty() {
+            output.push_str("  <absent>\n");
+        } else {
+            for (phase, elapsed) in &self.phase_timings {
+                output.push_str(&format!(
+                    "  {}: {}\n",
+                    phase.checkpoint(),
+                    elapsed.as_millis()
+                ));
+            }
+        }
+        match self.raw_elapsed {
+            Some(elapsed) => output.push_str(&format!("raw_elapsed_ms: {}\n", elapsed.as_millis())),
+            None => output.push_str("raw_elapsed_ms: <absent>\n"),
+        }
         match &self.divergence {
             Some(divergence) => {
                 output.push_str(&format!(
@@ -2313,6 +2542,74 @@ fn runtime_failure_taxonomy_has_stable_labels_and_checkpointed_rendering() {
 }
 
 #[test]
+fn every_runtime_phase_timeout_has_an_exact_checkpoint_and_category() {
+    let cases = [
+        (
+            RuntimePhase::Startup,
+            RuntimeFailureCategory::StartupFailure,
+            "startup",
+        ),
+        (
+            RuntimePhase::FocusAcquisition,
+            RuntimeFailureCategory::FocusFailure,
+            "focus_acquisition",
+        ),
+        (
+            RuntimePhase::InputDispatch,
+            RuntimeFailureCategory::TransactionFailure,
+            "input_dispatch",
+        ),
+        (
+            RuntimePhase::ReplacementCompletion,
+            RuntimeFailureCategory::TransactionFailure,
+            "replacement_completion",
+        ),
+        (
+            RuntimePhase::FinalObservation,
+            RuntimeFailureCategory::ObservationFailure,
+            "final_observation",
+        ),
+        (
+            RuntimePhase::Teardown,
+            RuntimeFailureCategory::LifecycleFailure,
+            "teardown",
+        ),
+    ];
+
+    for (phase, category, checkpoint) in cases {
+        let failure = phase_timeout_failure(phase, Duration::from_millis(37));
+        assert_eq!(failure.category, category);
+        assert_eq!(failure.checkpoint, checkpoint);
+        assert_eq!(
+            failure.render(),
+            format!(
+                "category={}; checkpoint={checkpoint}; detail=TimedOut; raw_elapsed_ms=37",
+                category.label()
+            )
+        );
+    }
+}
+
+#[test]
+fn runtime_artifact_renders_phase_timing_prefix_divergence_and_transaction() {
+    let mut artifact = RuntimeArtifact::default().with_text_observation("xin chào", "xin chao");
+    artifact.phase_timings = vec![
+        (RuntimePhase::Startup, Duration::from_millis(11)),
+        (RuntimePhase::FinalObservation, Duration::from_millis(23)),
+    ];
+    artifact.raw_elapsed = Some(Duration::from_millis(91));
+    artifact.transaction_id = Some(42);
+
+    let rendered = artifact.render();
+    assert!(rendered.contains("longest_matching_expected_prefix: xin ch"));
+    assert!(rendered.contains("phase_timings_ms:\n  startup: 11\n  final_observation: 23"));
+    assert!(rendered.contains("raw_elapsed_ms: 91"));
+    assert!(rendered.contains("transaction_id: 42"));
+    assert!(rendered.contains("first_difference_scalar_index: 6"));
+    assert!(rendered.contains("first_incorrect_word: chào"));
+}
+
+#[test]
 fn runtime_artifact_reports_unicode_divergence_by_scalar_and_word() {
     let artifact =
         RuntimeArtifact::default().with_text_observation("xin chào thế giới", "xin chao thế giới");
@@ -2333,6 +2630,113 @@ fn runtime_artifact_renders_missing_evidence_explicitly() {
     assert!(rendered.contains("first_difference_scalar_index: <absent>"));
     assert!(rendered.contains("teardown_result: <absent>"));
     assert!(rendered.contains("failures:\n  <absent>"));
+}
+
+#[test]
+fn firefox_checkpoint_failures_preserve_exact_taxonomy_and_phase() {
+    let cases = [
+        (
+            FirefoxCheckpoint::ProcessAlive,
+            RuntimeFailureCategory::StartupFailure,
+            "firefox_process_alive",
+            RuntimePhase::Startup,
+        ),
+        (
+            FirefoxCheckpoint::ProcessDiscovery,
+            RuntimeFailureCategory::FocusFailure,
+            "firefox_process_tree_title_app_id_discovery",
+            RuntimePhase::FocusAcquisition,
+        ),
+        (
+            FirefoxCheckpoint::ToplevelDiscovery,
+            RuntimeFailureCategory::FocusFailure,
+            "firefox_cosmic_toplevel_discovery",
+            RuntimePhase::FocusAcquisition,
+        ),
+        (
+            FirefoxCheckpoint::Activation,
+            RuntimeFailureCategory::FocusFailure,
+            "firefox_cosmic_activation",
+            RuntimePhase::FocusAcquisition,
+        ),
+        (
+            FirefoxCheckpoint::ActivatedConfirmation,
+            RuntimeFailureCategory::FocusFailure,
+            "firefox_activated_confirmation",
+            RuntimePhase::FocusAcquisition,
+        ),
+        (
+            FirefoxCheckpoint::TextareaFocus,
+            RuntimeFailureCategory::FocusFailure,
+            "firefox_textarea_focus",
+            RuntimePhase::FocusAcquisition,
+        ),
+        (
+            FirefoxCheckpoint::AsciiFocusProbe,
+            RuntimeFailureCategory::FocusFailure,
+            "firefox_ascii_focus_probe",
+            RuntimePhase::FocusAcquisition,
+        ),
+        (
+            FirefoxCheckpoint::ControlledInput,
+            RuntimeFailureCategory::TransactionFailure,
+            "firefox_controlled_input",
+            RuntimePhase::InputDispatch,
+        ),
+        (
+            FirefoxCheckpoint::SelectionCopy,
+            RuntimeFailureCategory::ObservationFailure,
+            "firefox_selection_copy",
+            RuntimePhase::FinalObservation,
+        ),
+        (
+            FirefoxCheckpoint::ClipboardReadBack,
+            RuntimeFailureCategory::ObservationFailure,
+            "firefox_bounded_clipboard_read_back",
+            RuntimePhase::FinalObservation,
+        ),
+        (
+            FirefoxCheckpoint::TeardownReap,
+            RuntimeFailureCategory::LifecycleFailure,
+            "firefox_teardown_reap",
+            RuntimePhase::Teardown,
+        ),
+    ];
+
+    for (checkpoint, category, name, phase) in cases {
+        let failure = checkpoint.failure("fixture failure");
+        assert_eq!(failure.category, category);
+        assert_eq!(failure.checkpoint, name);
+
+        let timeout = checkpoint.timeout_failure(Duration::from_millis(41));
+        assert_eq!(timeout.category, phase.failure_category());
+        assert_eq!(timeout.checkpoint, name);
+        assert!(timeout.detail.contains("raw_elapsed_ms=41"));
+        assert!(!timeout.detail.contains("TargetCopyFailed"));
+    }
+}
+
+#[test]
+fn firefox_checkpoint_artifact_records_each_completed_checkpoint() {
+    let evidence = FirefoxCheckpointEvidence::from_completed([
+        FirefoxCheckpoint::ProcessAlive,
+        FirefoxCheckpoint::ProcessDiscovery,
+        FirefoxCheckpoint::ToplevelDiscovery,
+        FirefoxCheckpoint::Activation,
+        FirefoxCheckpoint::ActivatedConfirmation,
+        FirefoxCheckpoint::TextareaFocus,
+        FirefoxCheckpoint::AsciiFocusProbe,
+        FirefoxCheckpoint::ControlledInput,
+        FirefoxCheckpoint::SelectionCopy,
+        FirefoxCheckpoint::ClipboardReadBack,
+        FirefoxCheckpoint::TeardownReap,
+    ]);
+
+    let rendered = evidence.render();
+    for checkpoint in FirefoxCheckpoint::ALL {
+        assert!(rendered.contains(&format!("{}=PASS", checkpoint.name())));
+    }
+    assert!(!rendered.contains("TargetCopyFailed"));
 }
 
 #[test]
@@ -3076,9 +3480,13 @@ fn runtime_target_flags(
             "--remote-allow-origins=http://127.0.0.1".to_string(),
             format!("--app={}", controlled_fixture_url(fixture)),
         ],
-        RuntimeTargetKind::Firefox => {
-            vec!["--new-window".to_string(), controlled_fixture_url(fixture)]
-        }
+        RuntimeTargetKind::Firefox => vec![
+            "--no-remote".to_string(),
+            "--profile".to_string(),
+            fixture.profile_dir.display().to_string(),
+            "--new-window".to_string(),
+            controlled_fixture_url(fixture),
+        ],
         RuntimeTargetKind::Electron => vec![
             format!("--user-data-dir={}", fixture.profile_dir.display()),
             "--remote-debugging-address=127.0.0.1".to_string(),
@@ -3649,6 +4057,22 @@ fn deterministic_requested_runtime_targets_filter_exact_targets() {
     ));
 }
 
+fn run_phase_with_deadline<T: Send + 'static>(
+    phase: RuntimePhase,
+    timeout: Duration,
+    scenario: impl FnOnce() -> T + Send + 'static,
+) -> Result<(T, Duration), RuntimeFailure> {
+    let started = std::time::Instant::now();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(scenario());
+    });
+    receiver
+        .recv_timeout(timeout)
+        .map(|result| (result, started.elapsed()))
+        .map_err(|_| phase_timeout_failure(phase, started.elapsed()))
+}
+
 fn run_scenario_with_deadline<T: Send + 'static>(
     timeout: Duration,
     scenario: impl FnOnce() -> T + Send + 'static,
@@ -3660,6 +4084,26 @@ fn run_scenario_with_deadline<T: Send + 'static>(
     receiver
         .recv_timeout(timeout)
         .map_err(|_| RuntimeCommandError::TimedOut)
+}
+
+#[test]
+fn deterministic_phase_runner_reports_the_exact_timed_out_checkpoint() {
+    for phase in [
+        RuntimePhase::Startup,
+        RuntimePhase::FocusAcquisition,
+        RuntimePhase::InputDispatch,
+        RuntimePhase::ReplacementCompletion,
+        RuntimePhase::FinalObservation,
+        RuntimePhase::Teardown,
+    ] {
+        let failure = run_phase_with_deadline(phase, Duration::from_millis(1), || {
+            std::thread::sleep(Duration::from_millis(25));
+        })
+        .expect_err("phase must time out");
+        assert_eq!(failure.checkpoint, phase.checkpoint());
+        assert_eq!(failure.category, phase.failure_category());
+        assert!(failure.detail.starts_with("TimedOut; raw_elapsed_ms="));
+    }
 }
 
 #[test]
@@ -4312,6 +4756,14 @@ fn copy_observable_target_text(
     environment: &RuntimeEnvironment,
     timeout: Duration,
 ) -> Result<String, RuntimeCommandError> {
+    copy_observable_target_text_with_checkpoints(environment, timeout, None)
+}
+
+fn copy_observable_target_text_with_checkpoints(
+    environment: &RuntimeEnvironment,
+    timeout: Duration,
+    mut completed: Option<&mut Vec<FirefoxCheckpoint>>,
+) -> Result<String, RuntimeCommandError> {
     let sentinel = "vietc-clipboard-sentinel";
     let mut writer = if environment.session_type == "wayland" {
         std::process::Command::new("wl-copy")
@@ -4344,17 +4796,29 @@ fn copy_observable_target_text(
         run_command_with_timeout(&mut command, timeout)?
     };
     if !status.success() {
-        return Err(RuntimeCommandError::ScenarioFailed);
+        return Err(RuntimeCommandError::FirefoxSelectionCopyFailed);
     }
+    if let Some(checkpoints) = completed.as_deref_mut() {
+        checkpoints.push(FirefoxCheckpoint::SelectionCopy);
+    }
+
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        let observed = clipboard_read(environment, timeout)?;
-        if !observed.is_empty() && observed != sentinel {
-            return Ok(observed);
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let poll_timeout = remaining.min(Duration::from_millis(250));
+        match clipboard_read(environment, poll_timeout) {
+            Ok(observed) if !observed.is_empty() && observed != sentinel => {
+                if let Some(checkpoints) = completed.as_deref_mut() {
+                    checkpoints.push(FirefoxCheckpoint::ClipboardReadBack);
+                }
+                return Ok(observed);
+            }
+            Ok(_) | Err(RuntimeCommandError::TimedOut) => {}
+            Err(_) => return Err(RuntimeCommandError::FirefoxClipboardReadBackFailed),
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(25));
     }
-    Err(RuntimeCommandError::TimedOut)
+    Err(RuntimeCommandError::FirefoxClipboardReadBackFailed)
 }
 
 fn verify_synthesized_modifiers_released(
@@ -4568,7 +5032,8 @@ fn execute_controlled_scenario(
 
     let mut browser_cdp = None;
     let scenario_result = (|| {
-        let mut firefox_window = None;
+        let mut firefox_keyboard = None;
+        let mut firefox_checkpoints = Vec::new();
         let mut cdp = if matches!(
             target,
             RuntimeTargetKind::Chromium
@@ -4588,103 +5053,76 @@ fn execute_controlled_scenario(
 
         if target == RuntimeTargetKind::Firefox {
             trace("firefox_wayland_focus:start");
-            let window = controlled_firefox_window(child_pid, operation_timeout)?;
-            let window_id = window.window_id.as_str();
+            firefox_checkpoints.push(FirefoxCheckpoint::ProcessAlive);
 
-            let mut activate = std::process::Command::new("xdotool");
-            activate.args(["windowactivate", "--sync", window_id]);
-            if !run_command_with_timeout(&mut activate, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::ScenarioFailed);
+            let roles = discover_owned_process_tree(RuntimeTargetKind::Firefox, child_pid);
+            if roles.is_empty() {
+                return Err(RuntimeCommandError::FirefoxProcessDiscoveryFailed);
             }
+            firefox_checkpoints.push(FirefoxCheckpoint::ProcessDiscovery);
 
-            let mut location = std::process::Command::new("xdotool");
-            location.args(["key", "--window", window_id, "--clearmodifiers", "ctrl+l"]);
-            if !run_command_with_timeout(&mut location, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::ScenarioFailed);
-            }
-
-            let fixture_url = controlled_fixture_url(&fixture);
-            let mut navigate = std::process::Command::new("xdotool");
-            navigate.args([
-                "type",
-                "--window",
-                window_id,
-                "--clearmodifiers",
-                "--delay",
-                "1",
-                &fixture_url,
+            let run_id = fixture
+                .profile_dir
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .ok_or(RuntimeCommandError::FirefoxToplevelDiscoveryFailed)?;
+            let title = format!("Vietc controlled runtime {run_id}");
+            common::cosmic_toplevel::activate_firefox(&title, operation_timeout).map_err(
+                |error| {
+                    if error.contains("locating controlled toplevel") {
+                        RuntimeCommandError::FirefoxToplevelDiscoveryFailed
+                    } else if error.contains("did not confirm") {
+                        RuntimeCommandError::FirefoxActivatedConfirmationFailed
+                    } else {
+                        RuntimeCommandError::FirefoxActivationFailed
+                    }
+                },
+            )?;
+            firefox_checkpoints.extend([
+                FirefoxCheckpoint::ToplevelDiscovery,
+                FirefoxCheckpoint::Activation,
+                FirefoxCheckpoint::ActivatedConfirmation,
             ]);
-            if !run_command_with_timeout(&mut navigate, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::ScenarioFailed);
-            }
 
-            let mut submit = std::process::Command::new("xdotool");
-            submit.args(["key", "--window", window_id, "--clearmodifiers", "Return"]);
-            if !run_command_with_timeout(&mut submit, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::ScenarioFailed);
-            }
-
+            let mut keyboard =
+                common::virtual_keyboard::VirtualKeyboard::create("vietc-firefox-checkpoint-vk")
+                    .map_err(|_| RuntimeCommandError::FirefoxTextareaFocusFailed)?;
+            keyboard
+                .wait_for_devnode(operation_timeout)
+                .ok_or(RuntimeCommandError::FirefoxTextareaFocusFailed)?;
             std::thread::sleep(Duration::from_secs(1));
-            let mut focus_content = std::process::Command::new("xdotool");
-            focus_content.args([
-                "key",
-                "--window",
-                window_id,
-                "--clearmodifiers",
-                "F6",
-                "Tab",
-            ]);
-            if !run_command_with_timeout(&mut focus_content, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::ScenarioFailed);
-            }
+            keyboard
+                .f6()
+                .and_then(|_| keyboard.tab())
+                .map_err(|_| RuntimeCommandError::FirefoxTextareaFocusFailed)?;
+            firefox_checkpoints.push(FirefoxCheckpoint::TextareaFocus);
 
             const FOCUS_PROBE: &str = "vietc-focus-probe";
-            let mut probe = std::process::Command::new("xdotool");
-            probe.args([
-                "type",
-                "--window",
-                window_id,
-                "--clearmodifiers",
-                "--delay",
-                "1",
-                FOCUS_PROBE,
-            ]);
-            if !run_command_with_timeout(&mut probe, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::InputInjectionFailed);
+            keyboard
+                .type_text(FOCUS_PROBE)
+                .map_err(|_| RuntimeCommandError::FirefoxAsciiFocusProbeFailed)?;
+            let observed_probe = copy_observable_target_text_with_checkpoints(
+                &environment,
+                operation_timeout,
+                Some(&mut firefox_checkpoints),
+            )
+            .map_err(|_| RuntimeCommandError::FirefoxAsciiFocusProbeFailed)?;
+            if observed_probe != FOCUS_PROBE {
+                return Err(RuntimeCommandError::FirefoxAsciiFocusProbeFailed);
             }
+            firefox_checkpoints.push(FirefoxCheckpoint::AsciiFocusProbe);
+            keyboard
+                .backspace()
+                .map_err(|_| RuntimeCommandError::FirefoxAsciiFocusProbeFailed)?;
 
-            let mut select_copy = std::process::Command::new("xdotool");
-            select_copy.args([
-                "key",
-                "--window",
-                window_id,
-                "--clearmodifiers",
-                "ctrl+a",
-                "ctrl+c",
-            ]);
-            if !run_command_with_timeout(&mut select_copy, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::TargetCopyFailed);
-            }
-            std::thread::sleep(Duration::from_millis(200));
-            if clipboard_read(&environment, operation_timeout)
-                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?
-                != FOCUS_PROBE
-            {
-                return Err(RuntimeCommandError::TargetCopyFailed);
-            }
-
-            let mut clear = std::process::Command::new("xdotool");
-            clear.args([
-                "key",
-                "--window",
-                window_id,
-                "--clearmodifiers",
-                "BackSpace",
-            ]);
-            if !run_command_with_timeout(&mut clear, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::ScenarioFailed);
-            }
-            firefox_window = Some(window);
+            std::fs::write(
+                fixture.artifact_dir.join("firefox-checkpoints.txt"),
+                FirefoxCheckpointEvidence::from_completed(firefox_checkpoints.iter().copied())
+                    .render(),
+            )
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+            firefox_keyboard = Some(keyboard);
             trace("firefox_wayland_focus:done");
         } else if target == RuntimeTargetKind::CosmicEdit {
             trace("cosmic_native_activate:start");
@@ -4718,25 +5156,12 @@ fn execute_controlled_scenario(
 
         trace("input_injection:start");
         if target == RuntimeTargetKind::Firefox {
-            let window_id = firefox_window
-                .as_ref()
-                .ok_or(RuntimeCommandError::InputInjectionFailed)?
-                .window_id
-                .as_str();
-            let mut command = std::process::Command::new("xdotool");
-            command.args([
-                "type",
-                "--window",
-                window_id,
-                "--clearmodifiers",
-                "--delay",
-                "1",
-                CONTROLLED_TEXT,
-            ]);
-            let status = run_command_with_timeout(&mut command, operation_timeout)?;
-            if !status.success() {
-                return Err(RuntimeCommandError::InputInjectionFailed);
-            }
+            firefox_keyboard
+                .as_mut()
+                .ok_or(RuntimeCommandError::FirefoxControlledInputFailed)?
+                .type_text(CONTROLLED_TEXT)
+                .map_err(|_| RuntimeCommandError::FirefoxControlledInputFailed)?;
+            firefox_checkpoints.push(FirefoxCheckpoint::ControlledInput);
         } else if target == RuntimeTargetKind::CosmicEdit {
             let mut command = std::process::Command::new("ydotool");
             command.args(["type", "--key-delay", "12", CONTROLLED_TEXT]);
@@ -4750,25 +5175,18 @@ fn execute_controlled_scenario(
         trace("input_injection:done");
 
         let observed_text = if target == RuntimeTargetKind::Firefox {
-            let window_id = firefox_window
-                .as_ref()
-                .ok_or(RuntimeCommandError::TargetCopyFailed)?
-                .window_id
-                .as_str();
-            let mut select_cmd = std::process::Command::new("xdotool");
-            select_cmd.args(["key", "--window", window_id, "--clearmodifiers", "ctrl+a"]);
-            if !run_command_with_timeout(&mut select_cmd, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::TargetCopyFailed);
-            }
-            std::thread::sleep(Duration::from_millis(200));
-            let mut copy_cmd = std::process::Command::new("xdotool");
-            copy_cmd.args(["key", "--window", window_id, "--clearmodifiers", "ctrl+c"]);
-            if !run_command_with_timeout(&mut copy_cmd, operation_timeout)?.success() {
-                return Err(RuntimeCommandError::TargetCopyFailed);
-            }
-            std::thread::sleep(Duration::from_millis(500));
-            clipboard_read(&environment, operation_timeout)
-                .map_err(|_| RuntimeCommandError::TargetCopyFailed)?
+            let observed = copy_observable_target_text_with_checkpoints(
+                &environment,
+                operation_timeout,
+                Some(&mut firefox_checkpoints),
+            )?;
+            std::fs::write(
+                fixture.artifact_dir.join("firefox-checkpoints.txt"),
+                FirefoxCheckpointEvidence::from_completed(firefox_checkpoints.iter().copied())
+                    .render(),
+            )
+            .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+            observed
         } else {
             match cdp.as_mut() {
                 Some(connection) => read_controlled_browser_target(connection)
@@ -4946,7 +5364,7 @@ fn run_controlled_runtime_target(
     let mut command = std::process::Command::new(executable);
     command.args(&flags);
     if target == RuntimeTargetKind::Firefox {
-        command.env("MOZ_ENABLE_WAYLAND", "0");
+        command.env("MOZ_ENABLE_WAYLAND", "1");
     }
     if target == RuntimeTargetKind::CosmicEdit {
         command
@@ -5075,48 +5493,73 @@ fn run_controlled_runtime_target(
     let scenario_pid = effective_pid;
     let scenario_fixture = fixture.clone();
     let scenario_environment = environment.clone();
-    let scenario = run_scenario_with_deadline(scenario_timeout, move || {
-        execute_controlled_scenario(
-            target,
-            scenario_fixture,
-            scenario_environment,
-            scenario_pid,
-            scenario_timeout,
-        )
-    });
-    let evidence = match scenario {
-        Ok(Ok(evidence)) => evidence,
-        Ok(Err(error)) => {
+    let scenario = run_phase_with_deadline(
+        RuntimePhase::FinalObservation,
+        scenario_timeout,
+        move || {
+            execute_controlled_scenario(
+                target,
+                scenario_fixture,
+                scenario_environment,
+                scenario_pid,
+                scenario_timeout,
+            )
+        },
+    );
+    let (evidence, observation_elapsed) = match scenario {
+        Ok((Ok(evidence), elapsed)) => (evidence, elapsed),
+        Ok((Err(error), elapsed)) => {
+            let teardown_started = std::time::Instant::now();
             let teardown = child.terminate_and_reap(teardown_timeout);
+            let teardown_elapsed = teardown_started.elapsed();
+            let failure = classify_runtime_command_error(&error, "final_observation");
+            let _ = std::fs::write(
+                fixture.artifact_dir.join("phase-timing.txt"),
+                format!(
+                    "final_observation_ms={}\nteardown_ms={}\nraw_elapsed_ms={}\nfailure={}\n",
+                    elapsed.as_millis(),
+                    teardown_elapsed.as_millis(),
+                    started.elapsed().as_millis(),
+                    failure.render(),
+                ),
+            );
             return RuntimeTargetResult {
                 status: RuntimeMatrixStatus::Failed,
                 reason: match teardown {
-                    Ok(()) => format!("controlled scenario failed: {error:?}"),
+                    Ok(()) => failure.render(),
                     Err(teardown_error) => format!(
-                        "controlled scenario failed: {error:?}; teardown failed: {teardown_error:?}"
+                        "{}; teardown={}",
+                        failure.render(),
+                        classify_runtime_command_error(&teardown_error, "teardown").render()
                     ),
                 },
                 observation: None,
             };
         }
-        Err(RuntimeCommandError::TimedOut) => {
+        Err(failure) => {
+            let teardown_started = std::time::Instant::now();
             let teardown = child.terminate_and_reap(teardown_timeout);
+            let teardown_elapsed = teardown_started.elapsed();
+            let _ = std::fs::write(
+                fixture.artifact_dir.join("phase-timing.txt"),
+                format!(
+                    "final_observation_ms={}\nteardown_ms={}\nraw_elapsed_ms={}\nfailure={}\n",
+                    scenario_timeout.as_millis(),
+                    teardown_elapsed.as_millis(),
+                    started.elapsed().as_millis(),
+                    failure.render(),
+                ),
+            );
             return RuntimeTargetResult {
                 status: RuntimeMatrixStatus::Failed,
                 reason: match teardown {
-                    Ok(()) => "controlled scenario exceeded its enforced deadline".to_string(),
-                    Err(error) => {
-                        format!("controlled scenario timed out and teardown failed: {error:?}")
-                    }
+                    Ok(()) => failure.render(),
+                    Err(error) => format!(
+                        "{}; teardown={}",
+                        failure.render(),
+                        classify_runtime_command_error(&error, "teardown").render()
+                    ),
                 },
-                observation: None,
-            };
-        }
-        Err(error) => {
-            let _ = child.terminate_and_reap(teardown_timeout);
-            return RuntimeTargetResult {
-                status: RuntimeMatrixStatus::Failed,
-                reason: format!("controlled scenario failed: {error:?}"),
                 observation: None,
             };
         }
@@ -5144,10 +5587,11 @@ fn run_controlled_runtime_target(
     let _ = std::fs::write(
         fixture.artifact_dir.join("timing.txt"),
         format!(
-            "startup_timeout_ms={}\nscenario_timeout_ms={}\nteardown_timeout_ms={}\nelapsed_ms={}\n",
+            "startup_timeout_ms={}\nscenario_timeout_ms={}\nteardown_timeout_ms={}\nfinal_observation_ms={}\nraw_elapsed_ms={}\n",
             startup_timeout.as_millis(),
             scenario_timeout.as_millis(),
             teardown_timeout.as_millis(),
+            observation_elapsed.as_millis(),
             elapsed.as_millis()
         ),
     );
@@ -5425,9 +5869,14 @@ fn wait_for_controlled_browser_value(
             return Ok(observed);
         }
         if std::time::Instant::now() >= deadline {
+            let prefix = longest_matching_expected_prefix(expected, &observed);
+            let divergence = first_unicode_divergence(expected, &observed);
             let _ = std::fs::write(
                 evidence_path,
-                format!("expected={expected:?}\nobserved={observed:?}\n"),
+                format!(
+                    "phase={}\nexpected={expected:?}\nobserved={observed:?}\nlongest_matching_expected_prefix={prefix:?}\nfirst_difference={divergence:?}\n",
+                    RuntimePhase::FinalObservation.checkpoint()
+                ),
             );
             return Err(RuntimeCommandError::TimedOut);
         }
@@ -6170,6 +6619,26 @@ fn selected_long_text_targets() -> Result<Vec<RuntimeTargetKind>, String> {
             _ => Err(format!("unsupported VIETC_LONG_TEXT_TARGETS value: {name}")),
         })
         .collect()
+}
+
+#[test]
+fn deterministic_firefox_uses_an_isolated_non_remote_profile() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let fixture = ControlledRuntimeFixture::isolated(workspace_root, "firefox-profile-flags")
+        .expect("fixture must be constructed");
+    let flags = runtime_target_flags(RuntimeTargetKind::Firefox, &fixture, "/usr/bin/firefox");
+
+    assert!(flags.iter().any(|flag| flag == "--no-remote"));
+    assert!(flags.windows(2).any(|pair| {
+        pair[0] == "--profile" && pair[1] == fixture.profile_dir.display().to_string()
+    }));
+    assert!(flags.iter().any(|flag| flag == "--new-window"));
+    assert_eq!(
+        flags.last().map(String::as_str),
+        Some(controlled_fixture_url(&fixture).as_str())
+    );
 }
 
 #[test]

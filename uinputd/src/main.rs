@@ -17,6 +17,8 @@ const UI_DEV_DESTROY: u64 = 0x5502;
 const UI_DEV_SETUP: u64 = 0x405c5503;
 const EV_KEY: u16 = 0x01;
 const CLIPBOARD_TRACE_LIMIT: usize = 128;
+const CLIPBOARD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+const CLIPBOARD_VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 static NEXT_CLIPBOARD_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
 static CLIPBOARD_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -316,7 +318,15 @@ impl UinputDevice {
             trace_clipboard(sequence_id, "temporary-text", "state=write-failed");
             return false;
         }
-        if read_clipboard().as_deref() != Some(text) {
+        let verification_started = std::time::Instant::now();
+        if !poll_clipboard_until(
+            text,
+            CLIPBOARD_VERIFY_TIMEOUT,
+            CLIPBOARD_POLL_INTERVAL,
+            read_clipboard,
+            std::thread::sleep,
+            move || verification_started.elapsed(),
+        ) {
             self.clip.inner.lock().unwrap().finish(None);
             trace_clipboard(sequence_id, "temporary-text", "state=read-back-failed");
             return false;
@@ -435,16 +445,53 @@ fn copy_to_clipboard(text: &str) -> bool {
     child.wait().map(|status| status.success()).unwrap_or(false)
 }
 
+fn poll_clipboard_until(
+    expected: &str,
+    timeout: std::time::Duration,
+    interval: std::time::Duration,
+    mut read: impl FnMut() -> Option<String>,
+    mut sleep: impl FnMut(std::time::Duration),
+    mut elapsed: impl FnMut() -> std::time::Duration,
+) -> bool {
+    loop {
+        if read().as_deref() == Some(expected) {
+            return true;
+        }
+        let elapsed_now = elapsed();
+        if elapsed_now >= timeout {
+            return false;
+        }
+        sleep(interval.min(timeout - elapsed_now));
+    }
+}
+
 fn restore_clipboard_verified_with(
     expected: &str,
     mut write: impl FnMut(&str) -> bool,
-    mut read: impl FnMut() -> Option<String>,
+    read: impl FnMut() -> Option<String>,
+    sleep: impl FnMut(std::time::Duration),
+    elapsed: impl FnMut() -> std::time::Duration,
 ) -> bool {
-    write(expected) && read().as_deref() == Some(expected)
+    write(expected)
+        && poll_clipboard_until(
+            expected,
+            CLIPBOARD_VERIFY_TIMEOUT,
+            CLIPBOARD_POLL_INTERVAL,
+            read,
+            sleep,
+            elapsed,
+        )
 }
 
 fn restore_clipboard_verified(expected: &str) -> bool {
-    restore_clipboard_verified_with(expected, copy_to_clipboard, read_clipboard)
+    let started = std::time::Instant::now();
+    restore_clipboard_verified_with(
+        expected,
+        copy_to_clipboard,
+        read_clipboard,
+        std::thread::sleep,
+        move || started.elapsed(),
+    )
 }
 
 fn runtime_socket_path(runtime_root: &Path) -> PathBuf {
@@ -777,9 +824,77 @@ mod phase0_tests {
                 true
             },
             || Some(clipboard.borrow().clone()),
+            |_| {},
+            || std::time::Duration::ZERO,
         );
         assert!(restore_verified);
         assert_eq!(*clipboard.borrow(), "user clipboard");
+    }
+
+    #[test]
+    fn clipboard_appears_after_multiple_polls() {
+        let reads = std::cell::Cell::new(0);
+        let elapsed = std::cell::Cell::new(std::time::Duration::ZERO);
+
+        assert!(poll_clipboard_until(
+            "tiếng Việt",
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(10),
+            || {
+                let attempt = reads.get();
+                reads.set(attempt + 1);
+                (attempt >= 2).then(|| "tiếng Việt".to_string())
+            },
+            |duration| elapsed.set(elapsed.get() + duration),
+            || elapsed.get(),
+        ));
+        assert_eq!(reads.get(), 3);
+    }
+
+    #[test]
+    fn clipboard_never_appears_before_timeout() {
+        let elapsed = std::cell::Cell::new(std::time::Duration::ZERO);
+
+        assert!(!poll_clipboard_until(
+            "missing",
+            std::time::Duration::from_millis(25),
+            std::time::Duration::from_millis(10),
+            || None,
+            |duration| elapsed.set(elapsed.get() + duration),
+            || elapsed.get(),
+        ));
+        assert_eq!(elapsed.get(), std::time::Duration::from_millis(25));
+    }
+
+    #[test]
+    fn restore_accepts_delayed_read_back() {
+        let reads = std::cell::Cell::new(0);
+        let elapsed = std::cell::Cell::new(std::time::Duration::ZERO);
+
+        assert!(restore_clipboard_verified_with(
+            "user clipboard",
+            |_| true,
+            || {
+                let attempt = reads.get();
+                reads.set(attempt + 1);
+                (attempt >= 2).then(|| "user clipboard".to_string())
+            },
+            |duration| elapsed.set(elapsed.get() + duration),
+            || elapsed.get(),
+        ));
+        assert_eq!(reads.get(), 3);
+    }
+
+    #[test]
+    fn user_clipboard_change_between_transaction_steps_skips_restore() {
+        let mut state = ClipboardInjectionState::default();
+        state.begin(Some("old user copy".to_string()), "temporary text");
+
+        assert_eq!(
+            state.finish(Some("new user copy")),
+            ClipboardInjectionAction::SkipRestore
+        );
+        assert!(!state.is_active());
     }
 
     #[test]

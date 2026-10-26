@@ -15,7 +15,7 @@ use super::inject::{InjectResult, KeyInjector};
 /// our freshly pasted word.
 const CLIPBOARD_READY_TIMEOUT: Duration = Duration::from_millis(750);
 const CLIPBOARD_READY_POLL_INTERVAL: Duration = Duration::from_millis(5);
-const PASTE_OBSERVATION_DELAY: Duration = Duration::from_millis(250);
+const PASTE_OBSERVATION_DELAY: Duration = Duration::from_millis(20);
 const CLIPBOARD_TRACE_LIMIT: usize = 128;
 static NEXT_CLIPBOARD_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
 static CLIPBOARD_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -261,6 +261,41 @@ fn build_desktop_command_with(
     Ok(command)
 }
 
+/// Largest non-text clipboard payload we are willing to back up and restore.
+const MAX_BINARY_CLIPBOARD_BYTES: usize = 64 * 1024 * 1024;
+
+/// Clipboard contents that are not plain text and therefore cannot go through
+/// the text snapshot path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NonTextClipboard {
+    Empty,
+    Data { mime: String, bytes: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClipboardKind {
+    Empty,
+    Text,
+    Other(String),
+}
+
+fn is_text_mime(mime: &str) -> bool {
+    mime.starts_with("text/plain") || matches!(mime, "UTF8_STRING" | "STRING" | "TEXT")
+}
+
+/// Decide how a clipboard offering `types` must be backed up: plain text is
+/// preserved as text; anything else (image, file list...) is preserved as raw
+/// bytes of its first offered type; nothing offered means an empty clipboard.
+fn classify_clipboard_types(types: &[String]) -> ClipboardKind {
+    if types.is_empty() {
+        ClipboardKind::Empty
+    } else if types.iter().any(|mime| is_text_mime(mime)) {
+        ClipboardKind::Text
+    } else {
+        ClipboardKind::Other(types[0].clone())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplacementPhase {
     Prepared,
@@ -291,6 +326,7 @@ struct ClipboardTransaction {
 #[derive(Default)]
 struct ClipboardBurstState {
     transaction: Option<ClipboardTransaction>,
+    last_unrestored_injected: Option<String>,
 }
 
 impl ClipboardBurstState {
@@ -300,11 +336,15 @@ impl ClipboardBurstState {
         injected_text: &str,
         focus_generation: u64,
     ) -> ClipboardAction {
+        let filtered_clipboard = current_clipboard.filter(|clip| {
+            self.last_unrestored_injected.as_deref() != Some(clip.as_str())
+        });
         let saved_clipboard = self
             .transaction
             .as_ref()
             .and_then(|transaction| transaction.saved_clipboard.clone())
-            .or(current_clipboard);
+            .or(filtered_clipboard);
+        self.last_unrestored_injected = None;
         self.transaction = Some(ClipboardTransaction {
             id: NEXT_CLIPBOARD_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed),
             focus_generation,
@@ -370,10 +410,16 @@ impl ClipboardBurstState {
         match transaction.saved_clipboard.clone() {
             Some(saved) => ClipboardAction::Restore(saved),
             None => {
+                let injected = transaction.injected_clipboard.clone();
                 self.reset();
+                self.last_unrestored_injected = Some(injected);
                 ClipboardAction::SkipRestore
             }
         }
+    }
+
+    fn forget_unrestored(&mut self) {
+        self.last_unrestored_injected = None;
     }
 
     fn complete_restore(&mut self, transaction_id: u64) -> bool {
@@ -381,6 +427,7 @@ impl ClipboardBurstState {
             return false;
         }
         self.reset();
+        self.last_unrestored_injected = None;
         true
     }
 
@@ -529,6 +576,8 @@ pub struct UinputInjector {
     transaction_lock: Mutex<()>,
     clip: Arc<ClipState>,
     restorer: ClipboardRestorer,
+    caps_lock: std::sync::atomic::AtomicBool,
+    terminal_app: std::sync::atomic::AtomicBool,
 }
 
 impl UinputInjector {
@@ -609,6 +658,8 @@ impl UinputInjector {
             transaction_lock: Mutex::new(()),
             clip,
             restorer,
+            caps_lock: std::sync::atomic::AtomicBool::new(false),
+            terminal_app: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -741,46 +792,55 @@ impl UinputInjector {
         if count == 0 {
             return Ok(());
         }
-        let mut events = Vec::with_capacity(count * 4);
-        for _ in 0..count {
-            events.push(input_event {
-                time: timeval {
-                    tv_sec: 0,
-                    tv_usec: 0,
-                },
-                type_: EV_KEY,
-                code: 14,
-                value: 1,
-            });
-            events.push(input_event {
-                time: timeval {
-                    tv_sec: 0,
-                    tv_usec: 0,
-                },
-                type_: 0,
-                code: 0,
-                value: 0,
-            });
-            events.push(input_event {
-                time: timeval {
-                    tv_sec: 0,
-                    tv_usec: 0,
-                },
-                type_: EV_KEY,
-                code: 14,
-                value: 0,
-            });
-            events.push(input_event {
-                time: timeval {
-                    tv_sec: 0,
-                    tv_usec: 0,
-                },
-                type_: 0,
-                code: 0,
-                value: 0,
-            });
+        let mut remaining = count;
+        while remaining > 0 {
+            let chunk = remaining.min(4);
+            let mut events = Vec::with_capacity(chunk * 4);
+            for _ in 0..chunk {
+                events.push(input_event {
+                    time: timeval {
+                        tv_sec: 0,
+                        tv_usec: 0,
+                    },
+                    type_: EV_KEY,
+                    code: 14,
+                    value: 1,
+                });
+                events.push(input_event {
+                    time: timeval {
+                        tv_sec: 0,
+                        tv_usec: 0,
+                    },
+                    type_: 0,
+                    code: 0,
+                    value: 0,
+                });
+                events.push(input_event {
+                    time: timeval {
+                        tv_sec: 0,
+                        tv_usec: 0,
+                    },
+                    type_: EV_KEY,
+                    code: 14,
+                    value: 0,
+                });
+                events.push(input_event {
+                    time: timeval {
+                        tv_sec: 0,
+                        tv_usec: 0,
+                    },
+                    type_: 0,
+                    code: 0,
+                    value: 0,
+                });
+            }
+            self.write_events(&events)?;
+            remaining -= chunk;
+            if remaining > 0 {
+                std::thread::sleep(Duration::from_millis(2));
+            }
         }
-        self.write_events(&events)
+        Ok(())
     }
 }
 
@@ -798,6 +858,9 @@ impl KeyInjector for UinputInjector {
             self.send_uinput_event_unlocked(EV_KEY, keycode, value)?;
             self.send_uinput_event_unlocked(0, 0, 0)
         });
+        if value == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
         if matches!(result, Ok(Ok(()))) {
             InjectResult::Success
         } else {
@@ -806,8 +869,13 @@ impl KeyInjector for UinputInjector {
     }
 
     fn send_char(&self, ch: char) -> InjectResult {
+        let caps_active = self.caps_lock.load(Ordering::Relaxed);
         if let Some(keycode) = char_to_linux_keycode(ch) {
-            let needs_shift = ch.is_uppercase() || "!@#$%^&*()_+{}|:\"<>?".contains(ch);
+            let needs_shift = if ch.is_ascii_alphabetic() {
+                ch.is_uppercase() ^ caps_active
+            } else {
+                "!@#$%^&*()_+{}|:\"<>?".contains(ch)
+            };
             return if self.send_key_stroke(keycode, needs_shift).is_ok() {
                 InjectResult::Success
             } else {
@@ -817,7 +885,11 @@ impl KeyInjector for UinputInjector {
         // Vietnamese Unicode char: map to base ASCII and send via uinput
         let ascii = strip_vn_diacritic(ch);
         if let Some(keycode) = char_to_linux_keycode(ascii) {
-            let needs_shift = ascii.is_uppercase();
+            let needs_shift = if ascii.is_ascii_alphabetic() {
+                ascii.is_uppercase() ^ caps_active
+            } else {
+                ascii.is_uppercase()
+            };
             return if self.send_key_stroke(keycode, needs_shift).is_ok() {
                 InjectResult::Success
             } else {
@@ -837,6 +909,7 @@ impl KeyInjector for UinputInjector {
                 if result != InjectResult::Success {
                     return result;
                 }
+                std::thread::sleep(Duration::from_millis(2));
             }
             return InjectResult::Success;
         }
@@ -904,6 +977,16 @@ impl KeyInjector for UinputInjector {
     fn set_active_window(&self, window_class: &str) -> InjectResult {
         let mut st = self.clip.inner.lock().unwrap();
         st.active_window = window_class.to_lowercase();
+        InjectResult::Success
+    }
+
+    fn set_caps_lock(&self, enabled: bool) -> InjectResult {
+        self.caps_lock.store(enabled, Ordering::Relaxed);
+        InjectResult::Success
+    }
+
+    fn set_terminal_app(&self, is_terminal: bool) -> InjectResult {
+        self.terminal_app.store(is_terminal, Ordering::Relaxed);
         InjectResult::Success
     }
 }
@@ -1047,8 +1130,11 @@ impl UinputInjector {
             .chars()
             .all(|c| char_to_linux_keycode(c).is_some() || c == '\n')
         {
-            if backspaces > 0 && self.send_backspaces(backspaces).is_err() {
-                return InjectResult::Failed;
+            if backspaces > 0 {
+                if self.send_backspaces(backspaces).is_err() {
+                    return InjectResult::Failed;
+                }
+                std::thread::sleep(Duration::from_millis(8));
             }
             for ch in text.chars() {
                 if ch == '\n' {
@@ -1058,6 +1144,7 @@ impl UinputInjector {
                 } else if self.send_char(ch) != InjectResult::Success {
                     return InjectResult::Failed;
                 }
+                std::thread::sleep(Duration::from_millis(3));
             }
             return InjectResult::Success;
         }
@@ -1102,6 +1189,103 @@ impl UinputInjector {
         Some(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    /// MIME types currently offered on the clipboard. `Some(vec![])` means the
+    /// clipboard is empty; `None` means it could not be queried.
+    fn clipboard_types() -> Option<Vec<String>> {
+        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        if !is_wayland {
+            return None;
+        }
+        let mut cmd = Self::user_cmd("wl-paste").ok()?;
+        cmd.args(["-l"]);
+        let output = cmd.output().ok()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return stderr
+                .contains("Nothing is copied")
+                .then(Vec::new);
+        }
+        Some(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect(),
+        )
+    }
+
+    /// Snapshot a clipboard that does not hold plain text (empty, image,
+    /// file list...). Plain-text clipboards use the text path instead.
+    fn backup_non_text_clipboard() -> Option<NonTextClipboard> {
+        let types = Self::clipboard_types()?;
+        match classify_clipboard_types(&types) {
+            ClipboardKind::Text => None,
+            ClipboardKind::Empty => Some(NonTextClipboard::Empty),
+            ClipboardKind::Other(mime) => {
+                let mut cmd = Self::user_cmd("wl-paste").ok()?;
+                cmd.args(["--type", &mime]);
+                let output = cmd.output().ok()?;
+                if !output.status.success() || output.stdout.len() > MAX_BINARY_CLIPBOARD_BYTES {
+                    return None;
+                }
+                Some(NonTextClipboard::Data {
+                    mime,
+                    bytes: output.stdout,
+                })
+            }
+        }
+    }
+
+    fn restore_non_text_clipboard(backup: &NonTextClipboard) -> bool {
+        let Ok(mut cmd) = Self::user_cmd("wl-copy") else {
+            return false;
+        };
+        match backup {
+            NonTextClipboard::Empty => {
+                cmd.arg("--clear");
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::null());
+                cmd.status().map(|status| status.success()).unwrap_or(false)
+            }
+            NonTextClipboard::Data { mime, bytes } => {
+                use std::io::Write;
+                cmd.args(["--type", mime]);
+                cmd.stdin(std::process::Stdio::piped());
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::null());
+                let Ok(mut child) = cmd.spawn() else {
+                    return false;
+                };
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(bytes);
+                }
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                true
+            }
+        }
+    }
+
+    /// Read the clipboard, retrying briefly while it does not yet show
+    /// `expected`. A transient read failure right after a paste must not be
+    /// mistaken for "the user changed the clipboard", which would skip the
+    /// restore and leave our injected text in the user's clipboard.
+    fn read_clipboard_expecting(expected: &str) -> Option<String> {
+        let mut last = None;
+        for attempt in 0..4 {
+            last = Self::read_clipboard();
+            if last.as_deref() == Some(expected) {
+                return last;
+            }
+            if attempt < 3 {
+                std::thread::sleep(CLIPBOARD_READY_POLL_INTERVAL * 2);
+            }
+        }
+        last
+    }
+
     /// Inject Unicode `text` by placing it on the clipboard and sending Ctrl+V,
     /// while preserving the user's own clipboard contents. Without this, every
     /// Vietnamese word the user types would overwrite whatever they had copied
@@ -1117,7 +1301,14 @@ impl UinputInjector {
             st.restore_due = None;
             !st.burst.is_active()
         };
-        let current_clipboard = needs_snapshot.then(Self::read_clipboard).flatten();
+        let non_text_backup = if needs_snapshot {
+            Self::backup_non_text_clipboard()
+        } else {
+            None
+        };
+        let current_clipboard = (needs_snapshot && non_text_backup.is_none())
+            .then(Self::read_clipboard)
+            .flatten();
 
         let sequence_id = {
             let mut st = self.clip.inner.lock().unwrap();
@@ -1158,9 +1349,10 @@ impl UinputInjector {
         }
         {
             let mut st = self.clip.inner.lock().unwrap();
-            debug_assert!(st
+            let transitioned = st
                 .burst
-                .transition(sequence_id, ReplacementPhase::ClipboardWritten));
+                .transition(sequence_id, ReplacementPhase::ClipboardWritten);
+            debug_assert!(transitioned);
         }
         trace_clipboard(sequence_id, "clipboard_written", "state=verified");
 
@@ -1173,9 +1365,10 @@ impl UinputInjector {
         }
         {
             let mut st = self.clip.inner.lock().unwrap();
-            debug_assert!(st
+            let transitioned = st
                 .burst
-                .transition(sequence_id, ReplacementPhase::PasteDispatched));
+                .transition(sequence_id, ReplacementPhase::PasteDispatched);
+            debug_assert!(transitioned);
             st.restore_due = Some(Instant::now() + CLIPBOARD_READY_TIMEOUT);
         }
         trace_clipboard(sequence_id, "paste_dispatched", "state=sent");
@@ -1191,11 +1384,43 @@ impl UinputInjector {
         trace_clipboard(sequence_id, "target_observed", "state=clipboard-consumed");
         trace_clipboard(sequence_id, "applied", "state=ready-to-restore");
 
-        let current_clipboard = Self::read_clipboard();
+        let current_clipboard = Self::read_clipboard_expecting(text);
         let action = {
             let mut st = self.clip.inner.lock().unwrap();
-            st.burst.finish_restore(current_clipboard.as_deref())
+            let action = st.burst.finish_restore(current_clipboard.as_deref());
+            if non_text_backup.is_some() && current_clipboard.as_deref() == Some(text) {
+                // The user's clipboard was empty/non-text: there is no text to
+                // restore through the burst machinery, so forget the "unrestored
+                // injected text" marker and restore the original data below.
+                st.burst.forget_unrestored();
+            }
+            action
         };
+        if let (Some(backup), true) = (
+            non_text_backup.as_ref(),
+            current_clipboard.as_deref() == Some(text),
+        ) {
+            trace_clipboard(sequence_id, "restore", "state=writing-non-text");
+            let restored = Self::restore_non_text_clipboard(backup);
+            trace_clipboard(
+                sequence_id,
+                "restore",
+                if restored {
+                    "state=non-text-restored"
+                } else {
+                    "state=non-text-restore-failed"
+                },
+            );
+            self.clip.inner.lock().unwrap().burst.reset();
+            let elapsed = t_total.elapsed().as_millis();
+            if elapsed > 20 {
+                eprintln!(
+                    "[vietc] clipboard sequence_id={} elapsed_ms={}",
+                    sequence_id, elapsed
+                );
+            }
+            return restored;
+        }
 
         let success = match action {
             ClipboardAction::Restore(saved) => {
@@ -1448,7 +1673,7 @@ impl UinputInjector {
     /// Send Ctrl+V through our uinput device, with a forced modifier clear
     /// afterwards so apps (Chrome, etc.) never see a stuck Ctrl key.
     fn send_ctrl_v(&self) -> std::io::Result<()> {
-        let is_terminal = {
+        let is_terminal = self.terminal_app.load(Ordering::Relaxed) || {
             let st = self.clip.inner.lock().unwrap();
             let app = &st.active_window;
             app.contains("terminal")
@@ -1459,6 +1684,11 @@ impl UinputInjector {
         };
 
         serialize_transaction(&self.transaction_lock, || {
+            if !is_terminal {
+                self.send_uinput_event_unlocked(EV_KEY, 42, 0)?;
+                self.send_uinput_event_unlocked(EV_KEY, 54, 0)?;
+                self.send_uinput_event_unlocked(0, 0, 0)?;
+            }
             self.send_uinput_event_unlocked(EV_KEY, 29, 1)?;
             if is_terminal {
                 self.send_uinput_event_unlocked(EV_KEY, 42, 1)?;
@@ -2351,5 +2581,43 @@ mod restorer_tests {
         handle.join().unwrap();
 
         assert!(restored.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod clipboard_backup_tests {
+    use super::*;
+
+    fn types(list: &[&str]) -> Vec<String> {
+        list.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_clipboard_is_backed_up_as_empty() {
+        assert_eq!(classify_clipboard_types(&[]), ClipboardKind::Empty);
+    }
+
+    #[test]
+    fn any_plain_text_offer_uses_the_text_path() {
+        assert_eq!(
+            classify_clipboard_types(&types(&["text/html", "text/plain;charset=utf-8"])),
+            ClipboardKind::Text
+        );
+        assert_eq!(
+            classify_clipboard_types(&types(&["UTF8_STRING"])),
+            ClipboardKind::Text
+        );
+    }
+
+    #[test]
+    fn image_only_clipboard_keeps_its_own_type_instead_of_becoming_text() {
+        assert_eq!(
+            classify_clipboard_types(&types(&["image/png"])),
+            ClipboardKind::Other("image/png".to_string())
+        );
+        assert_eq!(
+            classify_clipboard_types(&types(&["text/uri-list", "x-special/gnome-copied-files"])),
+            ClipboardKind::Other("text/uri-list".to_string())
+        );
     }
 }

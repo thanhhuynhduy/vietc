@@ -34,6 +34,7 @@ pub struct BambooEngine {
     mode: Mode,
     macros: HashMap<String, String>,
     macro_buf: String,
+    undone_in_word: bool,
 }
 
 impl BambooEngine {
@@ -44,6 +45,7 @@ impl BambooEngine {
             mode: Mode::Vietnamese,
             macros: HashMap::new(),
             macro_buf: String::new(),
+            undone_in_word: false,
         }
     }
 
@@ -78,11 +80,18 @@ impl BambooEngine {
     pub fn reset(&mut self) {
         self.composition.clear();
         self.macro_buf.clear();
+        self.undone_in_word = false;
     }
 
     pub fn process_key(&mut self, ch: char) -> Option<String> {
         if !self.mode.is_vn() {
             return Some(ch.to_string());
+        }
+
+        if self.undone_in_word {
+            self.append_char(ch);
+            self.macro_buf.clear();
+            return Some(self.flatten());
         }
 
         let lower = ch.to_ascii_lowercase();
@@ -129,7 +138,8 @@ impl BambooEngine {
                             let tone = self.composition[o_idx]
                                 .tone_applied
                                 .or(self.composition[u_idx].tone_applied);
-                            let was_upper = self.composition[u_idx].is_upper;
+                            let u_was_upper = self.composition[u_idx].is_upper;
+                            let o_was_upper = self.composition[o_idx].is_upper;
                             self.composition.drain(u_idx..=o_idx);
                             self.composition.insert(
                                 u_idx,
@@ -137,7 +147,7 @@ impl BambooEngine {
                                     base_char: 'ư',
                                     mark_applied: Some('ư'),
                                     tone_applied: None,
-                                    is_upper: was_upper,
+                                    is_upper: u_was_upper,
                                 },
                             );
                             self.composition.insert(
@@ -146,7 +156,7 @@ impl BambooEngine {
                                     base_char: 'ơ',
                                     mark_applied: Some('ơ'),
                                     tone_applied: tone,
-                                    is_upper: false,
+                                    is_upper: o_was_upper,
                                 },
                             );
                             return Some(self.flatten());
@@ -209,6 +219,17 @@ impl BambooEngine {
                 .iter()
                 .find(|rule| seq == rule.pattern)
             {
+                if rule.pattern == "dd" && offset > 0 {
+                    continue;
+                }
+                if matches!(rule.pattern.as_str(), "aa" | "ee" | "oo")
+                    && offset > 0
+                    && !self.composition[idx + 1..]
+                        .iter()
+                        .all(|t| is_vowel(t.base_char.to_ascii_lowercase()))
+                {
+                    continue;
+                }
                 return Some((idx, rule.pattern.clone(), rule.result.clone()));
             }
 
@@ -259,7 +280,7 @@ impl BambooEngine {
     }
 
     pub fn undo_telex_transform(&mut self, trigger: char, raw: &str) -> Option<TelexUndo> {
-        if self.rules.method != InputMethod::Telex {
+        if self.rules.method != InputMethod::Telex || self.undone_in_word {
             return None;
         }
 
@@ -268,6 +289,7 @@ impl BambooEngine {
             for transformation in self.composition.iter_mut().rev() {
                 if transformation.tone_applied == Some(trigger) {
                     transformation.tone_applied = None;
+                    self.undone_in_word = true;
                     return Some(TelexUndo::AppendTrigger);
                 }
             }
@@ -302,6 +324,7 @@ impl BambooEngine {
                         base_char
                     };
                     transformation.mark_applied = None;
+                    self.undone_in_word = true;
                     return Some(match undo_behavior {
                         UndoBehavior::AppendTrigger => TelexUndo::AppendTrigger,
                         UndoBehavior::ConsumeTrigger => TelexUndo::ConsumeTrigger,
@@ -364,6 +387,7 @@ impl BambooEngine {
 
     fn find_tone_position(&self, range: std::ops::Range<usize>) -> usize {
         let start = range.start;
+        let end = range.end;
         let mut vowels: Vec<usize> = Vec::new();
 
         for i in range {
@@ -395,47 +419,43 @@ impl BambooEngine {
             return vowels[0];
         }
 
-        // Check the last two vowels with their actual characters (including marks applied)
-        let cv1 = self.composition[vowels[vowels.len() - 2]]
-            .mark_applied
-            .unwrap_or(self.composition[vowels[vowels.len() - 2]].base_char)
-            .to_ascii_lowercase();
-        let cv2 = self.composition[vowels[vowels.len() - 1]]
-            .mark_applied
-            .unwrap_or(self.composition[vowels[vowels.len() - 1]].base_char)
-            .to_ascii_lowercase();
-
-        // Clusters where tone goes on the SECOND vowel:
-        // oa/oe: hoá, khoẻ
-        // uy: tuý
-        // iê/yê: tiếng, biết, nguyễn
-        // uô: muốn, buồn
-        // ươ: tướng, đường
-        let tone_on_second = matches!(
-            (cv1, cv2),
-            ('o', 'a')
-                | ('o', 'e')
-                | ('u', 'y')
-                | ('i', 'ê')
-                | ('y', 'ê')
-                | ('u', 'ô')
-                | ('ư', 'ơ')
-                | ('i', 'o')
-                | ('u', 'â')
-                | ('u', 'ê')
-                | ('u', 'ơ')
-        );
-
-        if tone_on_second {
-            return vowels[vowels.len() - 1];
+        // General phonological rule: if any vowel in the nucleus carries a
+        // diacritic mark (ă, â, ê, ô, ơ, ư), the tone attaches to the last
+        // marked vowel (covering iê, yê, uô, ươ, oă, uâ, uê, uơ, ưa, ưi, ưu,
+        // ươi, ươu, uôi, iêu, yêu, uây, etc.).
+        if let Some(&marked_idx) = vowels.iter().rev().find(|&&idx| {
+            let ch = self.composition[idx]
+                .mark_applied
+                .unwrap_or(self.composition[idx].base_char)
+                .to_ascii_lowercase();
+            matches!(ch, 'ă' | 'â' | 'ê' | 'ô' | 'ơ' | 'ư')
+        }) {
+            return marked_idx;
         }
 
-        // Three+ vowels: tone on the middle one
+        // Three+ unmarked vowels (oai, oay, oeo, uya, uyu): tone on middle vowel.
         if vowels.len() >= 3 {
             return vowels[1];
         }
 
-        // Default: tone on first vowel
+        // Two unmarked vowels: tone on the second vowel for medial-glide clusters
+        // (oa, oe, uy, io) or closed syllables with ie/ye/uo.
+        let cv1 = self.composition[vowels[0]]
+            .mark_applied
+            .unwrap_or(self.composition[vowels[0]].base_char)
+            .to_ascii_lowercase();
+        let cv2 = self.composition[vowels[1]]
+            .mark_applied
+            .unwrap_or(self.composition[vowels[1]].base_char)
+            .to_ascii_lowercase();
+        let has_final_consonant = vowels[1] + 1 < end;
+
+        if matches!((cv1, cv2), ('o', 'a') | ('o', 'e') | ('u', 'y') | ('i', 'o'))
+            || (has_final_consonant && matches!((cv1, cv2), ('i', 'e') | ('y', 'e') | ('u', 'o')))
+        {
+            return vowels[1];
+        }
+
         vowels[0]
     }
 

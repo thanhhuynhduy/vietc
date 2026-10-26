@@ -16,7 +16,7 @@ use crate::event::{
     is_toggle_combination_state, is_toggle_key, is_vn_control_key, key_to_char,
     key_to_char_with_case,
 };
-use crate::focus::{should_expire_unknown_composition, SharedFocusSnapshot};
+use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
 use crate::log::log_info;
 use crate::signal::SIGNAL_EXIT;
@@ -25,6 +25,26 @@ pub struct EvdevSharedState {
     pub focus: SharedFocusSnapshot,
     pub config_changed: Arc<std::sync::atomic::AtomicBool>,
     pub status_changed: Arc<std::sync::atomic::AtomicBool>,
+    /// Incremented by the pointer watcher on every mouse/touchpad button press.
+    pub pointer_activity: Arc<std::sync::atomic::AtomicU64>,
+}
+
+fn is_navigation_or_control_key(key: evdev::Key) -> bool {
+    matches!(
+        key,
+        evdev::Key::KEY_LEFT
+            | evdev::Key::KEY_RIGHT
+            | evdev::Key::KEY_UP
+            | evdev::Key::KEY_DOWN
+            | evdev::Key::KEY_HOME
+            | evdev::Key::KEY_END
+            | evdev::Key::KEY_PAGEUP
+            | evdev::Key::KEY_PAGEDOWN
+            | evdev::Key::KEY_DELETE
+            | evdev::Key::KEY_INSERT
+            | evdev::Key::KEY_ESC
+            | evdev::Key::KEY_TAB
+    )
 }
 
 fn update_keyboard_state(
@@ -54,6 +74,7 @@ pub fn run_with_evdev(
         focus: shared_focus,
         config_changed,
         status_changed,
+        pointer_activity,
     } = shared;
     let mut injector = create_injector(display)?;
     let focus_generation_signal = shared_focus.lock().unwrap().generation_signal.clone();
@@ -126,6 +147,7 @@ pub fn run_with_evdev(
     let mut last_focus_generation = initial_focus.generation;
     let mut last_focus_target = initial_focus.target;
     let mut last_window_class = String::new();
+    let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
     let mut password_check_counter: u32 = 0;
     let mut last_key_time = std::time::Instant::now();
 
@@ -253,6 +275,18 @@ pub fn run_with_evdev(
 
                 // Update modifier and lock state before translating this event.
                 update_keyboard_state(&mut key_state, &mut caps, key, value);
+                injector.set_caps_lock(caps);
+
+                // A mouse click may have moved the caret or switched windows
+                // without any keyboard event: the half-typed word no longer
+                // matches the screen, so it must not be replayed or replaced.
+                if value == 1 {
+                    let pointer_now = pointer_activity.load(Ordering::SeqCst);
+                    if pointer_now != last_pointer_activity {
+                        last_pointer_activity = pointer_now;
+                        daemon.reset_composition_state();
+                    }
+                }
 
                 if matches!(
                     key,
@@ -331,12 +365,15 @@ pub fn run_with_evdev(
                         continue;
                     }
                     if is_modifier_pressed(&key_state) {
+                        daemon.reset_composition_state();
                         continue;
                     }
                     if !daemon.engine.is_enabled() {
                         continue;
                     }
-                    if let Some(ch) = key_to_char(key) {
+                    if let Some(ch) =
+                        key_to_char_with_case(key, is_modifier_held_shift(&key_state), caps)
+                    {
                         let commands = daemon.process_key(ch);
                         if !commands.is_empty() {
                             log_info(&format!(
@@ -354,9 +391,24 @@ pub fn run_with_evdev(
                         if !daemon.handle_transaction_outcome(outcome) {
                             log_info("[vietc] non-grabbed injection failed");
                         }
+                    } else if is_navigation_or_control_key(key) {
+                        daemon.reset_composition_state();
                     }
                 } else {
                     if is_modifier_pressed(&key_state) {
+                        if value == 1
+                            && !matches!(
+                                key,
+                                evdev::Key::KEY_LEFTCTRL
+                                    | evdev::Key::KEY_RIGHTCTRL
+                                    | evdev::Key::KEY_LEFTALT
+                                    | evdev::Key::KEY_RIGHTALT
+                                    | evdev::Key::KEY_LEFTMETA
+                                    | evdev::Key::KEY_RIGHTMETA
+                            )
+                        {
+                            daemon.reset_composition_state();
+                        }
                         injector.send_key_event(keycode, value);
                         continue;
                     }
@@ -402,18 +454,6 @@ pub fn run_with_evdev(
                             let active_window_class = focus.class.unwrap_or_default();
                             let focus_changed = focus.generation != last_focus_generation;
 
-                            if should_expire_unknown_composition(
-                                focus.reliability,
-                                gap,
-                                daemon.has_composition_state(),
-                            ) {
-                                log_info(&format!(
-                                    "[vietc] Expiring composition after unknown-focus idle gap {:?}",
-                                    gap
-                                ));
-                                daemon.reset_composition_state();
-                            }
-
                             if focus_changed {
                                 log_info(&format!(
                                     "[vietc] Focus generation changed: {} -> {} identity={:?} (gap={:?})",
@@ -457,6 +497,7 @@ pub fn run_with_evdev(
                                     };
                                     injector.set_active_window(&class);
                                     daemon.check_app_change_with(class);
+                                    injector.set_terminal_app(daemon.app_state.is_terminal_app());
                                 }
 
                                 if daemon.config.password_detection.enabled {
@@ -477,6 +518,16 @@ pub fn run_with_evdev(
                                     .unwrap_or_default();
                                 if !class.is_empty() {
                                     injector.set_active_window(&class);
+                                    // The class may arrive after activation; keep
+                                    // per-app state and terminal paste mode in sync.
+                                    // Only on a real change: applying the app state
+                                    // re-selects the input method, which restarts
+                                    // composition.
+                                    if class != last_window_class {
+                                        last_window_class = class.clone();
+                                        daemon.check_app_change_with(class);
+                                    }
+                                    injector.set_terminal_app(daemon.app_state.is_terminal_app());
                                 }
                             }
 
@@ -515,16 +566,32 @@ pub fn run_with_evdev(
                                     ));
                                 }
                                 consumed_keys.insert(keycode);
-                                if !matches!(
-                                    execute_commands(
-                                        &*injector,
-                                        &commands,
-                                        &mut daemon.visible_revision,
-                                        last_focus_generation,
-                                    ),
-                                    crate::commands::TransactionOutcome::Applied { .. }
-                                ) {
+                                let left_shift_held =
+                                    key_state.contains(evdev::Key::KEY_LEFTSHIFT);
+                                let right_shift_held =
+                                    key_state.contains(evdev::Key::KEY_RIGHTSHIFT);
+                                if left_shift_held {
+                                    injector.send_key_event(42, 0);
+                                }
+                                if right_shift_held {
+                                    injector.send_key_event(54, 0);
+                                }
+                                let outcome = execute_commands(
+                                    &*injector,
+                                    &commands,
+                                    &mut daemon.visible_revision,
+                                    last_focus_generation,
+                                );
+                                if !daemon.handle_transaction_outcome(outcome) {
                                     log_info("[vietc] grabbed injection failed");
+                                }
+                                // Restore physical Shift state on the virtual keyboard if
+                                // the user is still holding Shift after an injection/paste.
+                                if left_shift_held {
+                                    injector.send_key_event(42, 1);
+                                }
+                                if right_shift_held {
+                                    injector.send_key_event(54, 1);
                                 }
                                 if is_flush_char(ch) && daemon.engine.is_enabled() {
                                     injector.send_key_event(keycode, 1);
@@ -551,6 +618,9 @@ pub fn run_with_evdev(
                                 injector.send_key_event(keycode, 1);
                             }
                         } else {
+                            if is_navigation_or_control_key(key) {
+                                daemon.reset_composition_state();
+                            }
                             injector.send_key_event(keycode, 1);
                         }
                     } else if value == 2 {
@@ -837,17 +907,14 @@ fn discover_new_keyboards(
                 if name.ends_with("-event-kbd") {
                     if let Ok(real_path) = fs::canonicalize(entry.path()) {
                         let p = real_path.to_string_lossy().to_string();
+                        if existing_paths.contains(&p) || !added_paths.insert(p.clone()) {
+                            continue;
+                        }
                         let phys_opt = crate::device::get_device_phys_id(&real_path);
                         if let Some(phys_id) = &phys_opt {
                             if existing_phys.contains(phys_id) {
                                 continue;
                             }
-                        }
-                        if existing_paths.contains(&p) {
-                            continue;
-                        }
-                        if !added_paths.insert(p.clone()) {
-                            continue;
                         }
                         if let Ok(device) = evdev::Device::open(&real_path) {
                             let dev_name = device.name().unwrap_or("unknown").to_string();
@@ -876,17 +943,14 @@ fn discover_new_keyboards(
                 if name.ends_with("-event-kbd") {
                     if let Ok(real_path) = fs::canonicalize(entry.path()) {
                         let p = real_path.to_string_lossy().to_string();
+                        if existing_paths.contains(&p) || !added_paths.insert(p.clone()) {
+                            continue;
+                        }
                         let phys_opt = crate::device::get_device_phys_id(&real_path);
                         if let Some(phys_id) = &phys_opt {
                             if existing_phys.contains(phys_id) {
                                 continue;
                             }
-                        }
-                        if existing_paths.contains(&p) {
-                            continue;
-                        }
-                        if !added_paths.insert(p.clone()) {
-                            continue;
                         }
                         if let Ok(device) = evdev::Device::open(&real_path) {
                             let dev_name = device.name().unwrap_or("unknown").to_string();
@@ -915,17 +979,14 @@ fn discover_new_keyboards(
                 if name_str.starts_with("event") {
                     if let Ok(real_path) = fs::canonicalize(entry.path()) {
                         let p = real_path.to_string_lossy().to_string();
+                        if existing_paths.contains(&p) || !added_paths.insert(p.clone()) {
+                            continue;
+                        }
                         let phys_opt = crate::device::get_device_phys_id(&real_path);
                         if let Some(phys_id) = &phys_opt {
                             if existing_phys.contains(phys_id) {
                                 continue;
                             }
-                        }
-                        if existing_paths.contains(&p) {
-                            continue;
-                        }
-                        if !added_paths.insert(p.clone()) {
-                            continue;
                         }
                         if let Ok(device) = evdev::Device::open(&real_path) {
                             let dev_name = device.name().unwrap_or("unknown").to_string();

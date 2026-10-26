@@ -259,6 +259,8 @@ fn default_terminal_apps() -> Vec<String> {
         "blackbox".into(),
         "contour".into(),
         "cool-retro-term".into(),
+        "cosmicterm".into(),
+        "cosmic-term".into(),
     ]
 }
 

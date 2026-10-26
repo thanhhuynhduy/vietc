@@ -119,6 +119,64 @@ fn repeated_vowel_does_not_create_mark_across_another_vowel() {
 }
 
 #[test]
+fn telex_double_key_undo_preserves_literal_across_word_boundary() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    assert_eq!(
+        get_display(&process_input(&mut engine, "tesst ")),
+        "test "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "TESST ")),
+        "TEST "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "Tesst ")),
+        "Test "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "tesster ")),
+        "tester "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "offfer ")),
+        "offer "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "isssue ")),
+        "issue "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "lawws ")),
+        "laws "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "boooks ")),
+        "books "
+    );
+}
+
+#[test]
+fn telex_auto_restore_general_stop_coda_phonology() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    assert_eq!(
+        get_display(&process_input(&mut engine, "chart ")),
+        "chart "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "text ")),
+        "text "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "boot ")),
+        "boot "
+    );
+    assert_eq!(
+        get_display(&process_input(&mut engine, "keep ")),
+        "keep "
+    );
+}
+
+#[test]
 fn telex_tone_key_can_be_typed_before_later_mark_key() {
     let mut engine = Engine::new(InputMethod::Telex);
 

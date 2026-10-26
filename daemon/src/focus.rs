@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[allow(dead_code)]
 pub const FOCUS_UNKNOWN_COMPOSITION_TTL: Duration = Duration::from_millis(750);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,10 @@ pub struct FocusSnapshot {
     pub generation: u64,
     pub generation_signal: Arc<AtomicU64>,
     pub reliability: FocusReliability,
+    /// True once the compositor itself reported the app class. Heuristic
+    /// pollers (xdotool/XWayland, /proc) are then ignored: on Wayland they
+    /// describe a stale X11 window, not the focused one.
+    pub class_from_compositor: bool,
 }
 
 impl Default for FocusSnapshot {
@@ -59,6 +64,7 @@ impl Default for FocusSnapshot {
             generation: 0,
             generation_signal: Arc::new(AtomicU64::new(0)),
             reliability: FocusReliability::Unavailable,
+            class_from_compositor: false,
         }
     }
 }
@@ -70,6 +76,16 @@ impl FocusSnapshot {
             TargetIdentity::new(seat, None, Some(window.clone()), Some(window.clone()))
         });
         self.observe_target(target, class);
+    }
+
+    /// Update only the application class (e.g. its app_id arrived after the
+    /// window was activated) without touching identity or generation.
+    pub fn mark_class_from_compositor(&mut self) {
+        self.class_from_compositor = true;
+    }
+
+    pub fn set_class(&mut self, class: Option<String>) {
+        self.class = class.filter(|value| !value.is_empty());
     }
 
     pub fn observe_target(&mut self, target: Option<TargetIdentity>, class: Option<String>) {
@@ -100,6 +116,7 @@ impl FocusSnapshot {
 
 pub type SharedFocusSnapshot = Arc<Mutex<FocusSnapshot>>;
 
+#[allow(dead_code)]
 pub fn should_expire_unknown_composition(
     reliability: FocusReliability,
     idle: Duration,

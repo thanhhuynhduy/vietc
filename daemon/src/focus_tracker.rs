@@ -26,10 +26,9 @@ fn observe_atspi_focus(shared_focus: &SharedFocusSnapshot, application_identity:
         return;
     };
 
-    shared_focus
-        .lock()
-        .unwrap()
-        .observe(Some(format!("atspi:{application_identity}")), None);
+    let mut focus = shared_focus.lock().unwrap();
+    let class = focus.class.clone();
+    focus.observe(Some(format!("atspi:{application_identity}")), class);
 }
 
 fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {

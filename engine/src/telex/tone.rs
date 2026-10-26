@@ -29,11 +29,48 @@ fn is_vowel(ch: char) -> bool {
 
 pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
     let mut consumed = marks.consumed.clone();
+    if marks.mark_undone {
+        return ToneResolution {
+            tone: Tone::None,
+            target: None,
+            consumed,
+        };
+    }
+
     let vowels: Vec<usize> = raw
         .iter()
         .enumerate()
         .filter_map(|(i, &ch)| (!consumed[i] && is_vowel(ch)).then_some(i))
         .collect();
+
+    // Scan tone triggers after the first vowel in order. If a tone trigger is
+    // repeated (e.g. "tess", "tesst", "tesster", "offfer", "isssue"), the
+    // first trigger is consumed and the second is kept as a literal character,
+    // cancelling tone placement for the rest of the word.
+    let mut active_trigger: Option<(usize, Tone)> = None;
+    for (i, &ch) in raw.iter().enumerate() {
+        if consumed[i] {
+            continue;
+        }
+        if let Some(tone) = tone_for(ch) {
+            let has_vowel_before = vowels.iter().any(|&v| v < i);
+            if !has_vowel_before {
+                continue;
+            }
+            if let Some((prev_idx, prev_tone)) = active_trigger {
+                consumed[prev_idx] = true;
+                if prev_tone == tone {
+                    consumed[i] = false;
+                    return ToneResolution {
+                        tone: Tone::None,
+                        target: None,
+                        consumed,
+                    };
+                }
+            }
+            active_trigger = Some((i, tone));
+        }
+    }
 
     let mut selected = None;
     for (i, &ch) in raw.iter().enumerate() {
@@ -46,7 +83,10 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
             if has_vowel_before
                 && (has_vowel_after
                     || i + 1 == raw.len()
-                    || raw[i + 1..].iter().all(|c| !is_vowel(*c)))
+                    || raw[i + 1..]
+                        .iter()
+                        .enumerate()
+                        .all(|(offset, c)| consumed[i + 1 + offset] || !is_vowel(*c)))
             {
                 selected = Some((i, tone));
             }

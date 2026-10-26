@@ -684,6 +684,27 @@ fn get_proc_window_class() -> Option<String> {
         .map(|s| s.to_lowercase())
 }
 
+/// Whether the focused app `class` matches a configured app `pattern`.
+///
+/// Patterns of 4+ characters match as a case-insensitive substring so that
+/// `telegram` still matches `telegramdesktop`. Very short patterns such as
+/// the terminal `st` are ambiguous as substrings (`com.sy`**`st`**`em76.*`,
+/// `visual-`**`st`**`udio-code`), so they must match a whole token of the
+/// class (split on non-alphanumeric characters).
+pub fn class_matches(class: &str, pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return false;
+    }
+    let class = class.to_lowercase();
+    let pattern = pattern.to_lowercase();
+    if pattern.chars().count() > 3 {
+        return class.contains(&pattern);
+    }
+    class
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| token == pattern)
+}
+
 /// Manages per-app IME state
 pub struct AppStateManager {
     /// Current app class (lowercase)
@@ -764,7 +785,7 @@ impl AppStateManager {
         current_app: &str,
     ) -> String {
         for pattern in terminal_apps {
-            if current_app.contains(pattern.as_str()) {
+            if class_matches(current_app, pattern) {
                 return terminal_method.to_string();
             }
         }
@@ -822,7 +843,7 @@ impl AppStateManager {
     /// Check if the current app is a terminal emulator
     pub fn is_terminal_app(&self) -> bool {
         for pattern in &self.terminal_apps {
-            if self.current_app.contains(pattern.as_str()) {
+            if class_matches(&self.current_app, pattern) {
                 return true;
             }
         }
@@ -850,7 +871,7 @@ impl AppStateManager {
 
         // Layer 2: Window class match (for known password dialogs)
         for pattern in &self.password_apps {
-            if self.current_app.contains(pattern.as_str()) {
+            if class_matches(&self.current_app, pattern) {
                 self.is_password_field = true;
                 log_password_detection("window-class", &self.current_app);
                 return true;
@@ -912,13 +933,13 @@ impl AppStateManager {
 
         // Check config defaults
         for pattern in &self.english_apps {
-            if self.current_app.contains(pattern.as_str()) {
+            if class_matches(&self.current_app, pattern) {
                 return false;
             }
         }
 
         for pattern in &self.vietnamese_apps {
-            if self.current_app.contains(pattern.as_str()) {
+            if class_matches(&self.current_app, pattern) {
                 return true;
             }
         }
@@ -955,7 +976,7 @@ impl AppStateManager {
     /// Check if the currently active application should bypass the IME completely
     pub fn is_current_app_bypassed(&self) -> bool {
         for pattern in &self.bypass_apps {
-            if self.current_app.contains(pattern.as_str()) {
+            if class_matches(&self.current_app, pattern) {
                 return true;
             }
         }
@@ -1133,5 +1154,32 @@ mod active_window_id_tests {
             parse_xprop_active_window_id("_NET_ACTIVE_WINDOW:  not found.\n"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod class_match_tests {
+    use super::class_matches;
+
+    #[test]
+    fn long_patterns_match_as_case_insensitive_substrings() {
+        assert!(class_matches("telegramdesktop", "telegram"));
+        assert!(class_matches("com.system76.CosmicTerm", "cosmicterm"));
+        assert!(class_matches("org.gnome.Terminal", "terminal"));
+        assert!(!class_matches("microsoft-edge", "terminal"));
+    }
+
+    #[test]
+    fn short_patterns_only_match_whole_tokens() {
+        assert!(class_matches("st", "st"));
+        assert!(class_matches("st-256color", "st"));
+        assert!(!class_matches("com.system76.CosmicEdit", "st"));
+        assert!(!class_matches("visual-studio-code", "st"));
+        assert!(!class_matches("telegramdesktop", "st"));
+    }
+
+    #[test]
+    fn empty_pattern_never_matches() {
+        assert!(!class_matches("anything", ""));
     }
 }

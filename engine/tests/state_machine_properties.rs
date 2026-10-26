@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 use std::collections::HashMap;
 use vietc_engine::{
-    BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, SpellingValidity,
-    TransformKind, TransitionKind, UndoPolicy,
+    BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, ReplacementReason,
+    SpellingValidity, TransformKind, TransitionKind, UndoPolicy,
 };
 
 const SMOKE_SEEDS: [u64; 8] = [
@@ -515,10 +515,16 @@ fn auto_restore_modes_validity_and_case_are_preserved() {
             engine.reduce(PhysicalEvent::Printable(ch));
         }
         let event = engine.reduce(PhysicalEvent::WordBoundary(' '));
-        assert!(
-            event.is_none(),
-            "word boundaries must not restore raw keystrokes when auto_restore={enabled}, got {event:?}"
-        );
+        if enabled {
+            assert!(matches!(
+                event,
+                Some(EngineEvent::Replace(ref replacement))
+                    if replacement.insert == "cargo"
+                        && replacement.reason == ReplacementReason::AutoRestore
+            ));
+        } else {
+            assert!(event.is_none());
+        }
     }
 
     for (input, shape) in [

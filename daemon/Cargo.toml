@@ -11,7 +11,7 @@ path = "src/main.rs"
 [features]
 default = ["x11", "wayland"]
 x11 = ["vietc-protocol/x11"]
-wayland = ["vietc-protocol/wayland-protocol", "dep:wayland-client", "dep:wayland-protocols-misc", "dep:xkbcommon"]
+wayland = ["vietc-protocol/wayland-protocol", "dep:wayland-client", "dep:wayland-protocols-misc", "dep:xkbcommon", "dep:cosmic-protocols", "dep:wayland-protocols"]
 
 [dependencies]
 vietc-engine = { path = "../engine" }
@@ -26,9 +26,9 @@ dbus = "0.9"
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols-misc = { version = "0.3", optional = true, features = ["client"] }
 xkbcommon = { version = "0.9", optional = true }
+cosmic-protocols = { version = "0.2", default-features = false, features = ["client"], optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 
 [dev-dependencies]
-cosmic-protocols = { version = "0.2", default-features = false, features = ["client"] }
 tempfile = "3"
 tungstenite = "0.24"
-wayland-protocols = { version = "0.32", features = ["client", "staging"] }

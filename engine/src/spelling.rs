@@ -48,6 +48,35 @@ fn strip_tone(c: char) -> char {
     }
 }
 
+fn is_acute_or_dot_toned_vowel(c: char) -> bool {
+    matches!(
+        c,
+        'á' | 'ạ'
+            | 'ắ'
+            | 'ặ'
+            | 'ấ'
+            | 'ậ'
+            | 'é'
+            | 'ẹ'
+            | 'ế'
+            | 'ệ'
+            | 'í'
+            | 'ị'
+            | 'ó'
+            | 'ọ'
+            | 'ố'
+            | 'ộ'
+            | 'ớ'
+            | 'ợ'
+            | 'ú'
+            | 'ụ'
+            | 'ứ'
+            | 'ự'
+            | 'ý'
+            | 'ỵ'
+    )
+}
+
 fn is_vowel(c: char) -> bool {
     matches!(
         c,
@@ -261,6 +290,14 @@ pub fn is_valid_vietnamese_syllable(word: &str) -> bool {
 
     // If we have a coda, check VC compatibility
     if let Some(ref lcs) = lc_indices {
+        // Vietnamese phonology: syllables ending in a voiceless stop coda (c, ch, p, t)
+        // can only carry entering tones (sắc / acute or nặng / dot).
+        if matches!(lc.as_str(), "c" | "ch" | "p" | "t")
+            && !lowercase_word.chars().any(is_acute_or_dot_toned_vowel)
+        {
+            return false;
+        }
+
         let mut vc_valid = false;
         for &vo_idx in &vo_indices {
             if let Some(allowed_lcs) = VC_MATRIX.get(vo_idx) {
@@ -302,6 +339,10 @@ mod tests {
         assert!(is_valid_vietnamese_syllable("anh"));
         assert!(is_valid_vietnamese_syllable("thuở"));
         assert!(is_valid_vietnamese_syllable("gì"));
+        assert!(is_valid_vietnamese_syllable("tét"));
+        assert!(is_valid_vietnamese_syllable("học"));
+        assert!(is_valid_vietnamese_syllable("sách"));
+        assert!(is_valid_vietnamese_syllable("thập"));
     }
 
     #[test]
@@ -314,5 +355,12 @@ mod tests {
         assert!(!is_valid_vietnamese_syllable("cargo"));
         assert!(!is_valid_vietnamese_syllable("rust"));
         assert!(!is_valid_vietnamese_syllable("status"));
+        // Stop codas (c, ch, p, t) without sắc/nặng tone are phonologically invalid
+        assert!(!is_valid_vietnamese_syllable("chảt"));
+        assert!(!is_valid_vietnamese_syllable("tẽt"));
+        assert!(!is_valid_vietnamese_syllable("bôt"));
+        assert!(!is_valid_vietnamese_syllable("mêt"));
+        assert!(!is_valid_vietnamese_syllable("kêp"));
+        assert!(!is_valid_vietnamese_syllable("lôp"));
     }
 }

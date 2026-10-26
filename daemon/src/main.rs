@@ -20,6 +20,9 @@ mod log;
 mod password_detector;
 mod signal;
 mod stdin;
+mod pointer_watcher;
+#[cfg(feature = "wayland")]
+mod toplevel_tracker;
 mod wayland_im;
 
 #[cfg(feature = "x11")]
@@ -204,6 +207,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shared_focus = Arc::new(Mutex::new(focus::FocusSnapshot::default()));
     focus_tracker::spawn_atspi_focus_watcher(shared_focus.clone());
+    #[cfg(feature = "wayland")]
+    toplevel_tracker::spawn_toplevel_focus_tracker(shared_focus.clone());
+    let pointer_activity = pointer_watcher::spawn_pointer_watcher();
     let config_changed = Arc::new(AtomicBool::new(false));
     let status_changed = Arc::new(AtomicBool::new(false));
 
@@ -238,7 +244,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut focus = shared_focus.lock().unwrap();
                 let previous_identity = focus.identity.clone();
                 let previous_generation = focus.generation;
-                focus.observe(identity, class);
+                let authoritative = matches!(
+                    &focus.identity,
+                    Some(existing) if existing.starts_with("atspi:") || existing.starts_with("toplevel:")
+                );
+                let effective_identity = match (&focus.identity, identity) {
+                    (Some(existing), _) if authoritative => Some(existing.clone()),
+                    (Some(existing), None) => Some(existing.clone()),
+                    (_, new_id) => new_id,
+                };
+                let class = if focus.class_from_compositor {
+                    focus.class.clone()
+                } else if authoritative {
+                    class.or_else(|| focus.class.clone())
+                } else {
+                    class
+                };
+                focus.observe(effective_identity, class);
                 if focus.generation != previous_generation {
                     log_info(&format!(
                         "[vietc] bg: focus {:?} -> {:?} generation={}",
@@ -295,6 +317,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     focus: shared_focus.clone(),
                     config_changed: config_changed.clone(),
                     status_changed: status_changed.clone(),
+                    pointer_activity: pointer_activity.clone(),
                 },
                 display,
             ) {

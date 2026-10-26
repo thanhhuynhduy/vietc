@@ -104,6 +104,21 @@ impl Engine {
         let raw_lower = raw.to_lowercase();
         let composed_lower = composed.to_lowercase();
 
+        // If the visible output is already pure ASCII, a double-key Telex undo
+        // has already stripped all Vietnamese diacritics (e.g. "tesst" -> "test",
+        // "tesster" -> "tester", "offfer" -> "offer", "isssue" -> "issue",
+        // "lawws" -> "laws", "boooks" -> "books", "fixx" -> "fix", "ATXX" -> "ATX").
+        // Keep the undone ASCII word on screen UNLESS `raw` is a natural English
+        // word whose double letter (e.g. "issue", "offer", "error", "press")
+        // was consumed by the undo, leaving a non-word like "isue" on screen.
+        if composed.is_ascii() {
+            if dict.is_english_word(&composed_lower) {
+                return false;
+            }
+            return dict.is_english_word(&raw_lower)
+                || has_natural_english_double_before_vowel(&raw_lower);
+        }
+
         // Genuine Vietnamese words that happen to look like English stay as-is.
         if dict.is_vietnamese_override(&composed_lower) {
             return false;
@@ -407,8 +422,27 @@ impl Engine {
         if ch == '\x08' {
             let _ = self.raw_buffer.pop();
             self.bamboo.reset();
+            let mut replayed_raw = String::new();
             for raw_key in self.raw_buffer.chars() {
-                let _ = self.bamboo.process_key(raw_key);
+                if let Some(undo) = self.bamboo.undo_telex_transform(raw_key, &replayed_raw) {
+                    let consumed_stroke_literal = if undo == TelexUndo::ConsumeTrigger {
+                        replayed_raw.chars().last()
+                    } else {
+                        None
+                    };
+                    replayed_raw.push(raw_key);
+                    match undo {
+                        TelexUndo::AppendTrigger => self.bamboo.append_literal(raw_key),
+                        TelexUndo::ConsumeTrigger => {
+                            if let Some(literal) = consumed_stroke_literal {
+                                self.bamboo.append_literal(literal);
+                            }
+                        }
+                    }
+                } else {
+                    replayed_raw.push(raw_key);
+                    let _ = self.bamboo.process_key(raw_key);
+                }
             }
             self.active_transform = None;
             self.boundary = if self.raw_buffer.is_empty() {
@@ -435,12 +469,17 @@ impl Engine {
                 return Some(self.replacement(prev_len, expansion, ReplacementReason::Macro));
             }
 
+            let raw = self.raw_buffer.clone();
             self.reset();
             self.last_transition = Some(TransitionKind::Commit);
             if prev_len > 0 {
-                // The composed word is already correctly on screen. Finalize it
-                // and let the flush character through unchanged. Telex transforms
-                // are cancelled explicitly by repeating their trigger key.
+                // Auto-restore: if the committed word is English / not valid
+                // Vietnamese, revert to the raw keystrokes the user typed.
+                if self.auto_restore && Engine::should_restore_word(&previous, &raw) {
+                    return Some(self.replacement(prev_len, raw, ReplacementReason::AutoRestore));
+                }
+                // Normal case: the composed word is already correctly on screen.
+                // Finalize and let the flush character through unchanged.
             }
             return None;
         }
@@ -480,9 +519,10 @@ impl Engine {
             // Only emit Replace when Vietnamese processing CHANGED the output
             // (tone/mark keys). For simple appends, let the raw key go through.
             let expected = format!("{}{}", previous, ch);
-            if new_output != expected && new_output != previous {
+            let cased = match_casing(&self.raw_buffer, &new_output);
+            if cased != expected && cased != previous {
                 if let Some((kind, trigger, policy)) =
-                    active_telex_transform(&self.raw_buffer, ch, &new_output)
+                    active_telex_transform(&self.raw_buffer, ch, &cased)
                 {
                     let transition = if self.active_transform.is_some() {
                         TransitionKind::ReplaceActive
@@ -499,7 +539,6 @@ impl Engine {
                     self.last_transition = Some(transition);
                 }
                 self.boundary = BoundaryState::Composing;
-                let cased = match_casing(&self.raw_buffer, &new_output);
                 let reason = match self.last_transition {
                     Some(TransitionKind::ReplaceActive) => ReplacementReason::ReplaceTransform,
                     _ => ReplacementReason::ApplyTransform,
@@ -652,4 +691,23 @@ fn match_casing(raw: &str, processed: &str) -> String {
     } else {
         processed.to_string()
     }
+}
+
+fn has_natural_english_double_before_vowel(raw_lower: &str) -> bool {
+    let chars: Vec<char> = raw_lower.chars().collect();
+    if chars.windows(3).any(|w| w[0] == w[1] && w[1] == w[2]) {
+        return false;
+    }
+    for i in 0..chars.len().saturating_sub(2) {
+        let c0 = chars[i];
+        let c1 = chars[i + 1];
+        let c2 = chars[i + 2];
+        if c0 == c1
+            && matches!(c0, 's' | 'f' | 'r')
+            && matches!(c2, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+        {
+            return true;
+        }
+    }
+    false
 }

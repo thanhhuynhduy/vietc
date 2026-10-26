@@ -5,11 +5,14 @@ use cosmic_protocols::{
     toplevel_info::v1::client::{zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1},
     toplevel_management::v1::client::zcosmic_toplevel_manager_v1,
 };
-use std::time::{Duration, Instant};
+use std::{
+    os::fd::{AsFd, AsRawFd},
+    time::{Duration, Instant},
+};
 use wayland_client::{
     event_created_child,
     protocol::{wl_registry, wl_seat},
-    Connection, Dispatch, Proxy, QueueHandle,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
 };
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
@@ -229,6 +232,47 @@ fn matches_controlled_toplevel(
         })
 }
 
+fn dispatch_with_deadline(
+    connection: &Connection,
+    queue: &mut EventQueue<ActivationState>,
+    state: &mut ActivationState,
+    deadline: Instant,
+) -> Result<(), String> {
+    queue
+        .dispatch_pending(state)
+        .map_err(|error| error.to_string())?;
+    connection.flush().map_err(|error| error.to_string())?;
+
+    let Some(guard) = queue.prepare_read() else {
+        return Ok(());
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(());
+    }
+
+    let timeout_ms = remaining
+        .min(Duration::from_millis(25))
+        .as_millis()
+        .min(i32::MAX as u128) as i32;
+    let mut descriptor = libc::pollfd {
+        fd: connection.as_fd().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if result > 0 {
+        guard.read().map_err(|error| error.to_string())?;
+        queue
+            .dispatch_pending(state)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn activate_controlled_toplevel(
     title_fragment: &str,
     accepted_app_ids: &[&str],
@@ -244,9 +288,7 @@ fn activate_controlled_toplevel(
     let deadline = Instant::now() + timeout;
 
     while Instant::now() < deadline {
-        queue
-            .roundtrip(&mut state)
-            .map_err(|error| error.to_string())?;
+        dispatch_with_deadline(&connection, &mut queue, &mut state, deadline)?;
 
         let matching_handle = state
             .toplevels
@@ -292,9 +334,7 @@ fn activate_controlled_toplevel(
             while Instant::now() < deadline {
                 manager.activate(&handle, &seat);
                 connection.flush().map_err(|error| error.to_string())?;
-                queue
-                    .roundtrip(&mut state)
-                    .map_err(|error| error.to_string())?;
+                dispatch_with_deadline(&connection, &mut queue, &mut state, deadline)?;
                 if let Some(toplevel) = state
                     .toplevels
                     .iter()
