@@ -21,7 +21,7 @@ const VOWEL_SEQS: &[&str] = &[
 const LAST_CONSONANT_SEQS: &[&str] = &["ch nh", "c ng", "m n p t", "k", "c"];
 
 const CV_MATRIX: &[&[usize]] = &[
-    &[0, 1, 2, 5],
+    &[0, 1, 2, 3, 5],
     &[0, 1, 2, 3, 4, 5],
     &[0, 1, 2, 3, 5],
     &[6],
@@ -184,7 +184,13 @@ pub fn partition(word: &str) -> (String, String, String) {
     if first_vowel == 1 && chars[0] == 'q' && chars[1] == 'u' && n > 2 && is_vowel(chars[2]) {
         fc_end = 2;
     }
-    if first_vowel == 1 && chars[0] == 'g' && chars[1] == 'i' && n > 2 && is_vowel(chars[2]) {
+    if first_vowel == 1
+        && chars[0] == 'g'
+        && chars[1] == 'i'
+        && n > 2
+        && is_vowel(chars[2])
+        && chars[2] != 'ê'
+    {
         fc_end = 2;
     }
 
@@ -348,6 +354,11 @@ mod tests {
         assert!(is_valid_vietnamese_syllable("học"));
         assert!(is_valid_vietnamese_syllable("sách"));
         assert!(is_valid_vietnamese_syllable("thập"));
+        assert!(is_valid_vietnamese_syllable("bên"));
+        assert!(is_valid_vietnamese_syllable("giếng"));
+        assert!(is_valid_vietnamese_syllable("giềng"));
+        assert!(is_valid_vietnamese_syllable("giễu"));
+        assert!(is_valid_vietnamese_syllable("nhoắt"));
     }
 
     #[test]

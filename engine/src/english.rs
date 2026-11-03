@@ -594,6 +594,7 @@ impl EnglishDict {
         self.words.contains(word)
     }
 
+    #[allow(dead_code)]
     pub fn is_vietnamese_override(&self, word: &str) -> bool {
         self.vietnamese_overrides.contains(word)
     }

@@ -106,10 +106,6 @@ impl Engine {
             return false;
         }
 
-        let dict = english_dict();
-        let raw_lower = raw.to_lowercase();
-        let composed_lower = composed.to_lowercase();
-
         // If the visible output is already pure ASCII, a double-key Telex undo
         // has already stripped all Vietnamese diacritics (e.g. "tesst" -> "test",
         // "tesster" -> "tester", "offfer" -> "offer", "isssue" -> "issue",
@@ -119,23 +115,15 @@ impl Engine {
         // "ass", "class", "password") was consumed by the undo, leaving a
         // truncated word like "isue", "as", "clas", or "pasword" on screen.
         if composed.is_ascii() {
-            if dict.is_english_word(&raw_lower) || has_natural_english_double(&raw_lower) {
-                return true;
-            }
-            if dict.is_english_word(&composed_lower) {
-                return false;
-            }
-            return false;
+            let dict = english_dict();
+            let raw_lower = raw.to_lowercase();
+            return dict.is_english_word(&raw_lower) || has_natural_english_double(&raw_lower);
         }
 
-        // Genuine Vietnamese words that happen to look like English stay as-is.
-        if dict.is_vietnamese_override(&composed_lower) {
-            return false;
-        }
-        if dict.is_english_word(&raw_lower) {
-            return true;
-        }
-
+        // When the composed word carries Vietnamese diacritics, keep it whenever
+        // it is a phonologically valid Vietnamese syllable (e.g. "been" -> "bên",
+        // "too" -> "tô", "this" -> "thí", "its" -> "ít", "six" -> "sĩ", "low" -> "lơ").
+        // Only auto-restore when the composed form is not a valid Vietnamese syllable.
         !crate::spelling::is_valid_vietnamese_syllable(composed)
     }
 

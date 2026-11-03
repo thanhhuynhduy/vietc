@@ -57,6 +57,22 @@ fn vietnamese_words_are_kept() {
         ("tooi", "tôi"),
         ("banhf", "bành"),
         ("ddi", "đi"),
+        ("been", "bên"),
+        ("too", "tô"),
+        ("this", "thí"),
+        ("its", "ít"),
+        ("six", "sĩ"),
+        ("test", "tét"),
+        ("has", "há"),
+        ("his", "hí"),
+        ("how", "hơ"),
+        ("now", "nơ"),
+        ("low", "lơ"),
+        ("see", "sê"),
+        ("most", "mót"),
+        ("turn", "tủn"),
+        ("own", "ơn"),
+        ("gieengs", "giếng"),
     ];
     for (keys, want) in cases {
         assert_eq!(committed(keys), want, "expected {keys} to stay {want}");
