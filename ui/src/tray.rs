@@ -65,8 +65,6 @@ fn read_status(fallback: &str) -> String {
     }
 }
 
-
-
 fn ensure_icons() {
     // SVG content for Viet+ icons
     let svg_vn = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
@@ -341,7 +339,9 @@ impl Tray for VietTray {
                     let mut cfg = config::Config::load();
                     cfg.start_enabled = next_mode == "vn";
                     cfg.input_method = next_im.into();
-                    let _ = cfg.save();
+                    if let Err(error) = cfg.save() {
+                        eprintln!("[vietc-tray] Could not save mode configuration: {error}");
+                    }
                     this.mode = next_mode.to_string();
                     this.im = next_im.to_string();
                 }),
@@ -363,7 +363,9 @@ impl Tray for VietTray {
                         let mut cfg = config::Config::load();
                         cfg.start_enabled = mode == "vn";
                         cfg.input_method = im.into();
-                        let _ = cfg.save();
+                        if let Err(error) = cfg.save() {
+                            eprintln!("[vietc-tray] Could not save mode configuration: {error}");
+                        }
                         this.mode = mode.into();
                         this.im = im.into();
                     }),
@@ -504,7 +506,10 @@ pub fn run() {
                     libc::inotify_add_watch(
                         inotify_fd,
                         c_path.as_ptr(),
-                        libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_MODIFY | libc::IN_CREATE,
+                        libc::IN_CLOSE_WRITE
+                            | libc::IN_MOVED_TO
+                            | libc::IN_MODIFY
+                            | libc::IN_CREATE,
                     )
                 };
             }
@@ -525,19 +530,31 @@ pub fn run() {
                 };
                 let res = unsafe { libc::poll(&mut pfd, 1, 500) };
                 if res > 0 && (pfd.revents & libc::POLLIN) != 0 {
-                    while unsafe { libc::read(inotify_fd, buffer.as_mut_ptr() as *mut libc::c_void, buffer.len()) } > 0 {}
+                    while unsafe {
+                        libc::read(
+                            inotify_fd,
+                            buffer.as_mut_ptr() as *mut libc::c_void,
+                            buffer.len(),
+                        )
+                    } > 0
+                    {}
                 }
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 if inotify_fd < 0 {
-                    inotify_fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+                    inotify_fd =
+                        unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
                     if inotify_fd >= 0 {
-                        if let Ok(c_path) = std::ffi::CString::new(dir.to_string_lossy().as_bytes()) {
+                        if let Ok(c_path) = std::ffi::CString::new(dir.to_string_lossy().as_bytes())
+                        {
                             wd = unsafe {
                                 libc::inotify_add_watch(
                                     inotify_fd,
                                     c_path.as_ptr(),
-                                    libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_MODIFY | libc::IN_CREATE,
+                                    libc::IN_CLOSE_WRITE
+                                        | libc::IN_MOVED_TO
+                                        | libc::IN_MODIFY
+                                        | libc::IN_CREATE,
                                 )
                             };
                         }

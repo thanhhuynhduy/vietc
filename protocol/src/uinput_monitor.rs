@@ -915,7 +915,7 @@ impl KeyInjector for UinputInjector {
         }
 
         // Fallback: clipboard copy + paste
-        if self.paste_via_clipboard(s, self.current_focus_generation()) {
+        if self.paste_via_clipboard(s, 0, self.current_focus_generation()) {
             InjectResult::Success
         } else {
             eprintln!("[vietc] Unicode insertion failed: clipboard unavailable");
@@ -1152,22 +1152,38 @@ impl UinputInjector {
         // Keep delete and insert on the same uinput channel. Mixing uinput
         // Backspace with Wayland virtual-keyboard text can crash Microsoft Edge
         // with SIGILL even for a minimal replacement such as `Da` -> `Dạ`.
-        if backspaces > 0 {
-            if self.send_backspaces(backspaces).is_err() {
-                return InjectResult::Failed;
-            }
-            // Let the focused application consume the complete delete phase
-            // before Ctrl+V starts the insert phase. Without this boundary,
-            // Chromium-family clients can process the paste after only part of
-            // the Backspace batch, leaving the first raw character duplicated.
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        if self.paste_via_clipboard(text, focus_generation) {
+        // Prepare and verify the clipboard BEFORE sending Backspaces so a
+        // clipboard failure never deletes the user's already-typed characters.
+        if self.paste_via_clipboard(text, backspaces, focus_generation) {
             InjectResult::Success
         } else {
             eprintln!("[vietc] Unicode insertion failed: clipboard unavailable");
             InjectResult::Failed
+        }
+    }
+
+    fn run_cmd_with_timeout(
+        mut cmd: std::process::Command,
+        timeout: Duration,
+    ) -> Option<std::process::Output> {
+        cmd.stdin(std::process::Stdio::null());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().ok()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return child.wait_with_output().ok(),
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return None;
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(_) => return None,
+            }
         }
     }
 
@@ -1182,7 +1198,7 @@ impl UinputInjector {
         };
         let mut cmd = Self::user_cmd(prog).ok()?;
         cmd.args(args);
-        let output = cmd.output().ok()?;
+        let output = Self::run_cmd_with_timeout(cmd, Duration::from_millis(250))?;
         if !output.status.success() {
             return None;
         }
@@ -1198,7 +1214,7 @@ impl UinputInjector {
         }
         let mut cmd = Self::user_cmd("wl-paste").ok()?;
         cmd.args(["-l"]);
-        let output = cmd.output().ok()?;
+        let output = Self::run_cmd_with_timeout(cmd, Duration::from_millis(250))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return stderr
@@ -1225,7 +1241,7 @@ impl UinputInjector {
             ClipboardKind::Other(mime) => {
                 let mut cmd = Self::user_cmd("wl-paste").ok()?;
                 cmd.args(["--type", &mime]);
-                let output = cmd.output().ok()?;
+                let output = Self::run_cmd_with_timeout(cmd, Duration::from_millis(250))?;
                 if !output.status.success() || output.stdout.len() > MAX_BINARY_CLIPBOARD_BYTES {
                     return None;
                 }
@@ -1286,13 +1302,12 @@ impl UinputInjector {
         last
     }
 
-    /// Inject Unicode `text` by placing it on the clipboard and sending Ctrl+V,
-    /// while preserving the user's own clipboard contents. Without this, every
-    /// Vietnamese word the user types would overwrite whatever they had copied
-    /// with Ctrl+C, so a subsequent Ctrl+V would paste the wrong thing.
-    ///
-    /// Returns whether the text was successfully copied to the clipboard.
-    fn paste_via_clipboard(&self, text: &str, focus_generation: u64) -> bool {
+    /// Inject Unicode `text` by placing it on the clipboard, sending
+    /// `backspaces`, and sending Ctrl+V, while preserving the user's own
+    /// clipboard contents. Preparing and verifying the clipboard before
+    /// sending Backspaces ensures that a clipboard failure never deletes the
+    /// user's on-screen characters.
+    fn paste_via_clipboard(&self, text: &str, backspaces: usize, focus_generation: u64) -> bool {
         let t_total = std::time::Instant::now();
         let _clipboard_io = self.clip.io_lock.lock().unwrap();
 
@@ -1355,6 +1370,21 @@ impl UinputInjector {
             debug_assert!(transitioned);
         }
         trace_clipboard(sequence_id, "clipboard_written", "state=verified");
+
+        if backspaces > 0 {
+            if self.send_backspaces(backspaces).is_err() {
+                let mut st = self.clip.inner.lock().unwrap();
+                st.burst.mark_failed(sequence_id);
+                trace_clipboard(sequence_id, "failed", "phase=backspace-dispatch");
+                st.burst.reset();
+                return false;
+            }
+            // Let the focused application consume the complete delete phase
+            // before Ctrl+V starts the insert phase. Without this boundary,
+            // Chromium-family clients can process the paste after only part of
+            // the Backspace batch, leaving the first raw character duplicated.
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         if self.send_ctrl_v().is_err() {
             let mut st = self.clip.inner.lock().unwrap();

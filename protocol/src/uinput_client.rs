@@ -23,8 +23,21 @@ impl UinputClient {
             return InjectResult::Failed;
         };
 
+        Self::send_command_to(&socket_path, cmd)
+    }
+
+    fn send_command_to(socket_path: &std::path::Path, cmd: &str) -> InjectResult {
+        if cmd.contains(['\n', '\r']) {
+            return InjectResult::NotSupported;
+        }
         match UnixStream::connect(socket_path) {
             Ok(mut stream) => {
+                let timeout = Some(std::time::Duration::from_secs(5));
+                if stream.set_read_timeout(timeout).is_err()
+                    || stream.set_write_timeout(timeout).is_err()
+                {
+                    return InjectResult::Failed;
+                }
                 if writeln!(stream, "{}", cmd).is_err() {
                     return InjectResult::Failed;
                 }
@@ -51,16 +64,19 @@ impl UinputClient {
 }
 
 impl KeyInjector for UinputClient {
-    fn send_key_event(&self, _keycode: u16, _value: i32) -> InjectResult {
-        InjectResult::Success
+    fn send_key_event(&self, keycode: u16, value: i32) -> InjectResult {
+        if keycode > 0x1ff || !(0..=2).contains(&value) {
+            return InjectResult::NotSupported;
+        }
+        Self::send_command(&format!("KEY:{keycode}:{value}"))
     }
 
     fn send_backspace(&self) -> InjectResult {
-        InjectResult::Success
+        Self::send_command("BACKSPACE:1")
     }
 
-    fn send_char(&self, _ch: char) -> InjectResult {
-        InjectResult::Success
+    fn send_char(&self, ch: char) -> InjectResult {
+        self.send_string(&ch.to_string())
     }
 
     fn send_string(&self, s: &str) -> InjectResult {
@@ -83,6 +99,71 @@ impl KeyInjector for UinputClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unimplemented_key_operations_must_not_claim_success() {
+        // A raw key must either be delivered or explicitly unsupported.
+        assert_ne!(UinputClient.send_key_event(30, -1), InjectResult::Success);
+    }
+
+    #[test]
+    fn socket_request_requires_server_acknowledgement() {
+        use std::os::unix::net::UnixListener;
+        let path = std::env::temp_dir().join(format!("vietc-client-{}.sock", std::process::id()));
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            for (command, response) in [
+                ("KEY:30:1", "OK"),
+                ("BACKSPACE:1", "ERR write failed"),
+                ("TYPE:á", "OK"),
+                ("TYPE: ", "OK"),
+                ("TYPE:\t", "OK"),
+                ("REPLACE:2: a \t", "OK"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(&stream).read_line(&mut request).unwrap();
+                assert_eq!(request, format!("{command}\n"));
+                writeln!(stream, "{response}").unwrap();
+            }
+        });
+        assert_eq!(
+            UinputClient::send_command_to(&path, "KEY:30:1"),
+            InjectResult::Success
+        );
+        assert_eq!(
+            UinputClient::send_command_to(&path, "BACKSPACE:1"),
+            InjectResult::Failed
+        );
+        assert_eq!(
+            UinputClient::send_command_to(&path, "TYPE:á"),
+            InjectResult::Success
+        );
+        for command in ["TYPE: ", "TYPE:\t", "REPLACE:2: a \t"] {
+            assert_eq!(
+                UinputClient::send_command_to(&path, command),
+                InjectResult::Success
+            );
+        }
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn newline_framing_is_rejected_before_connecting() {
+        let path = std::path::Path::new("");
+        for command in [
+            "TYPE:\n",
+            "TYPE:\r",
+            "TYPE:a\nKEY:30:1",
+            "REPLACE:1:a\r\nBACKSPACE:1",
+        ] {
+            assert_eq!(
+                UinputClient::send_command_to(path, command),
+                InjectResult::NotSupported
+            );
+        }
+    }
 
     #[test]
     fn socket_path_matches_uinputd_runtime_contract() {

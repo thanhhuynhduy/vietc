@@ -230,6 +230,11 @@ pub fn is_valid_vietnamese_syllable(word: &str) -> bool {
         return false;
     }
 
+    // A valid single Vietnamese syllable has at most one tone mark.
+    if lowercase_word.chars().filter(|&c| strip_tone(c) != c).count() > 1 {
+        return false;
+    }
+
     // Clean tones from the word to validate spelling structure
     let cleaned_word: String = lowercase_word.chars().map(strip_tone).collect();
 

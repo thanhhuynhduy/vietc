@@ -6,6 +6,27 @@
 
 ## Chưa phát hành (Unreleased)
 
+### Bảo mật và sửa lỗi sau audit
+
+- Bỏ quyền `0666` trên thiết bị input; cấp quyền theo phiên đăng nhập đang hoạt động. Khi nâng cấp, thu hồi world-access cũ; khi gỡ, thử xóa ACL mở rộng rồi áp dụng lại udev rules của distro. **Chính sách trên máy chỉ thay đổi khi chạy installer/uninstaller mới.** Việc xóa ACL cũng ảnh hưởng ACL tùy chỉnh; thiếu `setfacl` hoặc lỗi udev được báo để quản trị viên xử lý.
+- Cố định PATH cho thao tác root; không tự sửa shell profile của user bằng root.
+- **Đồng bộ tuyệt đối màn hình (`screen`) & `engine.buffer()` trong Telex/VNI**: Ngăn bộ khớp mũ `aa`/`ee`/`oo` vượt qua ký tự `'w'` hoặc ghi đè nguyên âm đã mang dấu trăng/móc (`"awa"` → `"wa"`, `"owo"` → `"wo"`); chỉ hoàn tác `"ww"` khi ký tự `'w'` đầu đã được tiêu thụ; bổ sung hoàn tác phím dấu lặp lại trong chế độ VNI (`"a11"` → `"a1"`, `"a112"` → `"a12"`).
+- **Bảo vệ tiền tố văn bản & xử lý `Paste` / `ReplacementFailed`**: Tách `pasted_prefix` khỏi `raw_buffer` khi nhận `PhysicalEvent::Paste` để `Backspace` hoặc phím dấu tiếp theo không biến đổi ngược văn bản vừa dán; theo dõi độ dài thực tế trên màn hình khi `ReplacementFailed` để `Backspace` và lần thay thế kế tiếp không xóa lẹm vào văn bản đứng trước từ đang gõ.
+- **Chuẩn hóa ngữ âm, Macro VNI & English Auto-Restore**: Nhận diện chính xác âm đệm `qu` và `gi` (`"qua"`, `"gia"`, `"quyen"`, `"gieng"`) là `ParseStatus::Complete`; xóa dấu thanh cũ trước khi chuyển vị trí dấu trong VNI (`"ho1a2"` → `"hoà"`) và từ chối âm tiết có trên 1 nguyên âm mang dấu thanh; thống nhất xử lý macro tại ranh giới từ cho cả VNI và Telex; mở rộng `auto_restore` cho các từ tiếng Anh có `'ss'` (`"ass"`, `"class"`, `"password"`).
+- **Nhất quán metadata của State Machine**: Chuyển `BoundaryState` sang `Composing` ngay khi gõ ký tự thường sau `Committed`, và chuẩn hóa chữ thường khi xác định `active_transform` (`"asw"` → `Mark("aw")`, `"UOW"` → `Mark("uo+w")`).
+- **Daemon `evdev_loop` & theo dõi focus AT-SPI**: Kiểm tra thay đổi `status` và `config.toml` ngay cả khi chu kỳ `poll` bàn phím rỗng; kiểm tra đổi focus và ô mật khẩu trước nhánh `KEY_BACKSPACE` và `!is_enabled()` để tự bật lại tiếng Việt khi rời ô mật khẩu trong cùng cửa sổ và reset composition trước khi xóa ký tự ở ô mới; kết hợp `sender` và `object_path` (`atspi:<sender>:<path>`) để nhận diện chuyển đổi giữa các ô nhập liệu trong cùng một cửa sổ.
+- **IBus engine (`ibus_engine`)**: Xử lý `SetContentType` và thuộc tính `ContentType` (`IBUS_INPUT_PURPOSE_PASSWORD` / `PIN`) để tự động commit preedit và tắt ghép chữ trong ô mật khẩu/PIN; tự động commit preedit trước khi chuyển chế độ bằng `Ctrl+Space` hoặc đổi phương thức gõ; không flush preedit khi nhấn các phím bổ trợ đơn thuần (`Shift`, `Ctrl`, `CapsLock`, `Alt`, `Super`, `ISO_Level3_Shift`).
+- **Wayland Input Method (`wayland_im`)**: Bổ sung `conn.flush()`, `conn.prepare_read()` + `poll` và `guard.read()` trong vòng lặp sự kiện `run_wayland_im`; kiểm tra thêm phím `Super` (`MOD_NAME_LOGO`) và tự động commit preedit khi nhấn các phím điều hướng/biên tập (`Tab`, `Arrows`, `Home`, `End`, `PageUp/Down`, `Delete`, `F1..F12`).
+- **Bảo vệ dữ liệu khi dán Unicode (`uinput_monitor`)**: Chuẩn bị và xác thực ghi clipboard thành công (`ClipboardWritten`) **trước** khi gửi chuỗi `Backspace` xóa ký tự của người dùng; giới hạn thời gian chạy (timeout 250ms) cho tiến trình con đọc clipboard (`wl-paste`, `xclip`) để tránh treo vòng lặp nhập liệu.
+- Đồng bộ Backspace giữa raw history và màn hình ở cả chế độ grab/forwarded; nhả và khôi phục Shift khi replacement.
+- Dùng cùng Telex backend cho buffer và replacement; lưu trạng thái grab/consume theo từng bàn phím, kể cả hotplug.
+- Gửi phím thật qua socket, kiểm tra lỗi ghi trước ACK và giữ khoảng trắng của payload. Protocol dòng hiện tại từ chối rõ ràng payload chứa CR/LF.
+- Tránh tự chờ clipboard X11 của chính mình; giới hạn thời gian đọc clipboard bên ngoài và tiếp tục xử lý selection requests.
+- Tray giữ các cấu hình daemon chưa biết, ghi config atomic và giám sát/reap daemon ở background.
+- Bỏ cờ first-launch: có thể hỏi lại mật khẩu nếu thiết bị vẫn cần quyền nâng cao ở lần chạy sau.
+- Migration đưa IBus flags về root TOML, sửa cả boolean bị append nhầm vào macros; giữ giá trị cấu hình tay trừ khi dùng `--ibus`.
+- Sửa test targets trong Makefile và thêm CI headless an toàn. Chưa tự động xác minh input trên desktop thật.
+
 ### Tái cấu trúc mô-đun (Modular Refactoring)
 
 - **Tách tệp main.rs từ 2151 dòng thành 11 mô-đun chuyên biệt**: Mỗi mô-đun đảm nhận một trách nhiệm duy nhất — `event.rs` (điều hướng sự kiện thuần túy, có thể kiểm thử không cần I/O), `evdev_loop.rs` (chỉ vòng lặp poll), `inject.rs` (thực thi lệnh), `daemon.rs` (cấu trúc Daemon + process_key/toggle/replay), `device.rs` (phát hiện bàn phím + phân quyền), `signal.rs` (xử lý tín hiệu + khóa đơn phiên), `stdin.rs` (chế độ stdin với vòng lặp thử lại), `x11_capture.rs` (X11 RECORD + bắt bàn phím), `env.rs` (phục hồi DISPLAY/DBUS), `commands.rs` (enum OutputCommand), `log.rs` (xoay vòng nhật ký).

@@ -73,20 +73,27 @@ build-dev:
 test:
 	cargo test
 
-# Headless deterministic CI smoke suite
+CARGO_FLAGS ?= --locked
+HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY
+
+# Explicit targets keep live device/desktop tests out, even when run as root.
 test-ci-smoke:
-	env -u DISPLAY -u WAYLAND_DISPLAY VIETC_PROPERTY_PROFILE=smoke cargo test -p vietc-engine --test state_machine_properties
-	env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p vietc-daemon --test deterministic_ci -- --test-threads=1
-	env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p vietc-daemon --test runtime deterministic_ -- --test-threads=1
-	cargo test -p vietc-protocol
+	python3 scripts/test_installer.py
+	python3 scripts/test_build_targets.py
+	bash -n install.sh uninstall.sh
+	$(HEADLESS) cargo test --workspace --lib --bins $(CARGO_FLAGS)
+	$(HEADLESS) VIETC_PROPERTY_PROFILE=smoke cargo test -p vietc-engine --tests $(CARGO_FLAGS)
+	$(HEADLESS) cargo test -p vietc-daemon --test deterministic_ci --test typing_corpus $(CARGO_FLAGS) -- --test-threads=1
+	$(HEADLESS) cargo test -p vietc-daemon --test daemon_suite runtime::deterministic_ $(CARGO_FLAGS) -- --test-threads=1
+	$(HEADLESS) cargo test --workspace --doc $(CARGO_FLAGS)
 
 # Opt-in controlled runtime targets; requires a disposable GUI session and target dependencies
 test-runtime-targets:
-	VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test runtime privileged_runtime_targets_execute_controlled_scenarios -- --ignored --nocapture --test-threads=1
+	VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test daemon_suite runtime::privileged_runtime_targets_execute_controlled_scenarios $(CARGO_FLAGS) -- --ignored --nocapture --test-threads=1
 
 # Opt-in privileged runtime capability evidence; does not launch unvalidated desktop fixtures
 test-runtime-matrix:
-	VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test runtime privileged_runtime_matrix_records_exact_ready_and_skip_evidence -- --ignored --nocapture --test-threads=1
+	VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite runtime::privileged_runtime_matrix_records_exact_ready_and_skip_evidence $(CARGO_FLAGS) -- --ignored --nocapture --test-threads=1
 
 # Opt-in exhaustive deterministic property budget
 test-properties-exhaustive:

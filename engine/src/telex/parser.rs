@@ -89,7 +89,7 @@ pub fn parse(input: &str) -> ParsedSyllable {
     let status = if keys.is_empty() || nucleus.is_empty() {
         ParseStatus::Incomplete
     } else if coda.chars().any(is_vowel)
-        || onset.chars().any(is_vowel)
+        || (glide.is_none() && onset.chars().any(is_vowel))
         || !is_valid_onset(&onset)
         || !is_valid_coda(&coda)
     {

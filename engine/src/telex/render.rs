@@ -67,17 +67,23 @@ fn toned(base: char, tone: Tone) -> char {
 }
 
 pub fn resolve_and_render(input: &str) -> String {
-    let boundary = input
+    let prefix_end = input
+        .char_indices()
+        .find(|(_, ch)| ch.is_alphabetic())
+        .map(|(i, _)| i)
+        .unwrap_or(input.len());
+    let (prefix, rest) = input.split_at(prefix_end);
+    let boundary = rest
         .char_indices()
         .find(|(_, ch)| !ch.is_alphabetic())
         .map(|(i, _)| i)
-        .unwrap_or(input.len());
-    let (word, suffix) = input.split_at(boundary);
+        .unwrap_or(rest.len());
+    let (word, suffix) = rest.split_at(boundary);
     let raw: Vec<char> = word.chars().collect();
     let marks = mark::resolve(&raw);
     let tones = tone::resolve(&raw, &marks);
 
-    let mut output = String::new();
+    let mut output = String::from(prefix);
     for i in 0..raw.len() {
         if tones.consumed[i] {
             continue;

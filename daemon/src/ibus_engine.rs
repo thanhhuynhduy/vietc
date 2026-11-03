@@ -122,6 +122,10 @@ const ENGINE_INTROSPECTION: &str = r#"<node>
       <arg direction='in' type='u' name='cursor_pos' />
       <arg direction='in' type='u' name='anchor_pos' />
     </method>
+    <method name='SetContentType'>
+      <arg direction='in' type='u' name='purpose' />
+      <arg direction='in' type='u' name='hints' />
+    </method>
     <signal name='CommitText'>
       <arg type='v' name='text' />
     </signal>
@@ -184,6 +188,7 @@ const ENGINE_INTROSPECTION: &str = r#"<node>
 struct EngineContext {
     engine: Engine,
     enabled: bool,
+    password_bypass: bool,
     focus_id: bool,
     preedit: String,
     dedup: crate::key_dedup::DedupState,
@@ -203,6 +208,18 @@ struct IBusState {
     last_ctrl_space: Mutex<std::time::Instant>,
 }
 
+/// Returns true if the IBus InputPurpose represents a password or PIN field
+/// (`IBUS_INPUT_PURPOSE_PASSWORD = 8`, `IBUS_INPUT_PURPOSE_PIN = 9`).
+fn is_password_purpose(purpose: u32) -> bool {
+    matches!(purpose, 8 | 9)
+}
+
+/// Returns true for pure modifier keys (Shift, Control, Caps/Shift Lock,
+/// Alt/Meta/Super/Hyper, ISO_Level3_Shift) that should not flush active preedit.
+fn is_modifier_keyval(keyval: u32) -> bool {
+    (0xFFE1..=0xFFEE).contains(&keyval) || (0xFE01..=0xFE15).contains(&keyval)
+}
+
 /// Maps an IBus keyval to a Unicode char we can feed the vietc engine.
 /// Returns `None` for function keys (BackSpace is handled specially by the
 /// caller). IBus keyvals for printable characters equal their Unicode
@@ -213,8 +230,8 @@ fn keyval_to_char(keyval: u32) -> Option<char> {
         return Some('\x08');
     }
     if (0x20..=0x10FFFF).contains(&keyval) {
-        if (0xFF00..=0xFFFF).contains(&keyval) {
-            return None; // XKB / function keys
+        if (0xFF00..=0xFFFF).contains(&keyval) || (0xFE00..=0xFEFF).contains(&keyval) {
+            return None; // XKB / function / modifier keys
         }
         char::from_u32(keyval)
     } else {
@@ -618,7 +635,8 @@ pub fn run_ibus_engine(
                 if *method_guard != new_im {
                     *method_guard = new_im;
                     let mut contexts = state.contexts.lock().unwrap();
-                    for (_, ctx) in contexts.iter_mut() {
+                    for (ctx_path, ctx) in contexts.iter_mut() {
+                        flush_preedit(ctx, &conn, ctx_path);
                         ctx.engine.set_method(new_im);
                         ctx.engine.reset();
                     }
@@ -722,6 +740,11 @@ fn handle_message(state: &Arc<IBusState>, conn: &Connection, msg: &Message) {
                 set_enabled(state, path, false, conn);
                 reply_empty(msg, conn);
             }
+            "SetContentType" => {
+                let (purpose, _hints): (u32, u32) = msg.read2().unwrap_or((0, 0));
+                set_content_type(state, path, purpose, conn);
+                reply_empty(msg, conn);
+            }
             _ => reply_empty(msg, conn),
         }
         return;
@@ -769,6 +792,16 @@ fn handle_message(state: &Arc<IBusState>, conn: &Connection, msg: &Message) {
                 let _ = conn.send(reply);
             }
             "Set" => {
+                let items = msg.get_items();
+                if items.len() >= 3 {
+                    if let MessageItem::Str(prop) = &items[1] {
+                        if prop == "ContentType" {
+                            if let Some(purpose) = extract_content_type_purpose(&items[2]) {
+                                set_content_type(state, path, purpose, conn);
+                            }
+                        }
+                    }
+                }
                 reply_empty(msg, conn);
             }
             _ => reply_empty(msg, conn),
@@ -811,6 +844,7 @@ fn create_engine(state: &IBusState, conn: &Connection, _name: &str) -> String {
     let ctx = EngineContext {
         engine,
         enabled: true,
+        password_bypass: false,
         focus_id: false,
         preedit: String::new(),
         dedup: crate::key_dedup::DedupState::new(),
@@ -839,10 +873,36 @@ fn flush_preedit(ctx: &mut EngineContext, conn: &Connection, path: &str) {
     ctx.engine.reset();
 }
 
+fn extract_content_type_purpose(item: &MessageItem) -> Option<u32> {
+    let inner = match item {
+        MessageItem::Variant(v) => v.as_ref(),
+        other => other,
+    };
+    if let MessageItem::Struct(fields) = inner {
+        if let Some(MessageItem::UInt32(purpose)) = fields.first() {
+            return Some(*purpose);
+        }
+    }
+    None
+}
+
+fn set_content_type(state: &IBusState, path: &str, purpose: u32, conn: &Connection) {
+    if let Some(ctx) = state.contexts.lock().unwrap().get_mut(path) {
+        let bypass = is_password_purpose(purpose);
+        ctx.password_bypass = bypass;
+        if bypass {
+            flush_preedit(ctx, conn, path);
+        } else {
+            ctx.engine.reset();
+        }
+    }
+}
+
 fn set_focus(state: &IBusState, path: &str, focused: bool, conn: &Connection) {
     if let Some(ctx) = state.contexts.lock().unwrap().get_mut(path) {
         ctx.focus_id = focused;
         if !focused {
+            ctx.password_bypass = false;
             flush_preedit(ctx, conn, path);
         } else {
             ctx.engine.reset();
@@ -930,15 +990,12 @@ fn handle_process_key_event(
         state.engine_enabled.store(new_enabled, Ordering::SeqCst);
         *method_guard = new_method;
 
-        // Update all existing engine instances
+        // Commit any active preedit before switching mode/method so no text is lost
         let mut contexts = state.contexts.lock().unwrap();
         for (ctx_path, ctx) in contexts.iter_mut() {
+            flush_preedit(ctx, conn, ctx_path);
             ctx.engine.set_method(new_method);
             ctx.engine.reset();
-            if !ctx.preedit.is_empty() {
-                ctx.preedit.clear();
-                emit_update_preedit(conn, ctx_path, "");
-            }
         }
         emit_update_preedit(conn, path, "");
 
@@ -987,7 +1044,7 @@ fn handle_process_key_event(
         None => return false,
     };
 
-    if !ctx.enabled {
+    if !ctx.enabled || ctx.password_bypass {
         return false;
     }
 
@@ -1049,8 +1106,10 @@ fn handle_process_key_event(
     let ch = match keyval_to_char(keyval) {
         Some(c) => c,
         None => {
-            // Function keys (F1-F12), Insert, etc.: commit active preedit before passing through
-            flush_preedit(ctx, conn, path);
+            if !is_modifier_keyval(keyval) {
+                // Function keys (F1-F12), Insert, etc.: commit active preedit before passing through
+                flush_preedit(ctx, conn, path);
+            }
             return false;
         }
     };
@@ -1253,4 +1312,28 @@ mod tests {
         assert!(is_flush_char('-'));
         assert!(is_flush_char('_'));
     }
+
+    #[test]
+    fn modifier_keyvals_are_not_treated_as_flush_keys() {
+        assert!(is_modifier_keyval(0xFFE1)); // Shift_L
+        assert!(is_modifier_keyval(0xFFE2)); // Shift_R
+        assert!(is_modifier_keyval(0xFFE3)); // Control_L
+        assert!(is_modifier_keyval(0xFFE5)); // Caps_Lock
+        assert!(is_modifier_keyval(0xFE03)); // ISO_Level3_Shift
+        assert!(!is_modifier_keyval(0xFFBE)); // F1
+    }
+
+    #[test]
+    fn content_type_purpose_detects_password_and_pin() {
+        assert!(is_password_purpose(8)); // IBUS_INPUT_PURPOSE_PASSWORD
+        assert!(is_password_purpose(9)); // IBUS_INPUT_PURPOSE_PIN
+        assert!(!is_password_purpose(0)); // IBUS_INPUT_PURPOSE_FREE_FORM
+
+        let variant = MessageItem::Variant(Box::new(MessageItem::Struct(vec![
+            MessageItem::UInt32(8),
+            MessageItem::UInt32(0),
+        ])));
+        assert_eq!(extract_content_type_purpose(&variant), Some(8));
+    }
 }
+

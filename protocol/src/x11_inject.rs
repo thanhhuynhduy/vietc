@@ -120,6 +120,50 @@ fn wait_for_supported_selection(
     }
 }
 
+fn read_child_output(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    mut pump_events: impl FnMut(),
+) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+
+    let result = (|| {
+        let mut stdout = child.stdout.take()?;
+        let fd = stdout.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return None;
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        let mut output = Vec::new();
+        let mut buffer = [0; 8192];
+        let mut exited: Option<bool> = None;
+        loop {
+            pump_events();
+            match stdout.read(&mut buffer) {
+                Ok(0) if exited.is_some() => return exited.unwrap().then_some(output),
+                Ok(size) => output.extend_from_slice(&buffer[..size]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return None,
+            }
+            if output.len() > 16 * 1024 * 1024 || std::time::Instant::now() >= deadline {
+                return None;
+            }
+            if exited.is_none() {
+                exited = child.try_wait().ok()?.map(|status| status.success());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    })();
+    if result.is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    result
+}
+
 struct X11Lib {
     _x11_library: DynamicLibrary<'static>,
     _xtst_library: DynamicLibrary<'static>,
@@ -131,6 +175,7 @@ struct X11Lib {
     x_test_fake_key_event: unsafe extern "C" fn(*mut Display, u32, c_int, u64) -> c_int,
     x_intern_atom: unsafe extern "C" fn(*mut Display, *const c_char, c_int) -> Atom,
     x_set_selection_owner: unsafe extern "C" fn(*mut Display, Atom, Window, Time) -> c_int,
+    x_get_selection_owner: unsafe extern "C" fn(*mut Display, Atom) -> Window,
     x_change_property: unsafe extern "C" fn(
         *mut Display,
         Window,
@@ -179,6 +224,7 @@ impl X11Lib {
             let x_flush = x11_library.symbol(c"XFlush")?;
             let x_intern_atom = x11_library.symbol(c"XInternAtom")?;
             let x_set_selection_owner = x11_library.symbol(c"XSetSelectionOwner")?;
+            let x_get_selection_owner = x11_library.symbol(c"XGetSelectionOwner")?;
             let x_change_property = x11_library.symbol(c"XChangeProperty")?;
             let x_send_event = x11_library.symbol(c"XSendEvent")?;
             let x_create_simple_window = x11_library.symbol(c"XCreateSimpleWindow")?;
@@ -200,6 +246,7 @@ impl X11Lib {
                 x_test_fake_key_event,
                 x_intern_atom,
                 x_set_selection_owner,
+                x_get_selection_owner,
                 x_change_property,
                 x_send_event,
                 x_create_simple_window,
@@ -364,15 +411,27 @@ impl X11Injector {
         }
     }
 
-    fn read_external_clipboard() -> Option<String> {
-        let output = std::process::Command::new("xclip")
+    fn owns_clipboard(&self) -> bool {
+        unsafe {
+            (self.lib.x_get_selection_owner)(self.display, self.atom_clipboard)
+                == self.clipboard_window
+        }
+    }
+
+    fn read_clipboard(&self) -> Option<String> {
+        if self.owns_clipboard() {
+            return Some(self.clipboard_text.borrow().clone());
+        }
+        let mut child = std::process::Command::new("xclip")
             .args(["-selection", "clipboard", "-o"])
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
             .ok()?;
-        output
-            .status
-            .success()
-            .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        let output = read_child_output(&mut child, SELECTION_REQUEST_TIMEOUT, || {
+            self.handle_pending_events()
+        })?;
+        Some(String::from_utf8_lossy(&output).into_owned())
     }
 
     fn write_external_clipboard(text: &str) -> bool {
@@ -398,11 +457,12 @@ impl X11Injector {
     }
 
     fn restore_clipboard_if_unchanged(&self) {
-        let current = Self::read_external_clipboard();
+        let owns_selection = self.owns_clipboard();
+        let current = owns_selection.then(|| self.clipboard_text.borrow().clone());
         let action = self
             .clipboard_state
             .borrow_mut()
-            .restore_action(true, current.as_deref());
+            .restore_action(owns_selection, current.as_deref());
         if let X11ClipboardAction::Restore(saved) = action {
             let _ = Self::write_external_clipboard(&saved);
         }
@@ -530,7 +590,7 @@ impl X11Injector {
     fn paste_via_clipboard(&self, backspaces: usize, text: &str) -> bool {
         self.selection_served.set(false);
 
-        let previous_clipboard = Self::read_external_clipboard();
+        let previous_clipboard = self.read_clipboard();
         self.clipboard_state
             .borrow_mut()
             .begin(previous_clipboard, text);
@@ -612,11 +672,12 @@ impl X11Injector {
 
 impl Drop for X11Injector {
     fn drop(&mut self) {
-        let current = Self::read_external_clipboard();
+        let owns_selection = self.owns_clipboard();
+        let current = owns_selection.then(|| self.clipboard_text.borrow().clone());
         let action = self
             .clipboard_state
             .get_mut()
-            .shutdown_action(true, current.as_deref());
+            .shutdown_action(owns_selection, current.as_deref());
         if let X11ClipboardAction::Restore(saved) = action {
             let _ = Self::write_external_clipboard(&saved);
         }
@@ -831,6 +892,22 @@ mod clipboard_paste_tests {
     use super::*;
     use std::cell::Cell;
     use std::time::Duration;
+
+    #[test]
+    fn external_clipboard_read_is_bounded_and_reaps_child() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pumped = Cell::new(0);
+        assert!(
+            read_child_output(&mut child, Duration::ZERO, || pumped.set(pumped.get() + 1))
+                .is_none()
+        );
+        assert!(pumped.get() > 0);
+        assert!(child.try_wait().unwrap().is_some());
+    }
 
     #[test]
     fn supported_selection_request_before_deadline_succeeds() {

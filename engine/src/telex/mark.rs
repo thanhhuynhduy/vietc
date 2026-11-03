@@ -64,10 +64,11 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         if matches!(current, 'a' | 'e' | 'o') {
             let matching = (0..i).rev().find(|&j| {
                 lower(raw[j]) == current
+                    && marks[j] == VowelMark::None
                     && raw[j + 1..i].iter().all(|&ch| {
                         matches!(
                             lower(ch),
-                            'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 's' | 'f' | 'r' | 'x' | 'j' | 'w'
+                            'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 's' | 'f' | 'r' | 'x' | 'j'
                         )
                     })
             });
@@ -145,7 +146,7 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         .enumerate()
         .filter_map(|(i, &ch)| (lower(ch) == 'w').then_some(i))
         .collect::<Vec<_>>();
-    if w_positions.len() >= 2 {
+    if w_positions.len() >= 2 && consumed[w_positions[0]] {
         let last_applies_distinct_mark = marks
             .iter()
             .enumerate()

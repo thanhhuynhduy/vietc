@@ -233,6 +233,34 @@ fn default_bypass_apps() -> Vec<String> {
         "csgo".into(),
         "minecraft".into(),
         "factorio".into(),
+        // Remote desktop clients and VM viewers forward raw keycodes to
+        // another machine. Unicode is injected by pasting from the *local*
+        // clipboard, but Ctrl+V is executed on the *remote* side against its
+        // own clipboard (synced late or not at all), so the typed word gets
+        // replaced by whatever the remote clipboard held. Keys must reach
+        // these apps untouched; the remote machine's own IME composes text.
+        "rustdesk".into(),
+        "remmina".into(),
+        "anydesk".into(),
+        "teamviewer".into(),
+        "vncviewer".into(),
+        "tigervnc".into(),
+        "realvnc".into(),
+        "freerdp".into(),
+        "rdesktop".into(),
+        "krdc".into(),
+        "gnome.connections".into(),
+        "nomachine".into(),
+        "nxplayer".into(),
+        "x2go".into(),
+        "moonlight".into(),
+        "parsec".into(),
+        "virt-viewer".into(),
+        "remote-viewer".into(),
+        "virt-manager".into(),
+        "virtualbox".into(),
+        "vmware".into(),
+        "gnome.boxes".into(),
     ]
 }
 

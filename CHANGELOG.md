@@ -4,6 +4,32 @@
   <a href="CHANGELOG.vi.md">Tiếng Việt</a>
 </p>
 
+## Unreleased
+
+### Security
+
+- Replace world-readable/writable input-device rules with active-session access. Upgrade revokes legacy world permissions; uninstall attempts extended ACL cleanup and reapplies distribution rules. **Device policy changes take effect only when the updated installer/uninstaller is run.** ACL cleanup also removes custom extended ACLs on these devices; missing `setfacl` or udev failures are reported and require administrator follow-up.
+- Keep privileged installer commands on a trusted system PATH; stop editing user shell startup files as root.
+
+### Fixed
+
+- **Engine screen/buffer parity & Telex/VNI undo**: Prevent circumflex (`aa`/`ee`/`oo`) matching from crossing `'w'` or overwriting an existing breve/horn mark (`"awa"` → `"wa"`, `"owo"` → `"wo"`), guard standalone `"ww"` undo so unconsumed `'w'` is not dropped, and support repeated-trigger undo in VNI mode (`"a11"` → `"a1"`, `"a112"` → `"a12"`).
+- **Document prefix & paste protection**: Separate `pasted_prefix` from `raw_buffer` on `PhysicalEvent::Paste` so subsequent `Backspace` or tone keys do not reinterpret pasted text as Telex keystrokes; track actual on-screen length across `PhysicalEvent::ReplacementFailed` recovery so `Backspace` and follow-up replacements never delete into the document prefix.
+- **Vietnamese phonology & macro accuracy**: Recognize `qu` and `gi` onset glides (`"qua"`, `"gia"`, `"quyen"`, `"gieng"`) as `ParseStatus::Complete`; clear prior tone marks before retargeting tones in VNI (`"ho1a2"` → `"hoà"`) and reject syllables with more than one tone-marked vowel; unify VNI/Telex macro expansion at word boundaries so shorthand characters are properly deleted before inserting expansions; expand English auto-restore for double-`s` words (`"ass"`, `"class"`, `"password"`).
+- **State machine metadata**: Transition `BoundaryState` to `Composing` immediately on printable keys after `Committed`, and normalize composed characters when computing `active_transform` (`"asw"` → `Mark("aw")`, `"UOW"` → `Mark("uo+w")`).
+- **Daemon `evdev_loop` & AT-SPI focus tracking**: Process `status` and `config.toml` reload checks before skipping idle `poll` ticks; evaluate focus changes and password-field state before early-return or `KEY_BACKSPACE` paths so leaving a password field re-enables Vietnamese immediately and `Backspace` after a focus switch resets composition first; include AT-SPI object path (`atspi:<sender>:<path>`) in focus identity to detect widget-to-widget switches within the same window.
+- **IBus engine (`ibus_engine`)**: Handle `SetContentType` and `ContentType` property updates (`IBUS_INPUT_PURPOSE_PASSWORD` / `PIN`) to flush preedit and bypass composition in password/PIN fields; commit active preedit before `Ctrl+Space` or external method switches; ignore pure modifier keys (`Shift`, `Ctrl`, `CapsLock`, `Alt`, `Super`, `ISO_Level3_Shift`) in non-printable fallback so mid-word uppercase typing does not flush preedit prematurely.
+- **Wayland Input Method (`wayland_im`)**: Flush, poll, and read the Wayland connection socket in `run_wayland_im` so compositor events are continuously received; include `Super` (`MOD_NAME_LOGO`) in shortcut detection and commit active preedit on navigation/editing/function keys (`Tab`, `Arrows`, `Home`, `End`, `PageUp/Down`, `Delete`, `F1..F12`).
+- **Clipboard & Unicode injection (`uinput_monitor`)**: Prepare and verify clipboard writes (`ClipboardWritten`) **before** dispatching `Backspace` keystrokes so clipboard unavailability never deletes the user's already-typed characters; enforce a bounded 250ms timeout on clipboard subprocesses (`wl-paste`, `xclip`) to prevent hung helpers from blocking the input loop.
+- Keep Backspace recomposition synchronized with displayed text in grabbed and forwarded input paths; preserve held Shift during replacement.
+- Use the selected Telex backend consistently for buffers and emitted replacements; track keyboard grabs and consumed keys per device, including hotplug.
+- Deliver socket key/character/backspace requests instead of silently acknowledging no-ops; propagate device-write failures and preserve payload whitespace. CR/LF payloads are explicitly rejected by the legacy line protocol.
+- Avoid reading the X11 clipboard through a subprocess when VietC owns it; bound external reads while servicing selection requests.
+- Preserve unknown daemon settings when the tray changes mode, and save configuration atomically.
+- Supervise and reap tray-launched daemons in the background. Remove the first-launch flag: privilege prompts may recur when device access still requires elevation.
+- Migrate IBus flags into the TOML root, including older misplaced boolean macro entries, without overriding manual values unless `--ibus` is requested.
+- Repair Makefile runtime test targets and add safe headless GitHub Actions checks. Desktop input verification remains manual and opt-in.
+
 ## v0.1.24 (2026-09-05)
 
 ### Fixed

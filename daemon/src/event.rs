@@ -114,11 +114,41 @@ pub fn is_toggle_combination_state(key_state: &evdev::AttributeSet<evdev::Key>, 
 }
 
 pub fn key_to_char_with_case(key: evdev::Key, shift: bool, caps_lock: bool) -> Option<char> {
-    key_to_char(key).map(|mut ch| {
-        if ch.is_ascii_alphabetic() && (shift ^ caps_lock) {
-            ch = ch.to_ascii_uppercase();
+    key_to_char(key).map(|ch| {
+        if ch.is_ascii_alphabetic() {
+            if shift ^ caps_lock {
+                ch.to_ascii_uppercase()
+            } else {
+                ch
+            }
+        } else if shift {
+            match ch {
+                '1' => '!',
+                '2' => '@',
+                '3' => '#',
+                '4' => '$',
+                '5' => '%',
+                '6' => '^',
+                '7' => '&',
+                '8' => '*',
+                '9' => '(',
+                '0' => ')',
+                '-' => '_',
+                '=' => '+',
+                '[' => '{',
+                ']' => '}',
+                '\\' => '|',
+                ';' => ':',
+                '\'' => '"',
+                '`' => '~',
+                ',' => '<',
+                '.' => '>',
+                '/' => '?',
+                other => other,
+            }
+        } else {
+            ch
         }
-        ch
     })
 }
 
@@ -161,12 +191,17 @@ pub fn key_to_char(key: evdev::Key) -> Option<char> {
         evdev::Key::KEY_8 => Some('8'),
         evdev::Key::KEY_9 => Some('9'),
         evdev::Key::KEY_SPACE => Some(' '),
+        evdev::Key::KEY_TAB => Some('\t'),
         evdev::Key::KEY_DOT => Some('.'),
         evdev::Key::KEY_COMMA => Some(','),
         evdev::Key::KEY_MINUS => Some('-'),
         evdev::Key::KEY_EQUAL => Some('='),
+        evdev::Key::KEY_LEFTBRACE => Some('['),
+        evdev::Key::KEY_RIGHTBRACE => Some(']'),
+        evdev::Key::KEY_BACKSLASH => Some('\\'),
         evdev::Key::KEY_SEMICOLON => Some(';'),
         evdev::Key::KEY_APOSTROPHE => Some('\''),
+        evdev::Key::KEY_GRAVE => Some('`'),
         evdev::Key::KEY_SLASH => Some('/'),
         evdev::Key::KEY_BACKSPACE => Some('\x08'),
         evdev::Key::KEY_ENTER => Some('\n'),
@@ -298,5 +333,46 @@ mod tests {
         assert!(!is_toggle_key(evdev::Key::KEY_T, "space"));
         assert!(is_toggle_key(evdev::Key::KEY_LEFTSHIFT, "shift"));
         assert!(is_toggle_key(evdev::Key::KEY_RIGHTSHIFT, "shift"));
+    }
+
+    #[test]
+    fn shifted_punctuation_and_parentheses_translate_and_compose_cleanly() {
+        assert_eq!(key_to_char_with_case(evdev::Key::KEY_9, true, false), Some('('));
+        assert_eq!(key_to_char_with_case(evdev::Key::KEY_0, true, false), Some(')'));
+        assert_eq!(key_to_char_with_case(evdev::Key::KEY_9, true, true), Some('('));
+        assert_eq!(key_to_char_with_case(evdev::Key::KEY_1, true, false), Some('!'));
+        assert_eq!(key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, false, false), Some('['));
+        assert_eq!(key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, true, false), Some('{'));
+
+        // Physical sequence for "(nhuw)": Shift+9, n, h, u, w, Shift+0
+        let seq = [
+            (evdev::Key::KEY_9, true),
+            (evdev::Key::KEY_N, false),
+            (evdev::Key::KEY_H, false),
+            (evdev::Key::KEY_U, false),
+            (evdev::Key::KEY_W, false),
+            (evdev::Key::KEY_0, true),
+        ];
+        let translated: String = seq
+            .into_iter()
+            .map(|(k, shift)| key_to_char_with_case(k, shift, false).unwrap())
+            .collect();
+        assert_eq!(translated, "(nhuw)");
+        assert_eq!(render("telex", &translated), "(như)");
+
+        // Physical sequence for "(nhuw" followed by Backspace must yield "(nhu", never "9nhu"
+        let seq_with_bs = [
+            (evdev::Key::KEY_9, true),
+            (evdev::Key::KEY_N, false),
+            (evdev::Key::KEY_H, false),
+            (evdev::Key::KEY_U, false),
+            (evdev::Key::KEY_W, false),
+            (evdev::Key::KEY_BACKSPACE, false),
+        ];
+        let translated_bs: String = seq_with_bs
+            .into_iter()
+            .map(|(k, shift)| key_to_char_with_case(k, shift, false).unwrap())
+            .collect();
+        assert_eq!(render("telex", &translated_bs), "(nhu");
     }
 }

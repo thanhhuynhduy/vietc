@@ -4,6 +4,25 @@
 # Usage: curl -fsSL <url> | bash   OR   sudo ./uninstall.sh
 set -euo pipefail
 
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+
+clear_device_acls() {
+    if ! command -v setfacl >/dev/null 2>&1; then
+        echo "WARNING: setfacl is unavailable; device session ACLs could not be revoked. Install the acl package and retry cleanup." >&2
+        return 0
+    fi
+    local device
+    for device in "$@"; do
+        [ -e "$device" ] || continue
+        # ACL entries do not record their origin. Clear extended access ACLs,
+        # then let the distribution rules restore legitimate session access.
+        if ! setfacl -b -- "$device"; then
+            echo "WARNING: could not clear device ACLs on $device; session access may remain." >&2
+        fi
+    done
+    return 0
+}
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
 # Language: auto-detect from $LANG, override with --lang vi|en
@@ -133,7 +152,7 @@ if [ -n "$USER_HOME" ]; then
 fi
 
 # Remove udev rules
-rm -f /etc/udev/rules.d/99-vietc.rules /etc/udev/rules.d/99-uinput.rules
+rm -f /etc/udev/rules.d/70-vietc.rules /etc/udev/rules.d/99-vietc.rules /etc/udev/rules.d/99-uinput.rules
 
 # Remove IBus component
 rm -f /usr/share/ibus/component/vietc.xml
@@ -155,8 +174,26 @@ fi
 # Clean up status and socket files
 rm -f /tmp/vietc* /tmp/vietc-status*
 
-# Reload udev
-udevadm control --reload-rules 2>/dev/null || true
+# Revoke legacy world and named-user access before restoring distro policy.
+clear_device_acls /dev/uinput /dev/input/event*
+for device in /dev/uinput /dev/input/event*; do
+    [ -e "$device" ] || continue
+    if ! chmod o-rw -- "$device"; then
+        echo "WARNING: could not revoke world access on $device." >&2
+    fi
+done
+if ! udevadm control --reload-rules; then
+    echo "WARNING: could not reload udev rules; distribution device policy may not be restored." >&2
+fi
+if ! udevadm trigger --action=change --subsystem-match=input; then
+    echo "WARNING: could not reapply distribution input device policy." >&2
+fi
+if ! udevadm trigger --action=change --subsystem-match=misc; then
+    echo "WARNING: could not reapply distribution misc device policy." >&2
+fi
+if ! udevadm settle --timeout=10; then
+    echo "WARNING: udev did not settle; device policy restoration is not confirmed." >&2
+fi
 
 # Reload systemd
 if [ -n "$INSTALLING_USER" ] && [ -n "$U_UID" ]; then

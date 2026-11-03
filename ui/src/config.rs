@@ -10,6 +10,9 @@ pub struct AutoRestoreConfig {
 
     #[serde(default = "default_restore_keys")]
     pub trigger_keys: Vec<String>,
+
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, toml::Value>,
 }
 
 impl Default for AutoRestoreConfig {
@@ -17,6 +20,7 @@ impl Default for AutoRestoreConfig {
         Self {
             enabled: true,
             trigger_keys: default_restore_keys(),
+            extra: Default::default(),
         }
     }
 }
@@ -31,6 +35,9 @@ pub struct AppStateConfig {
 
     #[serde(default)]
     pub vietnamese_apps: Vec<String>,
+
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, toml::Value>,
 }
 
 impl Default for AppStateConfig {
@@ -39,6 +46,7 @@ impl Default for AppStateConfig {
             enabled: true,
             english_apps: vec![],
             vietnamese_apps: vec![],
+            extra: Default::default(),
         }
     }
 }
@@ -68,6 +76,9 @@ pub struct Config {
 
     #[serde(default = "default_false")]
     pub debug: bool,
+
+    #[serde(flatten)]
+    extra: std::collections::BTreeMap<String, toml::Value>,
 }
 
 fn default_input_method() -> String {
@@ -103,6 +114,7 @@ impl Default for Config {
             macros: std::collections::HashMap::new(),
             grab: default_grab(),
             debug: default_false(),
+            extra: Default::default(),
         }
     }
 }
@@ -124,8 +136,37 @@ impl Config {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
         let content = toml::to_string_pretty(self)?;
-        fs::write(&path, content)?;
+        let temporary = path.with_file_name(format!(
+            ".vietc-config-{}-{}.tmp",
+            std::process::id(),
+            NEXT_SAVE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mode = fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o777)
+            .unwrap_or(0o600);
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&temporary)?;
+        let result = (|| -> std::io::Result<()> {
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result?;
         Ok(())
     }
 }
@@ -205,5 +246,47 @@ pub fn install_autostart() {
 
         let _ = fs::write(desktop_file, content);
         eprintln!("[vietc] Installed autostart entry");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_save_preserves_config_and_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory =
+            std::env::temp_dir().join(format!("vietc-ui-config-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        fs::write(&path, "auto_ibus = false\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        let config: Config = toml::from_str("auto_ibus = false\n").unwrap();
+        config.save_to(&path).unwrap();
+        let saved: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["auto_ibus"].as_bool(), Some(false));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn mode_changes_preserve_all_unrelated_daemon_config() {
+        let source = include_str!("../../vietc.toml").to_string()
+            + "\n[password_detection]\nenabled = true\ncheck_atspi2 = false\n";
+        let before: toml::Value = toml::from_str(&source).unwrap();
+        let mut config: Config = toml::from_str(&source).unwrap();
+        config.input_method = "vni".into();
+        config.start_enabled = false;
+        let after: toml::Value = toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        for (key, value) in before.as_table().unwrap() {
+            if key != "input_method" && key != "start_enabled" {
+                assert_eq!(after.get(key), Some(value), "lost config key: {key}");
+            }
+        }
     }
 }

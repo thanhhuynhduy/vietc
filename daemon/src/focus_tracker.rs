@@ -22,13 +22,26 @@ fn accessibility_bus_address() -> Result<String, Box<dyn Error>> {
 }
 
 fn observe_atspi_focus(shared_focus: &SharedFocusSnapshot, application_identity: Option<&str>) {
+    observe_atspi_focus_with_path(shared_focus, application_identity, None);
+}
+
+fn observe_atspi_focus_with_path(
+    shared_focus: &SharedFocusSnapshot,
+    application_identity: Option<&str>,
+    object_path: Option<&str>,
+) {
     let Some(application_identity) = application_identity.filter(|value| !value.is_empty()) else {
         return;
     };
 
+    let identity = match object_path.filter(|path| !path.is_empty()) {
+        Some(path) => format!("atspi:{application_identity}:{path}"),
+        None => format!("atspi:{application_identity}"),
+    };
+
     let mut focus = shared_focus.lock().unwrap();
     let class = focus.class.clone();
-    focus.observe(Some(format!("atspi:{application_identity}")), class);
+    focus.observe(Some(identity), class);
 }
 
 fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
@@ -50,7 +63,8 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
 
         if state.eq_ignore_ascii_case("focused") && enabled != 0 {
             let sender = message.sender().map(|value| value.to_string());
-            observe_atspi_focus(&focus, sender.as_deref());
+            let path = message.path().map(|value| value.to_string());
+            observe_atspi_focus_with_path(&focus, sender.as_deref(), path.as_deref());
         }
         true
     })?;
@@ -79,7 +93,7 @@ mod tests {
 
     use crate::focus::{FocusReliability, FocusSnapshot};
 
-    use super::observe_atspi_focus;
+    use super::{observe_atspi_focus, observe_atspi_focus_with_path};
 
     #[test]
     fn atspi_focus_deduplicates_events_from_same_application() {
@@ -103,6 +117,29 @@ mod tests {
 
         let focus = focus.lock().unwrap();
         assert_eq!(focus.identity.as_deref(), Some("atspi::1.200"));
+        assert_eq!(focus.generation, 2);
+    }
+
+    #[test]
+    fn atspi_focus_switch_between_widgets_in_same_application_increments_generation() {
+        let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
+
+        observe_atspi_focus_with_path(
+            &focus,
+            Some(":1.100"),
+            Some("/org/a11y/atspi/accessible/10"),
+        );
+        observe_atspi_focus_with_path(
+            &focus,
+            Some(":1.100"),
+            Some("/org/a11y/atspi/accessible/20"),
+        );
+
+        let focus = focus.lock().unwrap();
+        assert_eq!(
+            focus.identity.as_deref(),
+            Some("atspi::1.100:/org/a11y/atspi/accessible/20")
+        );
         assert_eq!(focus.generation, 2);
     }
 

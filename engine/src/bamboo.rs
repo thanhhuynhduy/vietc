@@ -28,6 +28,7 @@ impl Mode {
     }
 }
 
+#[derive(Clone)]
 pub struct BambooEngine {
     composition: Vec<Transformation>,
     rules: InputMethodRules,
@@ -95,19 +96,6 @@ impl BambooEngine {
         }
 
         let lower = ch.to_ascii_lowercase();
-
-        // Check macros
-        self.macro_buf.push(lower);
-        for (shortcut, expansion) in &self.macros.clone() {
-            if self.macro_buf.ends_with(shortcut) {
-                self.macro_buf.clear();
-                self.reset();
-                return Some(expansion.clone());
-            }
-        }
-        if self.macro_buf.len() > 50 {
-            self.macro_buf.clear();
-        }
 
         // Check tone keys — only apply if composition has a vowel, else treat as normal char
         if let Some(&(tone_char, _tone_name)) = self.rules.tone_keys.get(&lower) {
@@ -280,26 +268,26 @@ impl BambooEngine {
     }
 
     pub fn undo_telex_transform(&mut self, trigger: char, raw: &str) -> Option<TelexUndo> {
-        if self.rules.method != InputMethod::Telex || self.undone_in_word {
+        if self.undone_in_word {
             return None;
         }
 
         let trigger = trigger.to_ascii_lowercase();
         if raw.chars().last().map(|last| last.to_ascii_lowercase()) == Some(trigger) {
-            for transformation in self.composition.iter_mut().rev() {
-                if transformation.tone_applied == Some(trigger) {
-                    transformation.tone_applied = None;
-                    self.undone_in_word = true;
-                    return Some(TelexUndo::AppendTrigger);
+            if let Some(&(tone_char, _)) = self.rules.tone_keys.get(&trigger) {
+                for transformation in self.composition.iter_mut().rev() {
+                    if transformation.tone_applied == Some(tone_char) {
+                        transformation.tone_applied = None;
+                        self.undone_in_word = true;
+                        return Some(TelexUndo::AppendTrigger);
+                    }
                 }
             }
         }
 
         let raw = raw.to_ascii_lowercase();
         for rule in &self.rules.mark_rules {
-            let Some(undo_behavior) = rule.undo_behavior else {
-                continue;
-            };
+            let undo_behavior = rule.undo_behavior.unwrap_or(UndoBehavior::AppendTrigger);
             if !rule.pattern.ends_with(trigger) || !has_active_mark_pattern(&raw, &rule.pattern) {
                 continue;
             }
@@ -356,7 +344,13 @@ impl BambooEngine {
 
         // Find the last syllable
         let last_syllable = self.last_syllable_range();
-        let tone_pos = self.find_tone_position(last_syllable);
+        let tone_pos = self.find_tone_position(last_syllable.clone());
+
+        for idx in last_syllable {
+            if let Some(t) = self.composition.get_mut(idx) {
+                t.tone_applied = None;
+            }
+        }
 
         if let Some(t) = self.composition.get_mut(tone_pos) {
             t.tone_applied = Some(tone_char);

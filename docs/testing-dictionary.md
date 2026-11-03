@@ -2,6 +2,10 @@
 
 This document defines every test scenario, its purpose, setup, expected behavior, and verification checks. Tests are grouped by suite and identified by a unique `TEST-NNN` number.
 
+## Vietnamese typing audit and agent playbook
+
+For the source-grounded typing audit, safe execution tiers, independent document/caret/preedit oracles, bounded exhaustive coverage, and user-simulation scenarios, read [Vietnamese typing agent playbook](vietnamese-typing-agent-playbook.md) (2026-11-03). It distinguishes existing harnesses from proposed runners and headless evidence from real desktop results. Do not treat older scenario descriptions below as proof that a backend or application has been exercised.
+
 ## Conventions
 
 - **TEST-NNN**: Unique numeric identifier, never reused.
@@ -636,7 +640,7 @@ make test-ci-smoke
 
 The smoke gate explicitly removes `DISPLAY` and `WAYLAND_DISPLAY`. It covers delete, insert, flush, acknowledgement, and clipboard-restore failures across grabbed, forwarded, Wayland preedit, IBus preedit, X11, and clipboard delivery modes. Assertions reject duplicated or dropped characters, stuck modifiers, partial clipboard restoration, and stale visible revisions.
 
-The exhaustive property profile is opt-in because this repository has no existing CI workflow structure for scheduled jobs:
+The exhaustive property profile remains opt-in; `.github/workflows/ci.yml` runs the smoke profile on pushes to `main` and pull requests:
 
 ```bash
 make test-properties-exhaustive
@@ -650,20 +654,22 @@ Missing display servers, writable `/dev/uinput`, browsers, desktop sessions, or 
 
 ### Pull request quality gates
 
-Every pull request runs the deterministic quality gate on a standard GitHub-hosted runner:
+`.github/workflows/ci.yml` runs these headless gates on a standard GitHub-hosted runner, with read-only repository permissions and a 15-minute job timeout:
 
 ```bash
-cargo fmt --all -- --check
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo check --workspace --all-targets --all-features
+cargo clippy --workspace --lib --bins --all-features --locked -- -D warnings
+cargo check --workspace --all-targets --all-features --locked
+make test-ci-smoke
+cargo test --manifest-path ui/Cargo.toml --locked
 ```
 
-The deterministic runtime scenarios remain part of `cargo test --workspace --all-targets`, so they do not require a desktop session or `/dev/uinput`.
+`make test-ci-smoke` explicitly selects workspace unit tests, engine integration tests, daemon deterministic/corpus tests, `daemon_suite` tests filtered to `runtime::deterministic_`, and doctests. It also checks installer regressions and shell syntax. Display variables and privileged-test opt-ins are removed. It does not run the live input tests, including when invoked by root. Use `CARGO_FLAGS='--locked --offline'` when all dependencies are cached.
 
-Privileged runtime verification runs in the separate `runtime-integration` CI job on a self-hosted Linux runner labeled `vietc-runtime`. The runner must execute inside the desktop session being verified and provide a writable `/dev/uinput`, `wtype`, `xclip`, and `wl-copy`. The job has a finite timeout, records missing prerequisites as a failure rather than a pass, and uploads `target/runtime-artifacts/` plus prerequisite evidence even when the job fails.
+Formatting and strict all-target Clippy are not yet CI gates: the repository has existing formatting differences and test-helper warnings that need separate cleanup. Production Clippy remains strict; the all-target check still reports test diagnostics.
 
-The privileged job is informational until suitable desktop runners are registered because one runner cannot establish results for every required display server and application matrix. A successful prerequisite-recording test means only that evidence was collected for the current session; it does not mark skipped X11, GNOME Wayland, KDE Wayland, Chromium/Electron, GTK, Qt, or terminal scenarios as passed.
+There is no automated privileged `runtime-integration` job. Run `make test-runtime-targets` or `make test-runtime-matrix` only inside a disposable desktop session with the required device permissions and dependencies. Never run privileged PR code on a personal desktop or an unrestricted self-hosted runner.
+
+Headless model results do not establish X11, GNOME Wayland, KDE Wayland, browser, GTK, Qt, or terminal runtime correctness. Record those results separately; skipped prerequisites do not count as passes.
 
 ---
 

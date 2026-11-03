@@ -1,6 +1,9 @@
 /target
 /ui/target
 Cargo.lock
+# Keep application lockfiles for --locked CI builds.
+!/Cargo.lock
+!/ui/Cargo.lock
 *.swp
 *.swo
 *~

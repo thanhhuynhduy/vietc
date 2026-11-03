@@ -300,6 +300,25 @@ impl Daemon {
         commands
     }
 
+    /// Account for the native key already delivered by an ungrabbed device.
+    pub fn process_forwarded_key(&mut self, ch: char) -> Vec<OutputCommand> {
+        let mut commands = self.process_key(ch);
+        for command in &mut commands {
+            if let OutputCommand::Replace(replacement) = command {
+                if ch == '\x08' {
+                    replacement.delete_before_cursor =
+                        replacement.delete_before_cursor.saturating_sub(1);
+                } else {
+                    replacement.delete_before_cursor += 1;
+                    if is_flush_char(ch) {
+                        replacement.insert.push(ch);
+                    }
+                }
+            }
+        }
+        commands
+    }
+
     pub fn handle_transaction_outcome(
         &mut self,
         outcome: crate::commands::TransactionOutcome,
@@ -560,6 +579,30 @@ mod tests {
             }
         }
         screen
+    }
+
+    #[test]
+    fn forwarded_keys_preserve_prefix_after_backspace_and_transforms() {
+        let mut config = Config::default();
+        config.input_method = "telex".into();
+        config.start_enabled = true;
+        let mut daemon = Daemon::new(
+            config,
+            PathBuf::from("/tmp/vietc-forwarded-test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let mut screen = String::from("X ");
+        for key in "as\x08s\x08\x08".chars() {
+            if key == BS {
+                screen.pop();
+            } else {
+                screen.push(key);
+            }
+            let commands = daemon.process_forwarded_key(key);
+            apply(&mut screen, &commands);
+            assert_eq!(screen, format!("X {}", daemon.engine.buffer()));
+        }
+        assert_eq!(screen, "X ");
     }
 
     #[test]

@@ -115,6 +115,29 @@ struct ClipState {
     inner: Mutex<ClipboardInjectionState>,
 }
 
+fn send_key_sequence_with(
+    sequence: &[(u16, i32)],
+    mut send_key: impl FnMut(u16, i32) -> bool,
+) -> bool {
+    let mut pressed = Vec::new();
+    for &(code, value) in sequence {
+        // A failed SYN may still leave the preceding press queued in the device.
+        if value == 1 && !pressed.contains(&code) {
+            pressed.push(code);
+        }
+        if !send_key(code, value) {
+            for code in pressed.into_iter().rev() {
+                let _ = send_key(code, 0);
+            }
+            return false;
+        }
+        if value == 0 {
+            pressed.retain(|&pressed_code| pressed_code != code);
+        }
+    }
+    true
+}
+
 struct UinputDevice {
     fd: i32,
     clip: Arc<ClipState>,
@@ -166,7 +189,7 @@ impl UinputDevice {
         })
     }
 
-    fn send_event(&self, type_: u16, code: u16, value: i32) {
+    fn send_event(&self, type_: u16, code: u16, value: i32) -> bool {
         let event = input_event {
             time: libc::timeval {
                 tv_sec: 0,
@@ -181,21 +204,28 @@ impl UinputDevice {
                 self.fd,
                 &event as *const input_event as *const libc::c_void,
                 std::mem::size_of::<input_event>(),
-            );
+            ) == std::mem::size_of::<input_event>() as isize
         }
     }
 
-    fn send_key(&self, code: u16, value: i32) {
-        self.send_event(EV_KEY, code, value);
-        self.send_event(0, 0, 0);
+    fn send_key(&self, code: u16, value: i32) -> bool {
+        let event_sent = self.send_event(EV_KEY, code, value);
+        let sync_sent = self.send_event(0, 0, 0);
+        let sent = event_sent && sync_sent;
         std::thread::sleep(std::time::Duration::from_millis(2));
+        sent
     }
 
-    fn backspace_n(&self, count: usize) {
-        for _ in 0..count {
-            self.send_key(14, 1);
-            self.send_key(14, 0);
-        }
+    fn send_key_sequence(&self, sequence: &[(u16, i32)]) -> bool {
+        send_key_sequence_with(sequence, |code, value| self.send_key(code, value))
+    }
+
+    fn backspace_n(&self, count: usize) -> bool {
+        (0..count).all(|_| self.send_key_sequence(&[(14, 1), (14, 0)]))
+    }
+
+    fn paste_shortcut(&self) -> bool {
+        self.send_key_sequence(&[(29, 1), (47, 1), (47, 0), (29, 0)])
     }
 
     fn char_to_keycode(ch: u8) -> Option<(u16, bool)> {
@@ -277,22 +307,22 @@ impl UinputDevice {
         Some((keycode, shift))
     }
 
-    fn type_ascii(&self, text: &str) {
+    fn type_ascii(&self, text: &str) -> bool {
         for byte in text.bytes() {
-            if let Some((keycode, shift)) = Self::char_to_keycode(byte) {
-                if shift {
-                    self.send_key(42, 1);
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                self.send_key(keycode, 1);
-                self.send_key(keycode, 0);
-                if shift {
-                    self.send_key(42, 0);
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(1));
+            let Some((keycode, shift)) = Self::char_to_keycode(byte) else {
+                return false;
+            };
+            let sent = if shift {
+                self.send_key_sequence(&[(42, 1), (keycode, 1), (keycode, 0), (42, 0)])
+            } else {
+                self.send_key_sequence(&[(keycode, 1), (keycode, 0)])
+            };
+            if !sent {
+                return false;
             }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        true
     }
 
     fn paste_unicode_unlocked(&self, text: &str, sequence_id: u64) -> bool {
@@ -333,18 +363,23 @@ impl UinputDevice {
         }
         trace_clipboard(sequence_id, "temporary-text", "state=verified");
 
-        self.send_key(29, 1);
-        self.send_key(47, 1);
-        self.send_key(47, 0);
-        self.send_key(29, 0);
-        trace_clipboard(sequence_id, "paste", "state=sent");
+        let pasted = self.paste_shortcut();
+        trace_clipboard(
+            sequence_id,
+            "paste",
+            if pasted {
+                "state=sent"
+            } else {
+                "state=write-failed"
+            },
+        );
 
         let action = {
             let mut state = self.clip.inner.lock().unwrap();
             let current = read_clipboard();
             state.finish(current.as_deref())
         };
-        match action {
+        let restored = match action {
             ClipboardInjectionAction::Restore(saved) => {
                 trace_clipboard(sequence_id, "restore", "state=writing");
                 let restored = restore_clipboard_verified(&saved);
@@ -367,7 +402,8 @@ impl UinputDevice {
                 );
                 true
             }
-        }
+        };
+        pasted && restored
     }
 
     fn paste_unicode(&self, text: &str) -> bool {
@@ -379,14 +415,15 @@ impl UinputDevice {
     fn replace(&self, count: usize, text: &str) -> bool {
         let sequence_id = NEXT_CLIPBOARD_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
         let _transaction = self.transaction_lock.lock().unwrap();
-        self.backspace_n(count);
+        if !self.backspace_n(count) {
+            return false;
+        }
 
         let is_ascii = text
             .bytes()
             .all(|byte| UinputDevice::char_to_keycode(byte).is_some());
         if is_ascii {
-            self.type_ascii(text);
-            true
+            self.type_ascii(text)
         } else {
             self.paste_unicode_unlocked(text, sequence_id)
         }
@@ -626,6 +663,13 @@ where
     authorize_and_dispatch(peer_uid(stream)?, allowed_uid, dispatch)
 }
 
+fn parse_key_event(payload: &str) -> Option<(u16, i32)> {
+    let (code, value) = payload.split_once(':')?;
+    let code = code.parse::<u16>().ok()?;
+    let value = value.parse::<i32>().ok()?;
+    (code <= 0x1ff && (0..=2).contains(&value)).then_some((code, value))
+}
+
 fn handle_client(
     stream: UnixStream,
     allowed_uid: libc::uid_t,
@@ -648,7 +692,6 @@ fn handle_client(
             Err(_) => break,
         };
 
-        let line = line.trim().to_string();
         if line.is_empty() {
             continue;
         }
@@ -660,6 +703,18 @@ fn handle_client(
         } else if line == "QUIT" {
             let _ = writeln!(writer, "BYE");
             break;
+        } else if let Some(payload) = line.strip_prefix("KEY:") {
+            let success =
+                parse_key_event(payload).is_some_and(|(code, value)| uinput.send_key(code, value));
+            let _ = writeln!(
+                writer,
+                "{}",
+                if success {
+                    "OK"
+                } else {
+                    "ERR key injection failed"
+                }
+            );
         } else if let Some(payload) = line.strip_prefix("REPLACE:") {
             let Some((count, text)) = payload.split_once(':') else {
                 let _ = writeln!(writer, "ERR malformed replacement");
@@ -678,8 +733,16 @@ fn handle_client(
             let _ = writeln!(writer, "{response}");
         } else if let Some(n_str) = line.strip_prefix("BACKSPACE:") {
             if let Ok(n) = n_str.parse::<usize>() {
-                uinput.backspace_n(n);
-                let _ = writeln!(writer, "OK");
+                let success = uinput.backspace_n(n);
+                let _ = writeln!(
+                    writer,
+                    "{}",
+                    if success {
+                        "OK"
+                    } else {
+                        "ERR key injection failed"
+                    }
+                );
             } else {
                 let _ = writeln!(writer, "ERR bad count");
             }
@@ -688,8 +751,7 @@ fn handle_client(
                 .bytes()
                 .all(|b| UinputDevice::char_to_keycode(b).is_some());
             let success = if is_ascii {
-                uinput.type_ascii(text);
-                true
+                uinput.type_ascii(text)
             } else {
                 uinput.paste_unicode(text)
             };
@@ -803,6 +865,143 @@ mod phase0_tests {
             ClipboardInjectionAction::Restore("copied text".to_string())
         );
         assert!(!state.is_active());
+    }
+
+    #[test]
+    fn raw_key_payload_accepts_press_release_repeat_only() {
+        assert_eq!(parse_key_event("30:1"), Some((30, 1)));
+        assert_eq!(parse_key_event("30:0"), Some((30, 0)));
+        assert_eq!(parse_key_event("30:2"), Some((30, 2)));
+        for invalid in ["30:-1", "512:1", "30:3", "30:1:0", "a:1"] {
+            assert_eq!(parse_key_event(invalid), None);
+        }
+    }
+
+    #[test]
+    fn raw_key_write_failure_is_not_acknowledged_as_success() {
+        let device = UinputDevice {
+            fd: -1,
+            clip: Arc::new(ClipState {
+                inner: Mutex::new(ClipboardInjectionState::default()),
+            }),
+            transaction_lock: Mutex::new(()),
+        };
+        assert!(!device.send_key(30, 1));
+        assert!(!device.backspace_n(1));
+    }
+
+    fn test_device(fd: i32) -> UinputDevice {
+        UinputDevice {
+            fd,
+            clip: Arc::new(ClipState {
+                inner: Mutex::new(ClipboardInjectionState::default()),
+            }),
+            transaction_lock: Mutex::new(()),
+        }
+    }
+
+    fn run_test_commands(device: &UinputDevice, commands: &str) -> String {
+        use std::io::Read;
+        let (mut client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        client.write_all(commands.as_bytes()).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+        handle_client(server, unsafe { libc::geteuid() }, device).unwrap();
+        let mut responses = String::new();
+        client.read_to_string(&mut responses).unwrap();
+        responses
+    }
+
+    #[test]
+    fn ascii_commands_do_not_acknowledge_failed_writes() {
+        let device = test_device(-1);
+        let responses = run_test_commands(&device, "TYPE:a\nTYPE:A\nREPLACE:0:a\nREPLACE:1:\n");
+        assert_eq!(responses.lines().count(), 4);
+        assert!(responses.lines().all(|line| line.starts_with("ERR ")));
+    }
+
+    #[test]
+    fn ascii_and_paste_shortcut_fail_without_a_writable_device() {
+        let device = test_device(-1);
+        assert!(!device.type_ascii("a"));
+        assert!(!device.type_ascii("A"));
+        assert!(!device.paste_shortcut());
+        assert!(!device.replace(1, "a"));
+        assert!(!device.replace(0, "a"));
+    }
+
+    #[test]
+    fn partial_key_sequences_release_keys_and_modifiers() {
+        for sequence in [
+            [(42, 1), (30, 1), (30, 0), (42, 0)],
+            [(29, 1), (47, 1), (47, 0), (29, 0)],
+        ] {
+            for fail_at in 0..sequence.len() {
+                let mut calls = Vec::new();
+                let mut held = Vec::new();
+                assert!(!send_key_sequence_with(&sequence, |code, value| {
+                    let index = calls.len();
+                    calls.push((code, value));
+                    // Model a write that reached the device but whose SYN failed.
+                    if value == 1 {
+                        held.push(code);
+                    } else {
+                        held.retain(|&held_code| held_code != code);
+                    }
+                    index != fail_at
+                }));
+                assert!(held.is_empty(), "sequence={sequence:?} fail_at={fail_at}");
+                assert_eq!(&calls[..=fail_at], &sequence[..=fail_at]);
+                assert!(calls[fail_at + 1..].iter().all(|&(_, value)| value == 0));
+            }
+            let mut calls = Vec::new();
+            assert!(send_key_sequence_with(&sequence, |code, value| {
+                calls.push((code, value));
+                true
+            }));
+            assert_eq!(calls, sequence);
+        }
+    }
+
+    #[test]
+    fn cleanup_still_releases_modifier_if_key_release_fails() {
+        let mut calls = Vec::new();
+        assert!(!send_key_sequence_with(
+            &[(29, 1), (47, 1), (47, 0), (29, 0)],
+            |code, value| {
+                calls.push((code, value));
+                code != 47
+            }
+        ));
+        assert_eq!(calls, [(29, 1), (47, 1), (47, 0), (29, 0)]);
+    }
+
+    #[test]
+    fn socket_commands_preserve_payload_spaces() {
+        use std::io::Read;
+        use std::os::fd::IntoRawFd;
+        // Capture input_event bytes in a socket, never a real input device.
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let device = test_device(writer.into_raw_fd());
+        assert_eq!(
+            run_test_commands(&device, "TYPE: \nREPLACE:0: a \n"),
+            "OK\nOK\n"
+        );
+        drop(device);
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        let presses: Vec<_> = bytes
+            .chunks_exact(std::mem::size_of::<input_event>())
+            .map(|bytes| unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<input_event>()) })
+            .filter(|event| event.type_ == EV_KEY && event.value == 1)
+            .map(|event| event.code)
+            .collect();
+        assert_eq!(presses, [57, 57, 30, 57]);
     }
 
     #[test]

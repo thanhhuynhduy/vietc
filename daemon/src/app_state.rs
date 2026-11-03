@@ -1183,3 +1183,54 @@ mod class_match_tests {
         assert!(!class_matches("anything", ""));
     }
 }
+
+#[cfg(test)]
+mod remote_bypass_tests {
+    use super::AppStateManager;
+    use crate::config::AppStateConfig;
+
+    fn manager() -> AppStateManager {
+        let defaults = AppStateConfig::default();
+        AppStateManager::new(
+            defaults.english_apps,
+            defaults.vietnamese_apps,
+            defaults.bypass_apps,
+            defaults.terminal_apps,
+            defaults.terminal_input_method,
+            "telex".into(),
+            true,
+        )
+    }
+
+    #[test]
+    fn remote_desktop_and_vm_viewers_are_bypassed_by_default() {
+        for class in [
+            "rustdesk",
+            "com.rustdesk.RustDesk",
+            "org.remmina.Remmina",
+            "AnyDesk",
+            "virt-manager",
+            "VirtualBox Machine",
+            "org.gnome.Connections",
+        ] {
+            let mut state = manager();
+            state.update_with_app(class.to_string());
+            assert!(state.is_current_app_bypassed(), "{class} must be bypassed");
+        }
+    }
+
+    #[test]
+    fn local_apps_are_not_bypassed() {
+        for class in [
+            "microsoft-edge",
+            "com.system76.CosmicTerm",
+            "antigravity",
+            "com.microsoft.VSCode",
+            "telegramdesktop",
+        ] {
+            let mut state = manager();
+            state.update_with_app(class.to_string());
+            assert!(!state.is_current_app_bypassed(), "{class} must not be bypassed");
+        }
+    }
+}

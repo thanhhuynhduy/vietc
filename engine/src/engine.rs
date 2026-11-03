@@ -37,6 +37,9 @@ pub struct Engine {
     telex_backend: TelexBackend,
     macros: HashMap<String, String>,
     raw_buffer: String,
+    pasted_prefix: String,
+    previous_screen_len: Option<usize>,
+    recovered_screen_len: Option<usize>,
     paste_mode: bool,
     auto_restore: bool,
     active_transform: Option<TransformIdentity>,
@@ -63,6 +66,9 @@ impl Engine {
             telex_backend,
             macros: HashMap::new(),
             raw_buffer: String::new(),
+            pasted_prefix: String::new(),
+            previous_screen_len: None,
+            recovered_screen_len: None,
             paste_mode: false,
             auto_restore: true,
             active_transform: None,
@@ -109,14 +115,17 @@ impl Engine {
         // "tesster" -> "tester", "offfer" -> "offer", "isssue" -> "issue",
         // "lawws" -> "laws", "boooks" -> "books", "fixx" -> "fix", "ATXX" -> "ATX").
         // Keep the undone ASCII word on screen UNLESS `raw` is a natural English
-        // word whose double letter (e.g. "issue", "offer", "error", "press")
-        // was consumed by the undo, leaving a non-word like "isue" on screen.
+        // word whose double letter (e.g. "issue", "offer", "error", "press",
+        // "ass", "class", "password") was consumed by the undo, leaving a
+        // truncated word like "isue", "as", "clas", or "pasword" on screen.
         if composed.is_ascii() {
+            if dict.is_english_word(&raw_lower) || has_natural_english_double(&raw_lower) {
+                return true;
+            }
             if dict.is_english_word(&composed_lower) {
                 return false;
             }
-            return dict.is_english_word(&raw_lower)
-                || has_natural_english_double_before_vowel(&raw_lower);
+            return false;
         }
 
         // Genuine Vietnamese words that happen to look like English stay as-is.
@@ -153,11 +162,26 @@ impl Engine {
             && self.boundary != BoundaryState::Invalidated
     }
 
-    fn visible_output(&self) -> String {
+    fn composed_tail(&self) -> String {
+        if self.raw_buffer.is_empty() {
+            return String::new();
+        }
         if self.uses_recomposition() {
             crate::telex::resolve_and_render(&self.raw_buffer)
         } else {
-            self.bamboo.get_output()
+            match_casing(&self.raw_buffer, &self.bamboo.get_output())
+        }
+    }
+
+    fn visible_output(&self) -> String {
+        if self.pasted_prefix.is_empty() {
+            if self.uses_recomposition() {
+                crate::telex::resolve_and_render(&self.raw_buffer)
+            } else {
+                self.bamboo.get_output()
+            }
+        } else {
+            format!("{}{}", self.pasted_prefix, self.composed_tail())
         }
     }
 
@@ -171,6 +195,9 @@ impl Engine {
 
     pub fn paste(&mut self, text: &str) -> EngineEvent {
         self.raw_buffer.clear();
+        self.pasted_prefix.clear();
+        self.previous_screen_len = None;
+        self.recovered_screen_len = None;
         let event = EngineEvent::Paste(text.to_string());
         self.raw_buffer.push_str(text);
         event
@@ -311,23 +338,34 @@ impl Engine {
 
     pub fn update_with_pasted_text(&mut self, text: &str) {
         self.raw_buffer.clear();
+        self.pasted_prefix.clear();
+        self.previous_screen_len = None;
+        self.recovered_screen_len = None;
         self.raw_buffer.push_str(text);
     }
 
     pub fn reset(&mut self) {
         self.bamboo.reset();
         self.raw_buffer.clear();
+        self.pasted_prefix.clear();
+        self.previous_screen_len = None;
+        self.recovered_screen_len = None;
         self.active_transform = None;
         self.boundary = BoundaryState::Committed;
     }
 
     pub fn reset_visible_revision(&mut self) {
         self.visible_revision = 0;
+        self.previous_screen_len = None;
+        self.recovered_screen_len = None;
     }
 
     pub fn invalidate_composition(&mut self) {
         self.bamboo.reset();
         self.raw_buffer.clear();
+        self.pasted_prefix.clear();
+        self.previous_screen_len = None;
+        self.recovered_screen_len = None;
         self.active_transform = None;
         self.boundary = BoundaryState::Invalidated;
         self.last_transition = Some(TransitionKind::Invalidate);
@@ -335,6 +373,9 @@ impl Engine {
 
     pub fn recover_composition(&mut self) {
         self.visible_revision = self.visible_revision.saturating_sub(1);
+        if let Some(prev_len) = self.previous_screen_len.take() {
+            self.recovered_screen_len = Some(prev_len);
+        }
         self.last_transition = Some(TransitionKind::Recover);
     }
 
@@ -344,6 +385,7 @@ impl Engine {
             if has_unicode {
                 let word = self.raw_buffer.clone();
                 self.raw_buffer.clear();
+                self.pasted_prefix.clear();
                 self.paste_mode = false;
                 return Some(EngineEvent::Flush(word));
             }
@@ -383,10 +425,7 @@ impl Engine {
             }
             PhysicalEvent::Paste(text) => {
                 self.invalidate_composition();
-                self.raw_buffer.push_str(&text);
-                for ch in text.chars() {
-                    self.bamboo.append_literal(ch);
-                }
+                self.pasted_prefix.push_str(&text);
                 None
             }
             PhysicalEvent::ReplacementFailed => {
@@ -420,6 +459,39 @@ impl Engine {
         }
 
         if ch == '\x08' {
+            if self.raw_buffer.is_empty() {
+                if !self.pasted_prefix.is_empty() {
+                    let previous = self.visible_output();
+                    let prev_len = self
+                        .recovered_screen_len
+                        .take()
+                        .unwrap_or_else(|| previous.chars().count());
+                    self.previous_screen_len = Some(prev_len);
+                    self.pasted_prefix.pop();
+                    self.active_transform = None;
+                    self.boundary = if self.pasted_prefix.is_empty() {
+                        BoundaryState::Committed
+                    } else {
+                        BoundaryState::Composing
+                    };
+                    self.last_transition = Some(TransitionKind::Edit);
+                    return Some(self.replacement(
+                        prev_len,
+                        self.visible_output(),
+                        ReplacementReason::Edit,
+                    ));
+                }
+                self.active_transform = None;
+                self.boundary = BoundaryState::Committed;
+                self.last_transition = Some(TransitionKind::Edit);
+                return None;
+            }
+            let previous = self.composed_tail();
+            let prev_len = self
+                .recovered_screen_len
+                .take()
+                .unwrap_or_else(|| previous.chars().count());
+            self.previous_screen_len = Some(prev_len);
             let _ = self.raw_buffer.pop();
             self.bamboo.reset();
             let mut replayed_raw = String::new();
@@ -445,27 +517,35 @@ impl Engine {
                 }
             }
             self.active_transform = None;
-            self.boundary = if self.raw_buffer.is_empty() {
+            self.boundary = if self.raw_buffer.is_empty() && self.pasted_prefix.is_empty() {
                 BoundaryState::Committed
             } else {
                 BoundaryState::Composing
             };
             self.last_transition = Some(TransitionKind::Edit);
-            return None;
+            return Some(self.replacement(
+                prev_len,
+                self.composed_tail(),
+                ReplacementReason::Edit,
+            ));
         }
 
         if is_flush_char(ch) {
-            if self.raw_buffer.is_empty() {
+            if self.raw_buffer.is_empty() && self.pasted_prefix.is_empty() {
                 return None;
             }
 
-            let previous = self.visible_output();
-            let prev_len = previous.chars().count();
+            let previous = self.composed_tail();
+            let prev_len = self
+                .recovered_screen_len
+                .take()
+                .unwrap_or_else(|| previous.chars().count());
 
             // Check for macro
             let macro_expansion = self.macros.get(&self.raw_buffer.to_lowercase()).cloned();
             if let Some(expansion) = macro_expansion {
                 self.reset();
+                self.previous_screen_len = Some(prev_len);
                 return Some(self.replacement(prev_len, expansion, ReplacementReason::Macro));
             }
 
@@ -476,6 +556,7 @@ impl Engine {
                 // Auto-restore: if the committed word is English / not valid
                 // Vietnamese, revert to the raw keystrokes the user typed.
                 if self.auto_restore && Engine::should_restore_word(&previous, &raw) {
+                    self.previous_screen_len = Some(prev_len);
                     return Some(self.replacement(prev_len, raw, ReplacementReason::AutoRestore));
                 }
                 // Normal case: the composed word is already correctly on screen.
@@ -484,8 +565,23 @@ impl Engine {
             return None;
         }
 
-        let previous = self.visible_output();
-        let prev_len = previous.chars().count();
+        if self.method == InputMethod::Telex
+            && ch.is_ascii_digit()
+            && self.raw_buffer.is_empty()
+            && self.pasted_prefix.is_empty()
+            && !self
+                .macros
+                .keys()
+                .any(|k| k.starts_with(&ch.to_string()))
+        {
+            return None;
+        }
+
+        let previous = self.composed_tail();
+        let prev_len = self
+            .recovered_screen_len
+            .take()
+            .unwrap_or_else(|| previous.chars().count());
 
         if let Some(undo) = self.bamboo.undo_telex_transform(ch, &self.raw_buffer) {
             let consumed_stroke_literal = if undo == TelexUndo::ConsumeTrigger {
@@ -505,7 +601,8 @@ impl Engine {
             self.active_transform = None;
             self.boundary = BoundaryState::Composing;
             self.last_transition = Some(TransitionKind::UndoActive);
-            let output = self.bamboo.get_output();
+            let output = self.composed_tail();
+            self.previous_screen_len = Some(prev_len);
             return Some(self.replacement(
                 prev_len,
                 match_casing(&self.raw_buffer, &output),
@@ -514,12 +611,15 @@ impl Engine {
         }
 
         self.raw_buffer.push(ch);
+        if self.boundary == BoundaryState::Committed {
+            self.boundary = BoundaryState::Composing;
+        }
 
-        if let Some(new_output) = self.bamboo.process_key(ch) {
+        if self.bamboo.process_key(ch).is_some() {
             // Only emit Replace when Vietnamese processing CHANGED the output
             // (tone/mark keys). For simple appends, let the raw key go through.
             let expected = format!("{}{}", previous, ch);
-            let cased = match_casing(&self.raw_buffer, &new_output);
+            let cased = match_casing(&self.raw_buffer, &self.composed_tail());
             if cased != expected && cased != previous {
                 if let Some((kind, trigger, policy)) =
                     active_telex_transform(&self.raw_buffer, ch, &cased)
@@ -543,10 +643,12 @@ impl Engine {
                     Some(TransitionKind::ReplaceActive) => ReplacementReason::ReplaceTransform,
                     _ => ReplacementReason::ApplyTransform,
                 };
+                self.previous_screen_len = Some(prev_len);
                 return Some(self.replacement(prev_len, cased, reason));
             }
         }
 
+        self.previous_screen_len = None;
         None
     }
 
@@ -556,9 +658,10 @@ impl Engine {
 
     pub fn state(&self) -> CompositionState {
         let visible = self.visible_output();
+        let raw_keys = format!("{}{}", self.pasted_prefix, self.raw_buffer);
         CompositionState {
-            raw_keys: self.raw_buffer.clone(),
-            case_shape: case_shape(&self.raw_buffer),
+            case_shape: case_shape(&raw_keys),
+            raw_keys,
             validity: if visible.is_empty() {
                 SpellingValidity::Unknown
             } else if crate::spelling::is_valid_vietnamese_syllable(&visible) {
@@ -600,6 +703,17 @@ fn active_telex_transform(
     }
 
     let lower = raw.to_ascii_lowercase();
+    let vis_lower = visible.to_lowercase();
+    let has_u_horn = vis_lower
+        .chars()
+        .any(|c| matches!(c, 'ư' | 'ứ' | 'ừ' | 'ử' | 'ữ' | 'ự'));
+    let has_o_horn = vis_lower
+        .chars()
+        .any(|c| matches!(c, 'ơ' | 'ớ' | 'ờ' | 'ở' | 'ỡ' | 'ợ'));
+    let has_a_breve = vis_lower
+        .chars()
+        .any(|c| matches!(c, 'ă' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ'));
+
     let mark = if lower.ends_with("dd") {
         Some((TransformKind::StrokeDd, UndoPolicy::ConsumeTrigger))
     } else if lower.ends_with("aa") {
@@ -608,14 +722,14 @@ fn active_telex_transform(
         Some((TransformKind::Mark("ee"), UndoPolicy::AppendTrigger))
     } else if lower.ends_with("oo") {
         Some((TransformKind::Mark("oo"), UndoPolicy::AppendTrigger))
-    } else if trigger == 'w' && visible.contains('ư') && visible.contains('ơ') {
+    } else if trigger == 'w' && has_u_horn && has_o_horn {
         Some((TransformKind::Mark("uo+w"), UndoPolicy::AppendTrigger))
-    } else if trigger == 'w' && visible.contains('ư') && lower.contains("ua") {
+    } else if trigger == 'w' && has_u_horn && lower.contains("ua") {
         Some((TransformKind::Mark("ua+w"), UndoPolicy::AppendTrigger))
     } else if trigger == 'w' {
-        let kind = if lower.contains("aw") {
+        let kind = if has_a_breve || lower.contains("aw") {
             "aw"
-        } else if lower.contains("ow") {
+        } else if has_o_horn || lower.contains("ow") {
             "ow"
         } else {
             "uw"
@@ -693,10 +807,76 @@ fn match_casing(raw: &str, processed: &str) -> String {
     }
 }
 
-fn has_natural_english_double_before_vowel(raw_lower: &str) -> bool {
+fn has_natural_english_double(raw_lower: &str) -> bool {
     let chars: Vec<char> = raw_lower.chars().collect();
     if chars.windows(3).any(|w| w[0] == w[1] && w[1] == w[2]) {
         return false;
+    }
+    if raw_lower.ends_with("ss")
+        && matches!(
+            raw_lower,
+            "ass"
+                | "bass"
+                | "boss"
+                | "brass"
+                | "bypass"
+                | "chess"
+                | "class"
+                | "compass"
+                | "cross"
+                | "css"
+                | "discuss"
+                | "dress"
+                | "express"
+                | "fitness"
+                | "floss"
+                | "glass"
+                | "gloss"
+                | "grass"
+                | "gross"
+                | "guess"
+                | "harass"
+                | "headless"
+                | "illness"
+                | "impress"
+                | "kiss"
+                | "lass"
+                | "less"
+                | "loss"
+                | "mass"
+                | "mess"
+                | "miss"
+                | "moss"
+                | "ness"
+                | "pass"
+                | "possess"
+                | "press"
+                | "process"
+                | "progress"
+                | "rss"
+                | "serverless"
+                | "stateless"
+                | "stress"
+                | "subclass"
+                | "success"
+                | "suppress"
+                | "swiss"
+                | "toss"
+                | "truss"
+                | "unless"
+                | "useless"
+                | "wellness"
+                | "wireless"
+                | "witness"
+        )
+    {
+        return true;
+    }
+    if raw_lower.starts_with("passw")
+        || raw_lower.starts_with("class")
+        || raw_lower.starts_with("cross")
+    {
+        return true;
     }
     for i in 0..chars.len().saturating_sub(2) {
         let c0 = chars[i];

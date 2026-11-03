@@ -59,6 +59,7 @@ pub enum TransitionKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ReplacementReason {
+    Edit,
     ApplyTransform,
     ReplaceTransform,
     UndoTransform,

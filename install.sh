@@ -3,6 +3,98 @@
 # Viet+ — Vietnamese Input Method Installer
 set -euo pipefail
 
+# Privileged operations must never resolve executables from user-writable paths.
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+
+set_root_bool() {
+    local config="$1" key="$2" value="$3" policy="${4:-replace}" temporary
+    case "$key:$value" in
+        auto_ibus:true|auto_ibus:false|ibus_engine:true|ibus_engine:false) ;;
+        *) return 1 ;;
+    esac
+    temporary="$(mktemp "${config}.XXXXXX")"
+    if ! awk -v key="$key" -v value="$value" -v policy="$policy" '
+        # Track strings so multiline macro contents cannot become settings.
+        function scan_strings(line, i, character, delimiter) {
+            for (i = 1; i <= length(line); i++) {
+                character = substr(line, i, 1)
+                if (string_quote != "") {
+                    delimiter = string_quote string_quote string_quote
+                    if (string_quote == "\"" && character == "\\") i++
+                    else if (multiline && substr(line, i, 3) == delimiter) {
+                        i += 2
+                        # TOML permits one or two quotes before the closing triple.
+                        while (substr(line, i + 1, 1) == string_quote) i++
+                        string_quote = ""; multiline = 0
+                    } else if (!multiline && character == string_quote) string_quote = ""
+                } else if (character == "#") break
+                else if (character == "\"" || character == quote) {
+                    string_quote = character
+                    delimiter = character character character
+                    multiline = (substr(line, i, 3) == delimiter)
+                    if (multiline) i += 2
+                }
+            }
+        }
+        BEGIN {
+            root = 1; macros = 0; written = 0; count = 0; first_table = 0
+            quote = sprintf("%c", 39)
+            assignment = "^[[:space:]]*(" key "|\"" key "\"|" quote key quote ")[[:space:]]*="
+            macros_header = "^[[:space:]]*\\[[[:space:]]*(macros|\"macros\"|" quote "macros" quote ")[[:space:]]*\\][[:space:]]*(#.*)?$"
+        }
+        string_quote != "" {
+            lines[++count] = $0
+            scan_strings($0)
+            next
+        }
+        /^[[:space:]]*\[/ {
+            if (root) first_table = count + 1
+            root = 0
+            macros = ($0 ~ macros_header)
+        }
+        root && $0 ~ assignment {
+            if (!written) {
+                lines[++count] = (policy == "missing" ? $0 : key " = " value)
+            }
+            written = 1
+            next
+        }
+        macros && $0 ~ assignment {
+            candidate = $0
+            sub(assignment "[[:space:]]*", "", candidate)
+            if (candidate ~ /^(true|false)[[:space:]]*(#.*)?$/) {
+                sub(/[[:space:]#].*$/, "", candidate)
+                misplaced = candidate
+                next
+            }
+        }
+        { lines[++count] = $0; scan_strings($0) }
+        END {
+            if (!first_table) first_table = count + 1
+            if (policy == "missing" && misplaced != "") value = misplaced
+            for (i = 1; i <= count + 1; i++) {
+                if (!written && i == first_table) print key " = " value
+                if (i <= count) print lines[i]
+            }
+        }
+    ' "$config" > "$temporary"; then
+        rm -f -- "$temporary"
+        return 1
+    fi
+    chmod --reference="$config" "$temporary"
+    chown --reference="$config" "$temporary"
+    mv -f -- "$temporary" "$config"
+}
+
+migrate_ibus_config() {
+    local config="$1" force_ibus="${2:-false}"
+    set_root_bool "$config" auto_ibus true missing
+    set_root_bool "$config" ibus_engine false missing
+    if [ "$force_ibus" = true ]; then
+        set_root_bool "$config" ibus_engine true
+    fi
+}
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
 # Defaults + argument parsing (so --lang takes effect before any output)
@@ -348,7 +440,6 @@ if [ "$FROM_SOURCE" = true ]; then
     [ -z "$REAL_HOME" ] && REAL_HOME="/home/$REAL_USER"
     export CARGO_HOME="$REAL_HOME/.cargo"
     export RUSTUP_HOME="$REAL_HOME/.rustup"
-    export PATH="$CARGO_HOME/bin:$PATH"
 
     # Helper to run cargo/rustup as the build user with correct env
     run_as_build_user() {
@@ -385,7 +476,6 @@ if [ "$FROM_SOURCE" = true ]; then
             else
                 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
             fi
-            export PATH="$CARGO_HOME/bin:$PATH"
             if ! run_as_build_user cargo --version >/dev/null 2>&1; then
                 echo "ERROR: cargo still not found after rustup. Try manual install:" >&2
                 echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y" >&2
@@ -404,42 +494,8 @@ if [ "$FROM_SOURCE" = true ]; then
         fi
     fi
 
-    # Ensure cargo persists for future shells (we used --no-modify-path)
-    # Omarchy's .bashrc has an early `[[ $- != *i* ]] && return` guard, so cargo must be
-    # injected before that line, not appended at EOF where it would only affect interactive shells.
-    if [ "$REAL_USER" != "root" ]; then
-        for _rc in "$REAL_HOME/.bashrc" "$REAL_HOME/.zshrc" "$REAL_HOME/.bash_profile" "$REAL_HOME/.profile"; do
-            if [ -f "$_rc" ]; then
-                if ! grep -qF '.cargo/bin' "$_rc" && ! grep -qF 'cargo/env' "$_rc"; then
-                    if [ "$_rc" = "$REAL_HOME/.bashrc" ] && grep -qF '[[ $- != *i* ]] && return' "$_rc"; then
-                        # Insert before the interactive guard
-                        _tmp="$(mktemp)"
-                        awk '
-                            /\[\[ \$- != \*i\* ]] && return/ && !done {
-                                print "# Rust cargo (needed for vietc build)"
-                                print "export PATH=\"$HOME/.cargo/bin:$PATH\""
-                                print ""
-                                done=1
-                            }
-                            {print}
-                        ' "$_rc" > "$_tmp" && cat "$_tmp" > "$_rc" && rm -f "$_tmp"
-                    else
-                        echo '' >> "$_rc"
-                        echo '# Added by vietc installer: Rust cargo' >> "$_rc"
-                        echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$_rc"
-                    fi
-                    chown "$REAL_USER":"$REAL_USER" "$_rc" 2>/dev/null || true
-                fi
-            fi
-        done
-        # Also ensure systemd user env via environment.d for Wayland sessions (omarchy/uwsm)
-        mkdir -p "$REAL_HOME/.config/environment.d"
-        if [ ! -f "$REAL_HOME/.config/environment.d/cargo.conf" ]; then
-            # Use absolute path so systemd/user session picks it up without shell expansion quirks
-            echo "PATH=$REAL_HOME/.cargo/bin:\$PATH" > "$REAL_HOME/.config/environment.d/cargo.conf"
-            chown -R "$REAL_USER":"$REAL_USER" "$REAL_HOME/.config/environment.d" 2>/dev/null || true
-        fi
-    fi
+    # Cargo's PATH is scoped to run_as_build_user. Do not modify user-owned
+    # shell profiles or environment.d as root (these paths may be symlinks).
 
     # Clone source if not in repo
     if [ ! -f Cargo.toml ] || [ ! -d .git ]; then
@@ -579,12 +635,17 @@ fi
 mkdir -p /etc/modules-load.d
 echo "uinput" > /etc/modules-load.d/vietc.conf
 modprobe uinput 2>/dev/null || true
-cat > /etc/udev/rules.d/99-vietc.rules << 'EOF'
-KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", GROUP="input", MODE="0666"
-SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess", GROUP="input", MODE="0666"
+# Tag before systemd's 73-seat-late.rules so logind grants active-session access.
+rm -f /etc/udev/rules.d/99-vietc.rules
+cat > /etc/udev/rules.d/70-vietc.rules << 'EOF'
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", GROUP="root", MODE="0600"
+SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess", GROUP="root", MODE="0600"
 EOF
+# Revoke permissions left on existing nodes by older world-writable rules.
+chmod o-rw /dev/uinput /dev/input/event* 2>/dev/null || true
 udevadm control --reload-rules 2>/dev/null || true
-udevadm trigger 2>/dev/null || true
+udevadm trigger --action=change --subsystem-match=input 2>/dev/null || true
+udevadm trigger --action=change --subsystem-match=misc 2>/dev/null || true
 
 # Icons (main app icon + tray status icons across multiple sizes)
 for size in scalable 256x256 128x128 64x64 48x48 32x32; do
@@ -942,30 +1003,11 @@ lm = "làm"
 ng = "người"
 EOF
     fi
-    # If an existing config lacks the new Ubuntu-IBus keys, append them so
-    # already-installed users auto-migrate to the smooth IBus path.
-    if ! grep -q "auto_ibus" /etc/vietc/config.toml 2>/dev/null; then
-        cat >> /etc/vietc/config.toml << 'EOF'
-# Added by vietc 0.1.8+ Ubuntu fix (like Funput funput-ibus on GNOME)
-auto_ibus = true
-EOF
-    fi
-    # Honour --ibus / --fcitx5 force flag like Funput's install.sh (--ibus/--fcitx5)
-    if [ "$FORCE_IBUS" = true ]; then
-        if grep -q "^ibus_engine" /etc/vietc/config.toml; then
-            sed -i 's/^ibus_engine.*/ibus_engine = true/' /etc/vietc/config.toml
-        else
-            echo "ibus_engine = true" >> /etc/vietc/config.toml
-        fi
-        # Also ensure user config inherits the forced IBus
-        if [ -n "${USER_HOME:-}" ] && [ -f "$USER_HOME/.config/vietc/config.toml" ]; then
-            if grep -q "^ibus_engine" "$USER_HOME/.config/vietc/config.toml"; then
-                sed -i 's/^ibus_engine.*/ibus_engine = true/' "$USER_HOME/.config/vietc/config.toml"
-            else
-                echo "ibus_engine = true" >> "$USER_HOME/.config/vietc/config.toml"
-            fi
-            chown -R "$INSTALLING_USER" "$USER_HOME/.config/vietc" 2>/dev/null || true
-        fi
+    # Repair legacy booleans appended under [macros], preserving manual values
+    # unless --ibus explicitly forces the engine. Personal configs take priority.
+    migrate_ibus_config /etc/vietc/config.toml "$FORCE_IBUS"
+    if [ -n "${USER_HOME:-}" ] && [ -f "$USER_HOME/.config/vietc/config.toml" ]; then
+        migrate_ibus_config "$USER_HOME/.config/vietc/config.toml" "$FORCE_IBUS"
     fi
     # Also ensure the invoking user's personal config inherits the fix if it
     # was just deleted/migrated above and doesn't exist yet.

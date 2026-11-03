@@ -45,6 +45,13 @@ fn parse_method(s: &str) -> InputMethod {
     }
 }
 
+/// Returns true for non-printable Linux keycodes (navigation, editing, Tab,
+/// function keys) that move the cursor or change focus and therefore require
+/// committing any active preedit before forwarding.
+fn is_non_printable_boundary_key(key: u32) -> bool {
+    matches!(key, 15 | 59..=68 | 87 | 88 | 102..=111)
+}
+
 struct ImState {
     seat: Option<WlSeat>,
     im_manager: Option<ZwpInputMethodManagerV2>,
@@ -211,10 +218,11 @@ impl ImState {
             }
         }
 
-        // Ctrl/Alt combos are shortcuts — commit any in-progress preedit and forward untouched.
+        // Ctrl/Alt/Super combos are shortcuts — commit any in-progress preedit and forward untouched.
         let ctrl = xkb.mod_name_is_active(xkb::MOD_NAME_CTRL, xkb::STATE_MODS_EFFECTIVE);
         let alt = xkb.mod_name_is_active(xkb::MOD_NAME_ALT, xkb::STATE_MODS_EFFECTIVE);
-        if ctrl || alt {
+        let logo = xkb.mod_name_is_active(xkb::MOD_NAME_LOGO, xkb::STATE_MODS_EFFECTIVE);
+        if ctrl || alt || logo {
             self.commit_preedit();
             self.engine.reset();
             self.forward_press(time, key);
@@ -222,7 +230,13 @@ impl ImState {
         }
 
         if codepoint == 0 {
-            // Modifier or non-printable key: forward so the app behaves normally.
+            // Navigation, editing, or function keys move cursor / change focus:
+            // commit any in-progress preedit before forwarding. Pure modifiers
+            // (Shift, CapsLock, etc.) pass through without disturbing preedit.
+            if is_non_printable_boundary_key(key) {
+                self.commit_preedit();
+                self.engine.reset();
+            }
             self.forward_press(time, key);
             return;
         }
@@ -477,10 +491,27 @@ pub fn run_wayland_im(
     eprintln!("[vietc-wayland] running as Wayland input method (no root required)");
 
     while !SIGNAL_EXIT.load(Ordering::SeqCst) {
+        let _ = conn.flush();
         if event_queue.dispatch_pending(&mut state).is_err() {
             break;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if let Some(guard) = conn.prepare_read() {
+            let fd = guard.connection_fd().as_raw_fd();
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let poll_ret = unsafe { libc::poll(&mut pfd, 1, 50) };
+            if poll_ret > 0 && (pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0 {
+                if guard.read().is_err() {
+                    break;
+                }
+            }
+        }
+        if event_queue.dispatch_pending(&mut state).is_err() {
+            break;
+        }
     }
 
     Ok(())
@@ -646,4 +677,17 @@ mod tests {
         let keys = virtual_keyboard_keys(false, &[('a', 30), ('w', 17), (' ', 57)]);
         assert_eq!(keys, vec![30, 17, 57]);
     }
+
+    #[test]
+    fn non_printable_boundary_keys_distinguish_nav_from_modifiers() {
+        assert!(is_non_printable_boundary_key(15)); // Tab
+        assert!(is_non_printable_boundary_key(105)); // Left
+        assert!(is_non_printable_boundary_key(106)); // Right
+        assert!(is_non_printable_boundary_key(111)); // Delete
+        assert!(is_non_printable_boundary_key(59)); // F1
+        assert!(!is_non_printable_boundary_key(42)); // Left Shift
+        assert!(!is_non_printable_boundary_key(54)); // Right Shift
+        assert!(!is_non_printable_boundary_key(58)); // CapsLock
+    }
 }
+
