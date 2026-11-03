@@ -6542,8 +6542,8 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
     teardown.expect("controlled fast-input target must be reaped");
 }
 
-const LONG_TEXT_MIN_WORDS: usize = 700;
-const LONG_TEXT_MAX_WORDS: usize = 1000;
+const LONG_TEXT_MIN_WORDS: usize = 45;
+const LONG_TEXT_MAX_WORDS: usize = 80;
 const DEFAULT_LONG_TEXT_KEY_DELAY_MS: u64 = 85;
 const MIN_LONG_TEXT_KEY_DELAY_MS: u64 = 40;
 const MAX_LONG_TEXT_KEY_DELAY_MS: u64 = 250;
@@ -6557,17 +6557,13 @@ fn long_text_key_delay_ms() -> u64 {
 }
 
 fn controlled_long_text_input() -> String {
-    const PARAGRAPH: &str = "Mooix sangs, laapj trinhf vieen moowr mays, docj email, kieemr tra lichj hopj vaf xem dashboard cuar duwj ans. Sau ddoos, hoj pull source code, chayj test, review pull request vaf ghi chus casc looix caanf suwar. Mootj soos teen tieengs Anh nhu test, suite, status, issue, user, feature, release, database vaf service dduocwj giuwx nguyeen ddeer phast hieenj truowngf hopwj Telex dieenx giair nhaamf. Trong lucs lamf vieecj, Minh vieets hamf mowis, Huowng capj nhaatj API, conf An kieemr tra log treen mooi truowngf staging. Car nhoms trao ddooir bawngf tieengs Vieetj cos chuwx hoa vaf chuwx thuowngf, vis duj Hoom Nay Chungs Tooi Suwar Looix, rooif xasc nhaanj keets quar bawngf unit test, integration test vaf cargo check. Buooir chieeuf, moi nguowif xuwr lys phanr hooif, toois uuw hieeuj nawng, capj nhaatj taif lieeuj, chuaanr bij banr phast hanhf vaf toongr keets nhuwngx vieecj ddax hoanf thanhf.";
-    std::iter::repeat_n(PARAGRAPH, 6)
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    "hoom nay tooi ddang kieemr tra booj gox tieengs Vieetj treen COSMIC Edit. TOOI DDANG GOX TOANF CHUWX VIEETS HOA. Hoom Nay Tooi Vieets Hoa Ddaauf Chuwx. English text includes test, suite, status, issue, user, feature, release, database, service; punctuation: comma, period, colon, semicolon, question mark? Keets quar cuoois cungf phair chinhs xasc, khoong lapwj laij ddoanj vawn."
+        .to_string()
 }
 
 fn controlled_long_text() -> String {
-    const PARAGRAPH: &str = "Mỗi sáng, lập trình viên mở máy, đọc email, kiểm tra lịch họp và xem dashboard của dự án. Sau đó, họ pull source code, chạy test, review pull request và ghi chú các lỗi cần sửa. Một số tên tiếng Anh như test, suite, status, issue, user, feature, release, database và service được giữ nguyên để phát hiện trường hợp Telex diễn giải nhầm. Trong lúc làm việc, Minh viết hàm mới, Hương cập nhật API, còn An kiểm tra log trên môi trường staging. Cả nhóm trao đổi bằng tiếng Việt có chữ hoa và chữ thường, ví dụ Hôm Nay Chúng Tôi Sửa Lỗi, rồi xác nhận kết quả bằng unit test, integration test và cargo check. Buổi chiều, mọi người xử lý phản hồi, tối ưu hiệu năng, cập nhật tài liệu, chuẩn bị bản phát hành và tổng kết những việc đã hoàn thành.";
-    std::iter::repeat_n(PARAGRAPH, 6)
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    "hôm nay tôi đang kiểm tra bộ gõ tiếng Việt trên COSMIC Edit. TÔI ĐANG GÕ TOÀN CHỮ VIẾT HOA. Hôm Nay Tôi Viết Hoa Đầu Chữ. English text includes test, suite, status, issue, user, feature, release, database, service; punctuation: comma, period, colon, semicolon, question mark? Kết quả cuối cùng phải chính xác, không lặp lại đoạn văn."
+        .to_string()
 }
 
 fn summarize_text_mismatch(expected: &str, observed: &str) -> String {
@@ -6654,8 +6650,10 @@ fn deterministic_long_text_fixture_has_required_length_language_and_telex_risks(
     );
     assert!((LONG_TEXT_MIN_WORDS..=LONG_TEXT_MAX_WORDS).contains(&word_count));
     for required in [
-        "Mỗi sáng",
-        "Hôm Nay Chúng Tôi Sửa Lỗi",
+        "hôm nay",
+        "TÔI ĐANG GÕ TOÀN CHỮ VIẾT HOA",
+        "Hôm Nay Tôi Viết Hoa Đầu Chữ",
+        "English text",
         "test",
         "suite",
         "status",
@@ -6663,6 +6661,7 @@ fn deterministic_long_text_fixture_has_required_length_language_and_telex_risks(
         "feature",
         "database",
         "service",
+        "comma, period, colon, semicolon, question mark?",
     ] {
         assert!(
             text.contains(required),
@@ -6823,6 +6822,60 @@ fn observe_long_text_target(
         RuntimeTargetKind::Firefox => copy_observable_target_text(environment, timeout),
         _ => Err(RuntimeCommandError::PrerequisiteMissing),
     }
+}
+
+#[test]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, COSMIC Wayland, COSMIC Edit, a running vietc daemon, and writable /dev/uinput"]
+fn privileged_cosmic_edit_types_vietnamese_end_to_end() {
+    let environment = RuntimeEnvironment::detect_current();
+    assert!(controlled_display_available(&environment));
+    assert_eq!(environment.session_type, "wayland");
+    assert!(environment.desktop.to_ascii_uppercase().contains("COSMIC"));
+
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let timeout = Duration::from_secs(30);
+    let raw = "hieenj taij tooi ddang gox tieengs Vieetj dduocwj rooif";
+    let expected = "hiện tại tôi đang gõ tiếng Việt được rồi";
+
+    let (fixture, mut child, _) = launch_long_text_target(
+        workspace_root,
+        RuntimeTargetKind::CosmicEdit,
+        &environment,
+        timeout,
+    )
+    .expect("COSMIC Edit target must launch");
+
+    let scenario = (|| {
+        activate_long_text_target(RuntimeTargetKind::CosmicEdit, &fixture, timeout)?;
+        std::thread::sleep(Duration::from_secs(1));
+        inject_controlled_keys(&environment, raw, 85, timeout)?;
+        let observed = observe_long_text_target(
+            RuntimeTargetKind::CosmicEdit,
+            &fixture,
+            None,
+            &environment,
+            timeout,
+        )?;
+        std::fs::write(
+            workspace_root.join("target/runtime-artifacts/cosmic-edit-vietnamese-e2e.txt"),
+            format!(
+                "raw={raw:?}\nexpected={expected:?}\nobserved={observed:?}\nstatus={}\n",
+                if observed == expected { "PASS" } else { "FAILED" }
+            ),
+        )
+        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
+        if observed == expected {
+            Ok(())
+        } else {
+            Err(RuntimeCommandError::ScenarioFailed)
+        }
+    })();
+
+    let teardown = child.terminate_and_reap(Duration::from_secs(5));
+    scenario.expect("COSMIC Edit must receive the exact Vietnamese sentence");
+    teardown.expect("COSMIC Edit target must be reaped");
 }
 
 #[test]

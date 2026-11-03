@@ -70,13 +70,14 @@ pub fn get_device_phys_id(path: &std::path::Path) -> Option<String> {
         }
     }
 
-    // 2. Check phys (USB hardware endpoint prefix)
+    // 2. Check phys. Keep the complete interface path: composite USB
+    // keyboards can expose separate keyboard interfaces such as input0 and
+    // input2. Collapsing both to the USB prefix causes the real typing
+    // interface to be skipped when another interface is discovered first.
     if let Ok(phys) = fs::read_to_string(dev_path.join("phys")) {
         let ph = phys.trim();
         if !ph.is_empty() {
-            // Strip "/input0", "/input1" suffix so multiple interfaces of the same physical USB dongle share one ID
-            let base = ph.split('/').next().unwrap_or(ph);
-            return Some(format!("phys:{}", base));
+            return Some(format!("phys:{}", ph));
         }
     }
 

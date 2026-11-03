@@ -683,6 +683,23 @@ if [ -n "$USER_HOME" ] && [ "$INSTALLING_USER" != "root" ]; then
     rm -f "$USER_HOME/.config/systemd/user/vietc.service" \
           "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service" \
           "$USER_HOME/.config/systemd/user/default.target.wants/vietc.service" 2>/dev/null || true
+
+    # Remove stale development drop-ins that override ExecStart. Without this,
+    # install.sh updates /usr/bin/vietc-daemon while systemd keeps running a
+    # workspace target/release/vietc binary, so installation and E2E testing
+    # exercise different executables. Preserve drop-ins that only add optional
+    # environment variables or other user settings.
+    DROPIN_DIR="$USER_HOME/.config/systemd/user/vietc.service.d"
+    if [ -d "$DROPIN_DIR" ]; then
+        for dropin in "$DROPIN_DIR"/*.conf; do
+            [ -f "$dropin" ] || continue
+            if grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$dropin"; then
+                rm -f "$dropin"
+            fi
+        done
+        rmdir "$DROPIN_DIR" 2>/dev/null || true
+    fi
+
     mkdir -p "$USER_HOME/.config/systemd/user/graphical-session.target.wants"
     ln -sf /usr/lib/systemd/user/vietc.service \
           "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service"
@@ -779,9 +796,28 @@ if [ -n "$INSTALLING_USER" ] && [ "$INSTALLING_USER" != "root" ]; then
     # user-selected values.
 fi
 
-# Ubuntu GNOME: ensure session env reaches the user manager and IBus is ready.
-# This fixes `ConditionEnvironment=DISPLAY` not being imported on Wayland and
-# `IBUS_ADDRESS` stale after reboot — both caused silent service start failures.
+# Ensure the active graphical session environment reaches the user manager.
+# Fedora COSMIC commonly gives systemd --user an XWayland DISPLAY but omits
+# WAYLAND_DISPLAY and related session markers, which prevents vietc from
+# connecting to the native Wayland input-method protocol.
+if [ -n "${INSTALLING_USER:-}" ] && [ "$INSTALLING_USER" != "root" ]; then
+    U_UID="$(id -u "$INSTALLING_USER" 2>/dev/null)"
+    if [ -n "$U_UID" ]; then
+        sudo -u "$INSTALLING_USER" \
+            DISPLAY="${DISPLAY:-}" \
+            WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+            XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-}" \
+            XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-}" \
+            XDG_RUNTIME_DIR="/run/user/$U_UID" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
+            systemctl --user import-environment DISPLAY WAYLAND_DISPLAY \
+                XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_RUNTIME_DIR \
+                DBUS_SESSION_BUS_ADDRESS IBUS_ADDRESS 2>/dev/null || true
+    fi
+fi
+
+# Ubuntu GNOME: configure the native IBus path used when Mutter does not expose
+# the Wayland input-method protocol.
 if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ] || [ "$DISTRO" = "linuxmint" ]; then
     mkdir -p /etc/default
     # Write a minimal EnvironmentFile that systemd user manager can source.

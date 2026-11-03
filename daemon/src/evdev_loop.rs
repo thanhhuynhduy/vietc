@@ -150,6 +150,7 @@ pub fn run_with_evdev(
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
     let mut password_check_counter: u32 = 0;
     let mut last_key_time = std::time::Instant::now();
+    let mut last_hotplug_scan = std::time::Instant::now();
 
     log_info("[vietc] Event loop started");
 
@@ -166,6 +167,25 @@ pub fn run_with_evdev(
             }
             log_info("[vietc] Exiting on signal");
             return Ok(());
+        }
+
+        // Discover hotplugged keyboards on a fixed interval even while an
+        // existing device continuously produces events. Previously this ran
+        // only after a poll timeout, so an active pointer/keyboard could starve
+        // discovery of a newly created uinput keyboard indefinitely.
+        if last_hotplug_scan.elapsed() >= std::time::Duration::from_millis(100) {
+            last_hotplug_scan = std::time::Instant::now();
+            let new_devs = discover_new_keyboards(&known_paths, &mut known_phys_ids);
+            for (mut dev, name) in new_devs {
+                known_paths.insert(dev_path_of(&name));
+                if daemon.grab_enabled && dev.grab().is_ok() {
+                    log_info(&format!("[vietc] Hotplug grabbed keyboard: {}", name));
+                }
+                let caps = is_caps_lock_on(&dev);
+                log_info(&format!("[vietc] Hotplug connected keyboard: {}", name));
+                devices.push((dev, name));
+                device_states.push((evdev::AttributeSet::new(), caps));
+            }
         }
 
         // Poll ALL devices simultaneously
@@ -202,18 +222,6 @@ pub fn run_with_evdev(
                     last_window_class = class.clone();
                     daemon.check_app_change_with(last_window_class.clone());
                 }
-            }
-            // Hotplug: dynamically attach keyboards connected after startup
-            let new_devs = discover_new_keyboards(&known_paths, &mut known_phys_ids);
-            for (mut dev, name) in new_devs {
-                known_paths.insert(dev_path_of(&name));
-                if daemon.grab_enabled && dev.grab().is_ok() {
-                    log_info(&format!("[vietc] Hotplug grabbed keyboard: {}", name));
-                }
-                let caps = is_caps_lock_on(&dev);
-                log_info(&format!("[vietc] Hotplug connected keyboard: {}", name));
-                devices.push((dev, name.clone()));
-                device_states.push((evdev::AttributeSet::new(), caps));
             }
             continue;
         }

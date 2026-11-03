@@ -13,13 +13,11 @@ use crate::log::log_info;
 /// session with no X server that silently drops all Vietnamese (Unicode)
 /// output. We recover the variables from the owning user's processes in /proc.
 pub fn recover_display_env() {
-    // X11: if DISPLAY is already present we're fine, just make sure DBUS works.
-    if let Ok(d) = std::env::var("DISPLAY") {
-        if !d.is_empty() {
-            recover_dbus_env();
-            return;
-        }
-    }
+    // Do not return early when DISPLAY is present. Wayland sessions commonly
+    // expose XWayland's DISPLAY to the systemd user manager while omitting
+    // WAYLAND_DISPLAY. COSMIC is one such case, and treating DISPLAY as a
+    // complete session environment prevents the native Wayland path from
+    // connecting to the compositor.
 
     let target_uid: u32 = std::env::var("SUDO_UID")
         .ok()

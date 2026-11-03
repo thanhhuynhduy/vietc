@@ -125,10 +125,13 @@ cargo audit
 Khởi động lại user service sau khi build:
 
 ```bash
+systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS IBUS_ADDRESS
 systemctl --user daemon-reload
 systemctl --user restart vietc.service
 systemctl --user status vietc.service --no-pager
 ```
+
+Trên Fedora COSMIC/Wayland, lệnh `import-environment` bảo đảm `vietc.service` nhận đúng môi trường của phiên đồ họa hiện tại. `install.sh` cũng tự thực hiện bước này khi cài đặt; daemon sẽ khôi phục `WAYLAND_DISPLAY` từ phiên người dùng nếu systemd chỉ kế thừa `DISPLAY` của XWayland. Installer đồng thời loại bỏ các user-service drop-in cũ có `ExecStart=` để bản cài đặt và bài kiểm thử đều chạy đúng `/usr/bin/vietc-daemon`, thay vì vô tình chạy binary trong workspace.
 
 ## Cấu trúc dự án
 

@@ -371,7 +371,7 @@ pub fn activate_cosmic_edit(title_fragment: &str, timeout: Duration) -> Result<(
             "com.system76.cosmic-edit",
             "cosmic-edit",
         ],
-        true,
+        false,
         timeout,
     )
 }
