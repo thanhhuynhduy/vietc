@@ -374,15 +374,22 @@ impl Daemon {
             let screen_now = self.keymap_screen_string(ch);
             let corrected = !self.screen_output.is_empty() && to_commit != self.screen_output;
             if corrected {
-                let backspaces = screen_now.chars().count();
-                if backspaces > 0 {
-                    commands.push(OutputCommand::Backspace(backspaces));
+                let target = if self.keymap_mode {
+                    format!("{}{}", to_commit, ch)
+                } else {
+                    to_commit
+                };
+                let diff = vietc_engine::telex::replacement_diff(&screen_now, &target);
+                if diff.delete_before_cursor > 0 {
+                    commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
                 }
-                commands.push(OutputCommand::Type(to_commit));
+                if !diff.insert.is_empty() {
+                    commands.push(OutputCommand::Type(diff.insert));
+                }
             }
             // Re-type the flush char only when it was not already forwarded
-            // (grabbed mode) or when we just removed it (keymap correction).
-            if !self.keymap_mode || corrected {
+            // (grabbed mode).
+            if !self.keymap_mode {
                 commands.push(OutputCommand::Type(ch.to_string()));
             }
             self.event_store.clear();
@@ -400,11 +407,13 @@ impl Daemon {
             let screen_now = self.keymap_screen_string(ch);
             let corrected = !self.screen_output.is_empty() && to_commit != self.screen_output;
             if corrected {
-                let backspaces = screen_now.chars().count();
-                if backspaces > 0 {
-                    commands.push(OutputCommand::Backspace(backspaces));
+                let diff = vietc_engine::telex::replacement_diff(&screen_now, &to_commit);
+                if diff.delete_before_cursor > 0 {
+                    commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
                 }
-                commands.push(OutputCommand::Type(to_commit));
+                if !diff.insert.is_empty() {
+                    commands.push(OutputCommand::Type(diff.insert));
+                }
             }
             self.event_store.clear();
             self.screen_output.clear();
@@ -413,12 +422,12 @@ impl Daemon {
 
         let screen_now = self.keymap_screen_string(ch);
         if new_output != screen_now {
-            let backspaces = screen_now.chars().count();
-            if backspaces > 0 {
-                commands.push(OutputCommand::Backspace(backspaces));
+            let diff = vietc_engine::telex::replacement_diff(&screen_now, &new_output);
+            if diff.delete_before_cursor > 0 {
+                commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
             }
-            if !new_output.is_empty() {
-                commands.push(OutputCommand::Type(new_output.clone()));
+            if !diff.insert.is_empty() {
+                commands.push(OutputCommand::Type(diff.insert));
             }
         }
         // The injected result (or the unchanged text) is what the app now
@@ -462,19 +471,22 @@ impl Daemon {
         };
 
         // In keymap mode the user's backspace already removed one *displayed*
-        // character; only the remaining word region needs to be rewritten.
-        // In grabbed mode nothing was forwarded, so the whole region is removed.
-        let displayed_len = self.screen_output.chars().count();
-        let backspaces = if self.keymap_mode {
-            displayed_len.saturating_sub(1)
+        // character; compute the minimal suffix diff from the remaining screen text.
+        let screen_after_bs: String = if self.keymap_mode {
+            let len = self.screen_output.chars().count();
+            self.screen_output
+                .chars()
+                .take(len.saturating_sub(1))
+                .collect()
         } else {
-            displayed_len
+            self.screen_output.clone()
         };
-        if backspaces > 0 {
-            commands.push(OutputCommand::Backspace(backspaces));
+        let diff = vietc_engine::telex::replacement_diff(&screen_after_bs, &new_output);
+        if diff.delete_before_cursor > 0 {
+            commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
         }
-        if !new_output.is_empty() {
-            commands.push(OutputCommand::Type(new_output.clone()));
+        if !diff.insert.is_empty() {
+            commands.push(OutputCommand::Type(diff.insert));
         }
         self.screen_output = new_output;
 
@@ -822,5 +834,41 @@ mod tests {
         assert!(daemon.event_store.is_empty());
         assert!(daemon.screen_output.is_empty());
         assert_eq!(daemon.visible_revision, 0);
+    }
+
+    #[test]
+    fn replay_and_inject_only_replaces_changed_suffix_preserving_common_prefix() {
+        let mut config = Config::default();
+        config.input_method = "telex".into();
+        let mut daemon = Daemon::new(
+            config,
+            PathBuf::from("/tmp/vietc_suffix_diff_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.keymap_mode = true;
+        daemon.engine.set_enabled(true);
+
+        let mut screen = String::new();
+        for ch in "nghie".chars() {
+            screen.push(ch);
+            let cmds = daemon.replay_and_inject(ch);
+            apply(&mut screen, &cmds);
+        }
+        assert_eq!(screen, "nghie");
+
+        // Typing second 'e' turns "nghie" + 'e' ("nghiee") into "nghiê".
+        // Common prefix "nghi" (4 chars) must NOT be deleted — only "ee" (2 chars)
+        // is deleted and replaced with "ê".
+        screen.push('e');
+        let cmds = daemon.replay_and_inject('e');
+        assert_eq!(
+            cmds,
+            vec![
+                OutputCommand::Backspace(2),
+                OutputCommand::Type("ê".to_string())
+            ]
+        );
+        apply(&mut screen, &cmds);
+        assert_eq!(screen, "nghiê");
     }
 }

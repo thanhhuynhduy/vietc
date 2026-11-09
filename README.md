@@ -2,61 +2,62 @@
 
 Bộ gõ tiếng Việt dành cho Linux, hỗ trợ Wayland và X11, được phát triển bằng Rust.
 
-Dự án hiện tại được phát triển tiếp từ mã nguồn VietC gốc và đã được bổ sung các nâng cấp toàn diện về bảo mật, độ ổn định, kiểm thử tự động (Tier H headless & controlled runtime), bảo toàn clipboard, cũng như độ chính xác của bộ xử lý Telex/VNI và các backend nhập liệu (`evdev`/`uinput`, IBus, Wayland IM).
+Dự án được phát triển tiếp từ mã nguồn VietC gốc và đã được nâng cấp toàn diện về thuật toán xử lý ngôn ngữ tiếng Việt / tiếng Anh song ngữ (kế thừa và học hỏi trực tiếp từ bộ gõ **[Ngó Sen](https://github.com/ngosen/ngosen)** và **[bamboo-core](https://github.com/bamboo-vi/bamboo-core)**), kiểm thử tự động (Tier H headless & controlled runtime), bảo toàn clipboard, cũng như độ ổn định của các backend nhập liệu (`evdev`/`uinput`, IBus, Wayland IM).
 
 ## Tính năng chính
 
-- Hỗ trợ đầy đủ hai kiểu gõ **Telex** và **VNI**.
+- Hỗ trợ đầy đủ hai kiểu gõ **Telex** và **VNI** với quy tắc đặt dấu tự do (free-order tone/mark typing).
 - Chuyển đổi nhanh chế độ **ENG**, **VNI** và **TELEX** (`Ctrl + Space`, `Ctrl + Shift`, `vietcctl` hoặc khay hệ thống `vietc-tray`).
 - Đa dạng backend nhập liệu trên **Wayland** và **X11**:
   - `evdev` + `uinput` / `vietc-uinputd` (hỗ trợ cả grabbed và non-grabbed mode).
   - Native **IBus engine** (`org.freedesktop.IBus.Engine`).
   - Rootless **Wayland Input Method** (`zwp_input_method_v2` + `zwp_virtual_keyboard_v1`).
+- **Xử lý song ngữ Việt – Anh thông minh (Smart Bilingual Telex & Auto-Restore)**:
+  - Chặn nuốt phím thanh điệu/dấu mũ giữa hai nguyên âm trong các từ tiếng Anh có nguyên âm `e` câm hoặc đa âm tiết (`more`, `core`, `lose`, `rose`, `nose`, `chose`, `those`, `these`, `here`, `there`, `where`, `were`, `care`, `share`, `base`, `case`, `use`, `pure`, `cure`, `hire`, `fire`, `house`, `mouse`, `pause`, `cause`, `nasa`, `para`, `sara`, `exe`).
+  - Ngăn việc lặp chữ cái không liền kề tự huỷ dấu làm mất chữ trong các từ tiếng Anh (`order`, `border`, `server`, `sister`, `awkward`).
+  - Kiểm tra tính hợp lệ của phụ âm đầu và tiền tố âm tiết ngay khi đang gõ (`is_valid_vietnamese_prefix` / `has_valid_vietnamese_onset`), bỏ qua biến đổi dấu cho các cụm phụ âm đầu tiếng Anh (`str`, `sw`, `bl`, `cl`, `fl`, `gl`, `pl`, `sl`, `br`, `cr`, `dr`, `fr`, `gr`, `pr`, `sc`, `sk`, `sm`, `sn`, `sp`, `st`, `tw`, `wr`).
+  - Kết hợp kiểm tra quy tắc âm vị học tiếng Việt (CVC phonotactics + quy tắc phụ âm cuối tắc `c/ch/p/t` chỉ đi với thanh sắc/nặng) cùng **từ điển âm tiết tiếng Việt chuẩn** (`vietnamese.cm.dict` — 7.884 âm tiết, chuẩn hoá không phụ thuộc vị trí đặt dấu cũ/mới `hoà`/`hòa`, `thuỷ`/`thủy`) để khôi phục chính xác từ tiếng Anh tại ranh giới từ mà vẫn giữ nguyên các âm tiết tiếng Việt hợp lệ (`bên`, `tô`, `thí`, `ít`, `sĩ`, `lơ`, `quả`, `gì`, `giếng`...).
+- **Tối ưu thay thế hậu tố tối thiểu (`replacement_diff`)**:
+  - Chỉ gửi `Backspace` và chèn lại phần hậu tố thực sự thay đổi của từ đang gõ (ví dụ `nghie` + `e` → chỉ xoá `ee` và chèn `ê` để thành `nghiê`, giữ nguyên tiền tố `nghi`), giảm thiểu số lượng sự kiện phím ảo và tránh hiện tượng nháy/rớt chữ.
+- Hỗ trợ lặp phím liền kề để hoàn tác dấu thanh, dấu mũ/móc/trăng và `đ` cho cả **Telex** và **VNI** (`ass` → `as`, `tesst` → `test`, `offfer` → `offer`, `isssue` → `issue`, `aww` → `aw`, `addd` → `add`, `teele` → `tele`, `a11` → `a1`...).
 - Tự động nhận diện ô mật khẩu / PIN (AT-SPI2, IBus `ContentType`, tiến trình `sudo`/`passwd`, window class/title) và tự động phục hồi chế độ gõ khi rời ô mật khẩu.
 - Tự động bỏ qua (bypass) các ứng dụng đầu cuối từ xa / VM / game (`remmina`, `xfreerdp`, `virt-viewer`, `steam`...) theo danh sách cấu hình `excluded_apps`.
-- Hỗ trợ **Smart English Auto-Restore** (tự động khôi phục từ tiếng Anh tại ranh giới từ như `fix`, `cargo`, `status`, `world`, `class`, `password`...) có thể bật/tắt trong cấu hình.
-- Hỗ trợ lặp phím để hoàn tác dấu thanh, dấu mũ/móc/trăng và `đ` cho cả **Telex** và **VNI** (`ass` → `as`, `awa` → `wa`, `ww` → `w`, `a11` → `a1`...).
 - Hỗ trợ **macro / gõ tắt** thống nhất trên cả Telex và VNI.
 - Bảo toàn tuyệt đối nội dung **clipboard** (văn bản, ảnh, dữ liệu nhị phân, clipboard rỗng) và xác thực ghi clipboard thành công trước khi gửi `Backspace` xóa ký tự trên màn hình.
 - Theo dõi chuyển đổi tiêu điểm (focus) chính xác đến từng widget/ô nhập liệu trong cùng cửa sổ qua AT-SPI object path.
 
-## Các hạng mục kỹ thuật & bản sửa lỗi gần nhất
+## Kiến trúc & Logic xử lý mới nhất
 
 ### 1. Bộ xử lý ngôn ngữ (`vietc-engine`)
-- **Đồng bộ tuyệt đối màn hình (`screen`) và `engine.buffer()`**:
-  - Ngăn bộ khớp mũ `aa`/`ee`/`oo` vượt qua ký tự `'w'` hoặc ghi đè nguyên âm đã mang dấu trăng/móc (`"awa"` → `"wa"`, `"owo"` → `"wo"`).
-  - Chỉ hoàn tác `ww` khi ký tự `'w'` đầu tiên thực sự đã được tiêu thụ để đặt dấu (`"ww"` → `"w"`).
-  - Hỗ trợ hoàn tác phím dấu lặp lại trong chế độ VNI (`"a11"` → `"a1"`, `"a112"` → `"a12"`).
-- **Bảo vệ tiền tố tài liệu (`SENTINEL_PREFIX|`)**:
+- **Phân giải dấu và thanh điệu chính xác cho gõ song ngữ (`telex/mark.rs`, `telex/tone.rs`, `bamboo.rs`)**:
+  - Dấu mũ (`aa`, `ee`, `oo`) chỉ được ghép qua các nguyên âm liền kề trong cùng cụm nguyên âm (`neues` → `nếu`, `tieengs` → `tiếng`), không nhảy qua phím thanh điệu (`s, f, r, x, j`) hoặc phụ âm, giữ nguyên các từ như `these`, `here`, `there`, `where`, `were`, `exe`, `readme`.
+  - Phím thanh điệu đứng trước nguyên âm phía sau chỉ được tiêu thụ khi cụm nguyên âm tạo thành vần tiếng Việt hợp lệ theo kiểu gõ tự do (`chafo` → `chào`, `neesu` → `nếu`), loại bỏ hoàn toàn lỗi biến các từ tiếng Anh có `e` câm (`more`, `core`, `lose`, `rose`, `nose`, `chose`, `those`, `care`, `base`, `case`, `use`, `house`, `pause`...) thành âm tiết tiếng Việt giả (`mỏe`, `loé`...).
+  - Chỉ hoàn tác thanh điệu và dấu `w` khi hai phím kích hoạt giống nhau được gõ **liền kề** (`prev_idx + 1 == i`), bảo toàn chữ cái trong các từ tiếng Anh có chữ lặp cách quãng (`order`, `border`, `server`, `sister`, `awkward`).
+  - Hợp nhất hoàn toàn kết quả biến đổi giữa pipeline `telex/{mark,tone,render}.rs` và `BambooEngine` cho mọi thứ tự gõ tự do (`dduojwc` / `dduocwj` → `được`, `neues` / `neesu` → `nếu`).
+- **Kiểm tra chính tả kết hợp Ngữ âm học + Từ điển âm tiết (`spelling.rs`, `vietnamese.cm.dict`)**:
+  - Kiểm tra cấu trúc âm tiết `Phụ âm đầu (C1) - Nguyên âm (V) - Phụ âm cuối (C2)` qua ma trận `CV_MATRIX` và `VC_MATRIX`, hỗ trợ kiểm tra cả âm tiết hoàn chỉnh (`is_valid_vietnamese_syllable`) lẫn tiền tố âm tiết đang gõ (`is_valid_vietnamese_prefix`).
+  - Ràng buộc âm vị học tiếng Việt: âm tiết kết thúc bằng phụ âm tắc vô thanh (`c`, `ch`, `p`, `t`) bắt buộc phải mang thanh **sắc** hoặc **nặng** (nhờ đó các từ tiếng Anh như `chart`, `text`, `boot`, `keep` được tự động khôi phục về tiếng Anh).
+  - Tích hợp từ điển **7.884 âm tiết tiếng Việt** (`vietnamese.cm.dict`) được chuẩn hoá bằng hàm `without_tone_position` (tách thanh điệu ra cuối âm tiết để đối sánh độc lập với kiểu đặt dấu cũ/mới như `hoà` và `hòa`), giúp loại bỏ các tổ hợp ghép vần hợp lệ về mặt ma trận nhưng không tồn tại trong tiếng Việt thực tế (`gin`, `win`, `weed`...).
+- **Bảo vệ tiền tố tài liệu & đồng bộ trạng thái hiển thị**:
   - Tách biệt `pasted_prefix` khỏi `raw_buffer` khi nhận sự kiện `PhysicalEvent::Paste` để thao tác `Backspace` hoặc phím dấu tiếp theo không tái phân tích chuỗi vừa dán như phím Telex thô.
   - Theo dõi chiều dài thực tế trên màn hình (`previous_screen_len` / `recovered_screen_len`) khi xảy ra `PhysicalEvent::ReplacementFailed` để `Backspace` hoặc lần thay thế kế tiếp không bao giờ xóa lẹm vào văn bản đứng trước từ đang gõ.
-- **Chuẩn hóa ngữ âm & quy tắc dấu tiếng Việt**:
-  - Nhận diện chính xác âm đệm (glide) `qu` và `gi` (`"qua"`, `"gia"`, `"quyen"`, `"gieng"`) là âm tiết hợp lệ (`ParseStatus::Complete`).
-  - Xóa dấu thanh cũ trước khi chuyển vị trí dấu trong VNI (`"ho1a2"` → `"hoà"`) và kiểm tra tính hợp lệ không cho phép quá 1 nguyên âm mang dấu thanh trong cùng một âm tiết.
-  - Thống nhất xử lý macro tại ranh giới từ cho cả VNI và Telex, xóa đúng số ký tự viết tắt trước khi chèn nội dung mở rộng.
-  - Mở rộng bộ nhận diện từ tiếng Anh có phụ âm kép `'ss'` (`"ass"`, `"class"`, `"password"`, `"pass"`, `"less"`, `"boss"`...) khi bật `auto_restore`.
-  - Đảm bảo tính nhất quán của trạng thái máy hữu hạn (`BoundaryState::Composing`, `TransformKind::Mark("aw")`, `TransformKind::Mark("uo+w")`).
 
 ### 2. Daemon, Focus & Input Method Backends (`vietc-daemon`)
-- **`evdev_loop`**:
-  - Kiểm tra thay đổi file cấu hình và trạng thái (`status`, `config.toml`) trước khi bỏ qua chu kỳ `poll` rỗng để cập nhật có hiệu lực ngay lập tức kể cả khi bàn phím đang nghỉ.
-  - Kiểm tra đổi focus và trạng thái ô mật khẩu trước khi xử lý `KEY_BACKSPACE` hoặc bỏ qua phím khi engine tắt, giúp tự động bật lại tiếng Việt ngay khi rời ô mật khẩu trong cùng cửa sổ và không xóa nhầm ký tự ở ô mới khi vừa chuyển focus.
-- **AT-SPI Focus Tracker (`focus_tracker`)**:
-  - Kết hợp cả `sender` và `object_path` (`atspi:<sender>:<path>`) để phát hiện việc chuyển đổi giữa các ô nhập liệu khác nhau trong cùng một ứng dụng.
-- **IBus Engine (`ibus_engine`)**:
-  - Hỗ trợ `SetContentType` và thuộc tính `ContentType` (`IBUS_INPUT_PURPOSE_PASSWORD`, `IBUS_INPUT_PURPOSE_PIN`) để tự động commit preedit và tắt ghép chữ trong ô mật khẩu/PIN.
-  - Tự động commit `preedit` đang gõ dở trước khi chuyển chế độ bằng `Ctrl + Space` hoặc khi đổi phương thức gõ từ bên ngoài.
-  - Không flush `preedit` khi nhấn các phím bổ trợ đơn thuần (`Shift`, `Ctrl`, `CapsLock`, `Alt`, `Super`, `ISO_Level3_Shift`), giữ nguyên mạch ghép chữ hoa giữa từ.
-- **Wayland Input Method (`wayland_im`)**:
-  - Bổ sung `conn.flush()`, `conn.prepare_read()` + `poll` và `guard.read()` trong vòng lặp sự kiện để nhận đầy đủ sự kiện từ Wayland socket.
-  - Nhận diện phím tắt với `Super` (`MOD_NAME_LOGO`) và tự động commit `preedit` khi nhấn các phím điều hướng/biên tập (`Tab`, `Arrows`, `Home`, `End`, `PageUp/Down`, `Delete`, `F1..F12`).
+- **Thay thế hậu tố tối thiểu (`replacement_diff`)**:
+  - `Engine::replay_events_to_commands`, `Daemon::replay_and_inject` và `Daemon::replay_backspace` tính toán phần tiền tố chung dài nhất giữa chuỗi đang hiển thị trên màn hình và chuỗi đích, chỉ phát lệnh `Backspace` và `Type` cho phần hậu tố thay đổi.
+- **`evdev_loop` & AT-SPI Focus Tracker (`focus_tracker`)**:
+  - Kiểm tra thay đổi file cấu hình và trạng thái (`status`, `config.toml`) ngay trong vòng lặp sự kiện.
+  - Kết hợp `sender` và `object_path` (`atspi:<sender>:<path>`) để phát hiện việc chuyển đổi giữa các ô nhập liệu khác nhau trong cùng một cửa sổ, tự động bật lại tiếng Việt ngay khi rời ô mật khẩu.
+- **IBus Engine (`ibus_engine`) & Wayland Input Method (`wayland_im`)**:
+  - Hỗ trợ `SetContentType` (`IBUS_INPUT_PURPOSE_PASSWORD`, `IBUS_INPUT_PURPOSE_PIN`) để tự động commit preedit và tắt ghép chữ trong ô mật khẩu/PIN.
+  - Tự động commit `preedit` khi chuyển chế độ bằng `Ctrl + Space` hoặc khi nhấn các phím điều hướng/biên tập (`Tab`, `Arrows`, `Home`, `End`, `PageUp/Down`, `Delete`, `F1..F12`), đồng thời giữ nguyên mạch ghép chữ hoa khi nhấn các phím bổ trợ (`Shift`, `CapsLock`).
 
 ### 3. Giao thức & Clipboard (`vietc-protocol`, `vietc-uinputd`)
 - **Bảo vệ dữ liệu khi dán Unicode (`uinput_monitor`)**:
   - Sao lưu, ghi và xác thực nội dung clipboard mới (`ClipboardWritten`) **trước** khi gửi chuỗi `Backspace` xóa ký tự của người dùng; nếu clipboard không khả dụng, hủy thao tác ngay mà không làm mất chữ đã gõ.
-  - Giới hạn thời gian chạy (bounded timeout 250ms) cho các tiến trình con đọc clipboard (`wl-paste`, `xclip`) để tránh treo vòng lặp nhập liệu khi tiện ích clipboard bị treo.
+  - Giới hạn thời gian chạy (bounded timeout 250ms) cho các tiến trình con đọc clipboard (`wl-paste`, `xclip`) để tránh treo vòng lặp nhập liệu.
 - **Bảo mật socket đặc quyền**:
-  - Đặt socket tại `$XDG_RUNTIME_DIR/vietc/uinput.sock` với quyền `0600`, xác thực kết nối bằng `SO_PEERCRED`, và cấp quyền thiết bị theo phiên đăng nhập đang hoạt động (ACL) thay vì `0666`.
+  - Đặt socket tại `$XDG_RUNTIME_DIR/vietc/uinput.sock` với quyền `0600`, xác thực kết nối bằng `SO_PEERCRED`, và cấp quyền thiết bị theo phiên đăng nhập đang hoạt động (ACL).
 
 ## Phím tắt và điều khiển
 
@@ -132,7 +133,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 ## Cấu trúc dự án
 
-- [`engine/`](engine/): bộ xử lý ngôn ngữ Telex, VNI, kiểm tra chính tả tiếng Việt, auto-restore và state machine (`vietc-engine`).
+- [`engine/`](engine/): bộ xử lý ngôn ngữ Telex, VNI, kiểm tra chính tả ngữ âm & từ điển tiếng Việt (`vietnamese.cm.dict`), auto-restore và state machine (`vietc-engine`).
 - [`protocol/`](protocol/): giao thức IPC, quản lý uinput, đồng bộ và khôi phục clipboard, tiêm phím X11/Wayland (`vietc-protocol`).
 - [`daemon/`](daemon/): dịch vụ bộ gõ chính (`vietc-daemon`), bao gồm `evdev_loop`, `ibus_engine`, `wayland_im`, `focus_tracker`, `password_detector` và `app_state`.
 - [`uinputd/`](uinputd/): dịch vụ nhập liệu đặc quyền qua `/dev/uinput` (`vietc-uinputd`).
@@ -151,9 +152,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 - [`CHANGELOG.md`](CHANGELOG.md) / [`CHANGELOG.vi.md`](CHANGELOG.vi.md) — Nhật ký thay đổi chi tiết (Tiếng Anh / Tiếng Việt).
 - [`tasks/implementation-log.md`](tasks/implementation-log.md) — Nhật ký triển khai kỹ thuật.
 
-## Giấy phép và tác giả
+## Nguồn gốc & Ghi công (Credits)
 
-Phát hành dưới **Giấy phép MIT**. Xem chi tiết tại [`LICENSE`](LICENSE).
-
-Được phát triển với ❤️ bởi **Khoa Vo ([@vndangkhoa](https://github.com/vndangkhoa))**.
-
+- Dự án gốc **VietC** được khởi tạo bởi **Khoa Vo ([@vndangkhoa](https://github.com/vndangkhoa))**.
+- Phần logic kiểm tra chính tả tiếng Việt, từ điển âm tiết chuẩn (`vietnamese.cm.dict`), chuẩn hoá thanh điệu không phụ thuộc vị trí đặt dấu (`without_tone_position`), kiểm tra tiền tố âm tiết đang gõ (`is_valid_vietnamese_prefix`), quy tắc xử lý song ngữ Việt – Anh (chặn nuốt phím dấu giữa các nguyên âm và từ tiếng Anh có `e` câm, huỷ dấu khi lặp phím liền kề) và tính toán thay thế hậu tố tối thiểu được sao chép, chuyển thể và học hỏi từ bộ gõ **[Ngó Sen](https://github.com/ngosen/ngosen)** của tác giả **Nguyen Hoang Ky** và các cộng tác viên Ngó Sen, cùng thư viện lõi **[bamboo-core](https://github.com/bamboo-vi/bamboo-core)** (bản Rust của **[@nguyen10t2](https://github.com/nguyen10t2)**, port từ bản Go **[bamboo-core](https://github.com/BambooEngine/bamboo-core)** của **[@t1ld3x](https://github.com/t1ld3x)**). Xin gửi lời cảm ơn chân thành đến tác giả và các cộng tác viên của dự án **Ngó Sen**!

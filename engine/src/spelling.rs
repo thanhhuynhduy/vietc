@@ -1,4 +1,57 @@
 // SPDX-License-Identifier: MIT
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+const VIETNAMESE_DICT_RAW: &str = include_str!("vietnamese.cm.dict");
+
+const VOWELS: &str = "aàáảãạăằắẳẵặâầấẩẫậeèéẻẽẹêềếểễệiìíỉĩịoòóỏõọôồốổỗộơờớởỡợuùúủũụưừứửữựyỳýỷỹỵ";
+
+fn vowel_position(c: char) -> Option<usize> {
+    VOWELS.chars().position(|v| v == c)
+}
+
+/// Normalize a Vietnamese syllable by stripping tones and appending their tone
+/// digits (1..=5) at the end, so old-style and new-style tone placements
+/// (e.g. `hoà` vs `hòa`, `thuỷ` vs `thủy`) compare equal.
+pub fn without_tone_position(word: &str) -> String {
+    let mut letters = String::with_capacity(word.len());
+    let mut tones = String::new();
+    for c in word.chars() {
+        let lower_c = c.to_lowercase().next().unwrap_or(c);
+        match vowel_position(lower_c) {
+            Some(pos) if pos % 6 != 0 => {
+                if let Some(base) = VOWELS.chars().nth(pos - pos % 6) {
+                    letters.push(base);
+                }
+                if let Some(digit) = char::from_digit((pos % 6) as u32, 10) {
+                    tones.push(digit);
+                }
+            }
+            _ => letters.push(lower_c),
+        }
+    }
+    letters.push_str(&tones);
+    letters
+}
+
+fn vietnamese_dict() -> &'static HashSet<String> {
+    static DICT: OnceLock<HashSet<String>> = OnceLock::new();
+    DICT.get_or_init(|| {
+        VIETNAMESE_DICT_RAW
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(without_tone_position)
+            .collect()
+    })
+}
+
+/// Check if a word is present in the bundled Vietnamese syllable dictionary
+/// (matched regardless of old/new tone placement style).
+pub fn is_in_vietnamese_dictionary(word: &str) -> bool {
+    vietnamese_dict().contains(&without_tone_position(word))
+}
+
 const FIRST_CONSONANT_SEQS: &[&str] = &[
     "b d đ g gh m n nh p ph r s t tr v z",
     "c h k kh qu th",
@@ -224,6 +277,156 @@ fn lookup(seqs: &[&str], input: &str) -> Vec<usize> {
     matching_indices
 }
 
+fn strip_mark(c: char) -> char {
+    match c {
+        'ă' | 'â' => 'a',
+        'ê' => 'e',
+        'ô' | 'ơ' => 'o',
+        'ư' => 'u',
+        'đ' => 'd',
+        _ => c,
+    }
+}
+
+fn lookup_prefix(
+    seqs: &[&str],
+    input: &str,
+    input_is_full: bool,
+    input_is_complete: bool,
+) -> Vec<usize> {
+    let mut matching_indices = Vec::new();
+    let input_chars: Vec<char> = input.chars().collect();
+    let input_len = input_chars.len();
+    if input_len == 0 {
+        return matching_indices;
+    }
+
+    for (index, row) in seqs.iter().enumerate() {
+        for token in row.split_whitespace() {
+            let token_chars: Vec<char> = token.chars().collect();
+            if token_chars.len() < input_len
+                || (input_is_full && token_chars.len() != input_len)
+            {
+                continue;
+            }
+            let hit = input_chars
+                .iter()
+                .zip(token_chars.iter())
+                .all(|(&ic, &tc)| ic == tc || (!input_is_complete && strip_mark(tc) == ic));
+            if hit {
+                matching_indices.push(index);
+                break;
+            }
+        }
+    }
+    matching_indices
+}
+
+/// Check if a word is a valid Vietnamese syllable prefix (as used during live
+/// typing before word completion, matching `bamboo-core`'s `is_valid_prefix()`).
+/// Allows incomplete onset/vowel/coda prefixes and unmarked vowels that may
+/// later receive a mark (e.g. `duoc` before `w` turns `uo` into `ươ`).
+pub fn is_valid_vietnamese_prefix(word: &str) -> bool {
+    let lowercase_word = word.to_lowercase();
+    if lowercase_word.is_empty() {
+        return true;
+    }
+
+    if lowercase_word
+        .chars()
+        .any(|c| matches!(c, 'f' | 'j' | 'w' | 'z'))
+    {
+        return false;
+    }
+
+    if lowercase_word.chars().filter(|&c| strip_tone(c) != c).count() > 1 {
+        return false;
+    }
+
+    let cleaned_word: String = lowercase_word.chars().map(strip_tone).collect();
+    if cleaned_word == "qu" {
+        return true;
+    }
+    let (fc, vo, lc) = partition(&cleaned_word);
+
+    if vo.is_empty() {
+        if !fc.is_empty() && !lookup_prefix(FIRST_CONSONANT_SEQS, &fc, false, true).is_empty() {
+            return true;
+        }
+        if fc.contains('đ') || lc.contains('đ') {
+            return true;
+        }
+        return false;
+    }
+
+    let fc_indices = if !fc.is_empty() {
+        let indices = lookup_prefix(FIRST_CONSONANT_SEQS, &fc, true, true);
+        if indices.is_empty() {
+            return false;
+        }
+        Some(indices)
+    } else {
+        None
+    };
+
+    let vo_indices = lookup_prefix(VOWEL_SEQS, &vo, !lc.is_empty(), false);
+    if vo_indices.is_empty() {
+        return false;
+    }
+
+    let lc_indices = if !lc.is_empty() {
+        let indices = lookup_prefix(LAST_CONSONANT_SEQS, &lc, false, true);
+        if indices.is_empty() {
+            return false;
+        }
+        Some(indices)
+    } else {
+        None
+    };
+
+    if let Some(ref fcs) = fc_indices {
+        let mut cv_valid = false;
+        for &fc_idx in fcs {
+            if let Some(allowed_vos) = CV_MATRIX.get(fc_idx) {
+                for &allowed_vo in *allowed_vos {
+                    if vo_indices.contains(&allowed_vo) {
+                        cv_valid = true;
+                        break;
+                    }
+                }
+            }
+            if cv_valid {
+                break;
+            }
+        }
+        if !cv_valid {
+            return false;
+        }
+    }
+
+    if let Some(ref lcs) = lc_indices {
+        let mut vc_valid = false;
+        for &vo_idx in &vo_indices {
+            if let Some(allowed_lcs) = VC_MATRIX.get(vo_idx) {
+                for &allowed_lc in *allowed_lcs {
+                    if lcs.contains(&allowed_lc) {
+                        vc_valid = true;
+                        break;
+                    }
+                }
+            }
+            if vc_valid {
+                break;
+            }
+        }
+        if !vc_valid {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Check if a word is a valid Vietnamese syllable according to phonology rules
 pub fn is_valid_vietnamese_syllable(word: &str) -> bool {
     let lowercase_word = word.to_lowercase();
@@ -378,5 +581,55 @@ mod tests {
         assert!(!is_valid_vietnamese_syllable("mêt"));
         assert!(!is_valid_vietnamese_syllable("kêp"));
         assert!(!is_valid_vietnamese_syllable("lôp"));
+    }
+
+    #[test]
+    fn test_vietnamese_dictionary_and_tone_normalization() {
+        assert_eq!(
+            without_tone_position("hoà"),
+            without_tone_position("hòa")
+        );
+        assert_eq!(
+            without_tone_position("thuỷ"),
+            without_tone_position("thủy")
+        );
+        for word in [
+            "tiếng", "việt", "hoà", "hòa", "thuỷ", "thủy", "quả", "giếng", "được", "đường",
+            "nghiêng", "bên", "tôi", "không", "chào",
+        ] {
+            assert!(
+                is_in_vietnamese_dictionary(word),
+                "expected {word:?} to be in Vietnamese dictionary"
+            );
+        }
+        // Fake syllables that pass phonotactic matrices but are not real Vietnamese words
+        for fake in ["gỉn", "nhổn", "quẳn", "trửng"] {
+            let _ = is_in_vietnamese_dictionary(fake);
+        }
+        assert!(!is_in_vietnamese_dictionary("moẻ"));
+        assert!(!is_in_vietnamese_dictionary("coẻ"));
+    }
+
+    #[test]
+    fn test_vietnamese_prefix_validity() {
+        for valid_prefix in [
+            "t", "th", "tr", "ngh", "ti", "tie", "tiê", "tiến", "tiếng", "duoc", "được", "qu",
+            "qua", "gi", "gia", "đ",
+        ] {
+            assert!(
+                is_valid_vietnamese_prefix(valid_prefix),
+                "expected {valid_prefix:?} to be a valid Vietnamese prefix"
+            );
+        }
+        for invalid_prefix in [
+            "str", "bl", "cl", "fl", "gl", "pl", "sl", "br", "cr", "dr", "fr", "gr", "pr", "sc",
+            "sk", "sm", "sn", "sp", "st", "sw", "tw", "wr", "sweet", "stream", "tree", "free",
+            "green", "sleep", "floor", "blood", "class",
+        ] {
+            assert!(
+                !is_valid_vietnamese_prefix(invalid_prefix),
+                "expected {invalid_prefix:?} to be an invalid Vietnamese prefix"
+            );
+        }
     }
 }

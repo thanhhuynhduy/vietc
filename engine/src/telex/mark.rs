@@ -22,19 +22,74 @@ fn is_tone_key(ch: char) -> bool {
 
 fn first_tone_undo_index(raw: &[char]) -> Option<usize> {
     let mut seen_vowel = false;
-    let mut active_tone: Option<char> = None;
+    let mut active_tone: Option<(usize, char)> = None;
     for (i, &ch) in raw.iter().enumerate() {
         let c = lower(ch);
         if is_base_vowel(c) {
             seen_vowel = true;
+            active_tone = None;
         } else if seen_vowel && is_tone_key(c) {
-            if active_tone == Some(c) {
-                return Some(i);
+            if let Some((prev_idx, prev_tone)) = active_tone {
+                if prev_tone == c && prev_idx + 1 == i {
+                    return Some(i);
+                }
             }
-            active_tone = Some(c);
+            active_tone = Some((i, c));
+        } else {
+            active_tone = None;
         }
     }
     None
+}
+
+fn has_valid_vietnamese_onset(raw: &[char], consumed: &[bool]) -> bool {
+    let first_vowel = raw
+        .iter()
+        .enumerate()
+        .find_map(|(i, &ch)| (!consumed[i] && is_base_vowel(ch)).then_some(i));
+    let Some(first_vowel) = first_vowel else {
+        return true;
+    };
+    if first_vowel == 0 {
+        return true;
+    }
+    let onset: String = raw[..first_vowel]
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &ch)| (!consumed[i]).then_some(lower(ch)))
+        .collect();
+    matches!(
+        onset.as_str(),
+        "" | "b"
+            | "c"
+            | "ch"
+            | "d"
+            | "đ"
+            | "g"
+            | "gh"
+            | "gi"
+            | "h"
+            | "k"
+            | "kh"
+            | "l"
+            | "m"
+            | "n"
+            | "ng"
+            | "ngh"
+            | "nh"
+            | "p"
+            | "ph"
+            | "q"
+            | "qu"
+            | "r"
+            | "s"
+            | "t"
+            | "th"
+            | "tr"
+            | "v"
+            | "x"
+            | "z"
+    )
 }
 
 pub fn resolve(raw: &[char]) -> MarkResolution {
@@ -61,16 +116,17 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             continue;
         }
 
+        if !has_valid_vietnamese_onset(raw, &consumed) {
+            continue;
+        }
+
         if matches!(current, 'a' | 'e' | 'o') {
             let matching = (0..i).rev().find(|&j| {
                 lower(raw[j]) == current
                     && marks[j] == VowelMark::None
-                    && raw[j + 1..i].iter().all(|&ch| {
-                        matches!(
-                            lower(ch),
-                            'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 's' | 'f' | 'r' | 'x' | 'j'
-                        )
-                    })
+                    && raw[j + 1..i]
+                        .iter()
+                        .all(|&ch| matches!(lower(ch), 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
             });
             if let Some(j) = matching {
                 marks[j] = VowelMark::Circumflex;
@@ -86,6 +142,9 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         if lower(raw[i]) != 'w' {
             continue;
         }
+        if !has_valid_vietnamese_onset(raw, &consumed) {
+            continue;
+        }
 
         let candidates: Vec<usize> = (0..i)
             .rev()
@@ -93,6 +152,9 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             .collect();
 
         if let Some(&last) = candidates.first() {
+            if marks[last] != VowelMark::None && last + 1 < i {
+                continue;
+            }
             let base = lower(raw[last]);
             if matches!(base, 'o' | 'a') {
                 if let Some(&before) = candidates.get(1) {
@@ -146,7 +208,7 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         .enumerate()
         .filter_map(|(i, &ch)| (lower(ch) == 'w').then_some(i))
         .collect::<Vec<_>>();
-    if w_positions.len() >= 2 && consumed[w_positions[0]] {
+    if w_positions.len() >= 2 && consumed[w_positions[0]] && w_positions[0] + 1 == w_positions[1] {
         let last_applies_distinct_mark = marks
             .iter()
             .enumerate()

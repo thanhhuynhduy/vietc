@@ -204,3 +204,41 @@ fn bounded_generated_inputs_resolve_and_render_without_panicking() {
         }
     }
 }
+
+#[test]
+fn english_intervocalic_tone_and_silent_e_words_stay_intact() {
+    let words = [
+        "more", "core", "lose", "rose", "nose", "pose", "dose", "chose", "those", "these", "here",
+        "there", "where", "were", "care", "share", "base", "case", "use", "muse", "pure", "cure",
+        "hire", "fire", "house", "mouse", "pause", "cause", "nasa", "para", "sara", "exe",
+    ];
+
+    for word in words {
+        assert_eq!(
+            super::resolve_and_render(word),
+            word,
+            "expected {word:?} to remain untouched by Telex tone/mark rules"
+        );
+    }
+    // Non-adjacent duplicate triggers in "order", "border", "server", "sister", "awkward"
+    // must NOT undo the first trigger into pure ASCII ("oder", "boder", "sever", "siter", "akward"),
+    // ensuring auto-restore recognizes them as non-Vietnamese and restores the full English word.
+    for (word, eaten_ascii) in [
+        ("order", "oder"),
+        ("border", "boder"),
+        ("server", "sever"),
+        ("sister", "siter"),
+        ("awkward", "akward"),
+    ] {
+        let rendered = super::resolve_and_render(word);
+        assert_ne!(
+            rendered, eaten_ascii,
+            "expected {word:?} not to drop a letter into {eaten_ascii:?}"
+        );
+        assert!(
+            crate::Engine::should_restore_word(&rendered, word),
+            "expected {word:?} (rendered {rendered:?}) to be restored by auto-restore"
+        );
+    }
+}
+

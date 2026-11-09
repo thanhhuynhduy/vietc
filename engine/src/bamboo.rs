@@ -123,9 +123,10 @@ impl BambooEngine {
                         if u_ch == 'u' {
                             // Found "uo" pair, replace with "ươ"
                             let u_idx = o_idx - 1;
-                            let tone = self.composition[o_idx]
-                                .tone_applied
-                                .or(self.composition[u_idx].tone_applied);
+                            let last_syllable = self.last_syllable_range();
+                            let tone = self.composition[last_syllable]
+                                .iter()
+                                .find_map(|t| t.tone_applied);
                             let u_was_upper = self.composition[u_idx].is_upper;
                             let o_was_upper = self.composition[o_idx].is_upper;
                             self.composition.drain(u_idx..=o_idx);
@@ -143,10 +144,13 @@ impl BambooEngine {
                                 Transformation {
                                     base_char: 'ơ',
                                     mark_applied: Some('ơ'),
-                                    tone_applied: tone,
+                                    tone_applied: None,
                                     is_upper: o_was_upper,
                                 },
                             );
+                            if let Some(tone_char) = tone {
+                                return self.apply_tone(tone_char);
+                            }
                             return Some(self.flatten());
                         }
                     }
@@ -186,12 +190,80 @@ impl BambooEngine {
 
         if let Some((idx, pattern, result)) = mark_match {
             self.apply_mark_at(idx, &pattern, &result);
+            let last_syllable = self.last_syllable_range();
+            let existing_tone = self.composition[last_syllable]
+                .iter()
+                .find_map(|t| t.tone_applied);
+            if let Some(tone_char) = existing_tone {
+                return self.apply_tone(tone_char);
+            }
             return Some(self.flatten());
+        }
+
+        // If a vowel is typed immediately after a vowel that just absorbed a
+        // Telex tone key (e.g. "mỏ" + 'e' -> "more", "thé" + 'e' -> "these",
+        // "ná" + 'a' -> "nasa"), check whether the resulting vowel cluster is a
+        // valid free-order Vietnamese diphthong (such as "chà" + 'o' -> "chào",
+        // "nế" + 'u' -> "nếu"). If not, restore the tone key as a literal letter.
+        if self.rules.method == InputMethod::Telex && is_vowel(lower) {
+            if let Some(last) = self.composition.last() {
+                if let Some(tone_char) = last.tone_applied {
+                    let last_syllable = self.last_syllable_range();
+                    let mut vowels: Vec<char> = self.composition[last_syllable.clone()]
+                        .iter()
+                        .filter_map(|t| {
+                            let c = t.mark_applied.unwrap_or(t.base_char).to_ascii_lowercase();
+                            is_vowel(c).then_some(c)
+                        })
+                        .collect();
+                    if vowels.len() >= 1 && last_syllable.len() >= 2 {
+                        let c0 = self.composition[last_syllable.start]
+                            .base_char
+                            .to_ascii_lowercase();
+                        let c1 = self.composition[last_syllable.start + 1]
+                            .base_char
+                            .to_ascii_lowercase();
+                        if (c0 == 'q' && c1 == 'u') || (c0 == 'g' && c1 == 'i') {
+                            if !vowels.is_empty() {
+                                vowels.remove(0);
+                            }
+                        }
+                    }
+                    vowels.push(lower);
+                    let cluster: String = vowels.into_iter().collect();
+                    let valid_free_order = matches!(
+                        cluster.as_str(),
+                        "ai" | "ao" | "au" | "ay" | "âu" | "ây" | "eo" | "êu" | "ia" | "iu"
+                            | "ôi" | "ơi" | "ua" | "ui" | "ưa" | "ưi" | "ưu" | "oa" | "uê"
+                            | "uy" | "oai" | "oao" | "oay" | "oeo" | "iêu" | "yêu" | "uôi"
+                            | "ươi" | "ươu" | "uây" | "uya" | "uyu" | "iê" | "yê" | "uô"
+                            | "ươ" | "oă" | "uâ" | "uơ" | "uyê"
+                    );
+                    if !valid_free_order {
+                        if let Some(last_mut) = self.composition.last_mut() {
+                            last_mut.tone_applied = None;
+                        }
+                        self.append_char(tone_char);
+                        self.append_char(ch);
+                        self.macro_buf.clear();
+                        return Some(self.flatten());
+                    }
+                }
+            }
         }
 
         // Normal character — append
         self.append_char(ch);
         self.macro_buf.clear();
+        if is_vowel(lower) {
+            let last_syllable = self.last_syllable_range();
+            let existing_tone = self.composition[last_syllable.clone()]
+                .iter()
+                .find_map(|t| t.tone_applied);
+            if let Some(tone_char) = existing_tone {
+                return self.apply_tone(tone_char);
+            }
+        }
         Some(self.flatten())
     }
 
@@ -210,11 +282,21 @@ impl BambooEngine {
                 if rule.pattern == "dd" && offset > 0 {
                     continue;
                 }
-                if matches!(rule.pattern.as_str(), "aa" | "ee" | "oo")
+                if matches!(rule.pattern.as_str(), "aa" | "ee" | "oo") {
+                    if self.composition[idx].tone_applied.is_some() {
+                        continue;
+                    }
+                    if offset > 0
+                        && !self.composition[idx + 1..]
+                            .iter()
+                            .all(|t| is_vowel(t.base_char.to_ascii_lowercase()))
+                    {
+                        continue;
+                    }
+                }
+                if rule.pattern.ends_with('w')
                     && offset > 0
-                    && !self.composition[idx + 1..]
-                        .iter()
-                        .all(|t| is_vowel(t.base_char.to_ascii_lowercase()))
+                    && self.composition[idx].mark_applied.is_some()
                 {
                     continue;
                 }
@@ -480,6 +562,9 @@ fn has_active_mark_pattern(raw: &str, pattern: &str) -> bool {
         return false;
     };
     let suffix = &raw[pattern_start + pattern.len()..];
+    if pattern.ends_with('w') {
+        return suffix.is_empty();
+    }
     !suffix
         .chars()
         .any(|ch| matches!(ch, 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
@@ -583,7 +668,7 @@ mod tests {
         approved: bool,
     }
 
-    const APPROVED_SHADOW_DIFFERENCES: &[&str] = &["dduocwj", "neesu"];
+    const APPROVED_SHADOW_DIFFERENCES: &[&str] = &[];
 
     fn process(method: InputMethod, input: &str) -> String {
         let mut engine = BambooEngine::new(method);

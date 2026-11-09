@@ -120,11 +120,17 @@ impl Engine {
             return dict.is_english_word(&raw_lower) || has_natural_english_double(&raw_lower);
         }
 
-        // When the composed word carries Vietnamese diacritics, keep it whenever
-        // it is a phonologically valid Vietnamese syllable (e.g. "been" -> "bên",
-        // "too" -> "tô", "this" -> "thí", "its" -> "ít", "six" -> "sĩ", "low" -> "lơ").
-        // Only auto-restore when the composed form is not a valid Vietnamese syllable.
-        !crate::spelling::is_valid_vietnamese_syllable(composed)
+        // When the composed word carries Vietnamese diacritics, keep it when it
+        // is a valid Vietnamese syllable present in the Vietnamese dictionary
+        // (or a single-character vowel/stroke like "á", "ă", "đ").
+        if !crate::spelling::is_valid_vietnamese_syllable(composed) {
+            return true;
+        }
+        if composed.chars().count() <= 1 || composed.contains('đ') || composed.contains('Đ') {
+            return !crate::spelling::is_in_vietnamese_dictionary(composed)
+                && composed.chars().any(|c| crate::spelling::is_in_vietnamese_dictionary(&c.to_string()));
+        }
+        !crate::spelling::is_in_vietnamese_dictionary(composed)
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -313,12 +319,12 @@ impl Engine {
 
         let mut commands = Vec::new();
         if new_output != screen_output {
-            let backspaces = screen_output.chars().count();
-            if backspaces > 0 {
-                commands.push(Command::Backspace(backspaces));
+            let diff = crate::telex::replacement_diff(screen_output, &new_output);
+            if diff.delete_before_cursor > 0 {
+                commands.push(Command::Backspace(diff.delete_before_cursor));
             }
-            if !new_output.is_empty() {
-                commands.push(Command::Type(new_output));
+            if !diff.insert.is_empty() {
+                commands.push(Command::Type(diff.insert));
             }
         }
         commands
