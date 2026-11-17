@@ -1,0 +1,68 @@
+name: Package Smoke Test
+
+on:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "install.sh"
+      - "uninstall.sh"
+      - "Makefile"
+      - "scripts/package-smoke-test.sh"
+      - ".github/workflows/package-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-smoke:
+    name: Installer and package smoke checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libdbus-1-dev libwayland-dev libxkbcommon-dev libx11-dev libxtst-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate installer scripts
+        run: |
+          python3 scripts/test_installer.py
+          python3 scripts/test_build_targets.py
+          bash -n install.sh uninstall.sh packaging/build-tarball.sh packaging/release.sh
+
+      - name: Build Debian package
+        run: |
+          sudo apt-get install --yes fakeroot
+          make deb
+
+      - name: Locate Debian package
+        run: |
+          PACKAGE=$(find packaging/deb -maxdepth 1 -type f -name 'vietc_*_amd64.deb' -print -quit)
+          test -n "$PACKAGE"
+          echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+
+      - name: Install, verify, remove, and purge package in clean Ubuntu
+        run: bash scripts/package-smoke-test.sh "$PACKAGE"
+
+      - name: Upload tested package
+        uses: actions/upload-artifact@v4
+        with:
+          name: vietc-debian-smoke-${{ github.sha }}
+          path: ${{ env.PACKAGE }}
+          if-no-files-found: error
+          retention-days: 7

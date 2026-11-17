@@ -3,6 +3,7 @@ name = "vietcctl"
 version = "0.1.8"
 edition = "2021"
 description = "Viet+ control tool — cycle/set input mode (EN / VNI / TELEX)"
+license = "MIT"
 
 [[bin]]
 name = "vietcctl"

@@ -1,0 +1,61 @@
+name: Desktop Runtime Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Desktop environment represented by this self-hosted runner
+        required: true
+        type: choice
+        options:
+          - gnome-wayland
+          - cosmic-wayland
+          - x11
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ inputs.environment }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    name: ${{ inputs.environment }} runtime evidence
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - ${{ inputs.environment }}
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate controlled desktop session
+        run: |
+          test -n "${DISPLAY:-${WAYLAND_DISPLAY:-}}"
+          test -w /dev/uinput
+          command -v cargo
+          command -v chromium || command -v chromium-browser || command -v google-chrome
+
+      - name: Build locked workspace
+        run: cargo build --workspace --all-features --locked
+
+      - name: Record runtime capability matrix
+        run: make test-runtime-matrix CARGO_FLAGS=--locked
+
+      - name: Execute controlled desktop scenarios
+        run: make test-runtime-targets CARGO_FLAGS=--locked
+
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ inputs.environment }}-${{ github.sha }}
+          path: |
+            target/runtime-artifacts/
+            daemon/target/runtime-artifacts/
+          if-no-files-found: warn
+          retention-days: 90

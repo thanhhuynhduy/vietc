@@ -1,0 +1,100 @@
+name: Prerelease Candidate
+
+on:
+  push:
+    branches:
+      - next
+  workflow_dispatch:
+    inputs:
+      label:
+        description: Candidate label
+        required: true
+        default: rc
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  candidate:
+    name: Build candidate artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libdbus-1-dev libwayland-dev libxkbcommon-dev libx11-dev libxtst-dev
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run headless CI smoke suite
+        run: make test-ci-smoke CARGO_FLAGS=--locked
+
+      - name: Build Linux tarball
+        run: make tarball
+
+      - name: Collect candidate artifacts
+        run: |
+          mkdir -p dist
+          find . -maxdepth 3 -type f \( -name '*.tar.gz' -o -name '*.deb' \) -exec cp {} dist/ \;
+          test -n "$(find dist -maxdepth 1 -type f -print -quit)"
+
+      - name: Generate candidate metadata and checksums
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/Cargo.toml | head -1)
+          LABEL="${{ inputs.label }}"
+          LABEL="${LABEL:-next}"
+          SHORT_SHA=$(git rev-parse --short=8 HEAD)
+          TAG="v${VERSION}-${LABEL}.${GITHUB_RUN_NUMBER}"
+          echo "CANDIDATE_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "CANDIDATE_NAME=Vietc ${VERSION} ${LABEL}.${GITHUB_RUN_NUMBER} (${SHORT_SHA})" >> "$GITHUB_ENV"
+          {
+            echo "tag=${TAG}"
+            echo "commit=${GITHUB_SHA}"
+            echo "channel=prerelease"
+            echo "source_branch=${GITHUB_REF_NAME}"
+            echo "workflow_run=${GITHUB_RUN_ID}"
+          } > dist/BUILD-METADATA
+          (cd dist && sha256sum -- * > SHA256SUMS)
+
+      - name: Generate release evidence
+        env:
+          RELEASE_CHANNEL: prerelease
+          RELEASE_TAG: ${{ env.CANDIDATE_TAG }}
+        run: |
+          bash scripts/generate-release-evidence.sh dist/RELEASE-EVIDENCE.md
+          (cd dist && sha256sum -- * > SHA256SUMS)
+
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.CANDIDATE_TAG }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.CANDIDATE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ env.CANDIDATE_NAME }}
+          prerelease: true
+          generate_release_notes: true
+          files: dist/*

@@ -3,6 +3,7 @@ name = "vietc-vk"
 version = "0.1.0"
 edition = "2021"
 description = "Standalone virtual-keyboard test tool for Viet+ (vietc)"
+license = "MIT"
 
 [dependencies]
 evdev = "0.12"

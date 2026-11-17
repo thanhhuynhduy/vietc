@@ -1,0 +1,89 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.3",
+  "version": 1,
+  "serialNumber": "urn:uuid:dc5e2639-b963-4303-a07c-6d40aa3fdcf7",
+  "metadata": {
+    "timestamp": "2026-11-17T04:51:41.584317567Z",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cargo-cyclonedx",
+        "version": "0.5.10"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "path+file:///home/thanhhd/Git-projects/vietc/uinputd#vietc-uinputd@0.1.7",
+      "name": "vietc-uinputd",
+      "version": "0.1.7",
+      "description": "Viet+ privileged uinput backspace injection daemon",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/vietc-uinputd@0.1.7?download_url=file://.",
+      "components": [
+        {
+          "type": "application",
+          "bom-ref": "path+file:///home/thanhhd/Git-projects/vietc/uinputd#vietc-uinputd@0.1.7 bin-target-0",
+          "name": "vietc-uinputd",
+          "version": "0.1.7",
+          "licenses": [
+            {
+              "expression": "MIT"
+            }
+          ],
+          "purl": "pkg:cargo/vietc-uinputd@0.1.7?download_url=file://.#src/main.rs"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "cdx:rustc:sbom:target:triple",
+        "value": "x86_64-unknown-linux-gnu"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.191",
+      "name": "libc",
+      "version": "0.2.191",
+      "description": "Raw FFI bindings to platform libraries like libc.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/libc@0.2.191",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/libc"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "path+file:///home/thanhhd/Git-projects/vietc/uinputd#vietc-uinputd@0.1.7",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.191"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.191"
+    }
+  ]
+}

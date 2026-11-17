@@ -1,4 +1,4 @@
-.PHONY: build build-x11 build-wayland build-all build-ui test test-ci-smoke test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli run run-x11 run-wayland clean install install-x11 install-wayland install-ui install-config deb tarball aur ppa arch-repo push-arch release release-ppa fmt lint tree
+.PHONY: build build-x11 build-wayland build-all build-ui test test-ci-smoke test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli test-package run run-x11 run-wayland clean install install-x11 install-wayland install-ui install-config deb tarball aur ppa arch-repo push-arch release release-ppa fmt lint tree
 
 # Master release build
 release:
@@ -16,6 +16,12 @@ deb:
 # Build generic Linux tarball
 tarball:
 	bash packaging/build-tarball.sh
+
+# Build and exercise the Debian package in a clean Ubuntu container
+test-package: deb
+	PACKAGE=$$(find packaging/deb -maxdepth 1 -type f -name 'vietc_*_amd64.deb' -print -quit) && \
+	test -n "$$PACKAGE" && \
+	bash scripts/package-smoke-test.sh "$$PACKAGE"
 
 # Update AUR PKGBUILD & .SRCINFO
 aur:
