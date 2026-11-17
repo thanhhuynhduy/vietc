@@ -75,5 +75,8 @@ jobs:
       - name: Run tests
         run: npm run test:ci
 
+      - name: Run installer security regression tests
+        run: python3 scripts/test_installer.py
+
       - name: Build production bundle
         run: npm run build

@@ -9,6 +9,16 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 REMOTE="${1:-github}"
 ARCH_DIR="$PROJECT_ROOT/dist/arch/x86_64"
 UBUNTU_DIR="$PROJECT_ROOT/dist/ubuntu"
+APT_SIGNING_KEY="${APT_SIGNING_KEY:-}"
+
+if [ -z "$APT_SIGNING_KEY" ]; then
+    echo "APT_SIGNING_KEY must identify a GPG private key used to sign the APT repository." >&2
+    exit 1
+fi
+if ! gpg --batch --list-secret-keys "$APT_SIGNING_KEY" >/dev/null 2>&1; then
+    echo "No GPG secret key found for APT_SIGNING_KEY=$APT_SIGNING_KEY" >&2
+    exit 1
+fi
 
 # === Build Arch repo if missing ===
 if [ ! -f "$ARCH_DIR/vietc.db" ] || [ ! -f "$ARCH_DIR/vietc.db.tar.gz" ]; then
@@ -57,6 +67,12 @@ RELEASE_EOF
     cd "$PROJECT_ROOT"
 fi
 
+gpg --batch --yes --local-user "$APT_SIGNING_KEY" --clearsign \
+    --output "$UBUNTU_DIR/InRelease" "$UBUNTU_DIR/Release"
+gpg --batch --yes --local-user "$APT_SIGNING_KEY" --detach-sign \
+    --armor --output "$UBUNTU_DIR/Release.gpg" "$UBUNTU_DIR/Release"
+gpg --batch --yes --export "$APT_SIGNING_KEY" > "$UBUNTU_DIR/vietc-archive-keyring.gpg"
+
 VERSION=$(grep '^version' "$PROJECT_ROOT/engine/Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
 
 echo "=== Pushing Arch + Ubuntu repositories to GitHub Pages (gh-pages) ==="
@@ -78,7 +94,9 @@ cp -a "$ARCH_DIR/." "$TMP_DIR/arch/x86_64/"
 # Ubuntu APT repo
 mkdir -p "$TMP_DIR/ubuntu/pool"
 cp -a "$UBUNTU_DIR/pool/." "$TMP_DIR/ubuntu/pool/"
-cp "$UBUNTU_DIR/Packages" "$UBUNTU_DIR/Packages.gz" "$UBUNTU_DIR/Release" "$TMP_DIR/ubuntu/"
+cp "$UBUNTU_DIR/Packages" "$UBUNTU_DIR/Packages.gz" "$UBUNTU_DIR/Release" \
+   "$UBUNTU_DIR/InRelease" "$UBUNTU_DIR/Release.gpg" \
+   "$UBUNTU_DIR/vietc-archive-keyring.gpg" "$TMP_DIR/ubuntu/"
 
 # .nojekyll so GitHub Pages serves raw files properly
 touch "$TMP_DIR/.nojekyll"
@@ -124,7 +142,8 @@ sudo apt install vietc</code></pre>
 
         <h3>Cách 2: APT repo trên GitHub Pages</h3>
         <p>Thêm repo vào hệ thống:</p>
-        <pre><code>echo "deb [trusted=yes] https://vndangkhoa.github.io/vietc/ubuntu/ ./" | sudo tee /etc/apt/sources.list.d/vietc.list
+        <pre><code>curl -fsSL https://vndangkhoa.github.io/vietc/ubuntu/vietc-archive-keyring.gpg | sudo tee /usr/share/keyrings/vietc-archive-keyring.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/vietc-archive-keyring.gpg] https://vndangkhoa.github.io/vietc/ubuntu/ ./" | sudo tee /etc/apt/sources.list.d/vietc.list
 sudo apt update
 sudo apt install vietc</code></pre>
 

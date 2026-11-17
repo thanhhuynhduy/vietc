@@ -7,6 +7,9 @@ export default defineConfig(() => {
   return {
     base: process.env.GITHUB_ACTIONS ? '/vietc/' : '/',
     plugins: [react(), tailwindcss()],
+    build: {
+      chunkSizeWarningLimit: 350,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

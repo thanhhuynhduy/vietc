@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Viet+ — Vietnamese Input Method Uninstaller
-# Usage: curl -fsSL <url> | bash   OR   sudo ./uninstall.sh
+# Usage: verify the release checksum, then run sudo bash ./uninstall.sh
 set -euo pipefail
 
 export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
@@ -76,11 +76,12 @@ t() {
 if [ "$EUID" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then
         echo -e "${YELLOW}Viet+ uninstaller requires sudo permissions.${NC}"
-        if [ -f "$0" ]; then
-            exec sudo bash "$0" "$@"
-        else
-            exec curl -fsSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/uninstall.sh | sudo bash -s -- "$@"
+        if [ ! -f "$0" ]; then
+            echo "Refusing to re-download and execute a mutable remote script as root." >&2
+            echo "Download uninstall.sh from a GitHub release, verify it with that release's SHA256SUMS, then run: sudo bash ./uninstall.sh" >&2
+            exit 1
         fi
+        exec sudo bash "$0" "$@"
     else
         t sudo
         exit 1

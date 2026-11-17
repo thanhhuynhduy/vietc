@@ -19,6 +19,10 @@ const EV_KEY: u16 = 0x01;
 const CLIPBOARD_TRACE_LIMIT: usize = 128;
 const CLIPBOARD_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 const CLIPBOARD_VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_TEXT_BYTES: usize = 16 * 1024;
+const MAX_KEY_COUNT: usize = 4_096;
+const CLIENT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 static NEXT_CLIPBOARD_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
 static CLIPBOARD_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -670,6 +674,49 @@ fn parse_key_event(payload: &str) -> Option<(u16, i32)> {
     (code <= 0x1ff && (0..=2).contains(&value)).then_some((code, value))
 }
 
+fn read_bounded_line(reader: &mut impl BufRead) -> Result<Option<String>, String> {
+    let mut bytes = Vec::new();
+
+    loop {
+        let available = reader
+            .fill_buf()
+            .map_err(|error| format!("cannot read request: {error}"))?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let chunk_len = newline.map_or(available.len(), |index| index + 1);
+        if bytes.len().saturating_add(chunk_len) > MAX_REQUEST_BYTES {
+            return Err("request too large".to_string());
+        }
+
+        bytes.extend_from_slice(&available[..chunk_len]);
+        reader.consume(chunk_len);
+        if newline.is_some() {
+            break;
+        }
+    }
+
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| "request is not valid UTF-8".to_string())
+}
+
+fn validate_text(text: &str) -> bool {
+    text.len() <= MAX_TEXT_BYTES
+}
+
 fn handle_client(
     stream: UnixStream,
     allowed_uid: libc::uid_t,
@@ -683,13 +730,21 @@ fn handle_client(
         ));
     }
 
-    let reader = BufReader::new(&stream);
+    stream
+        .set_read_timeout(Some(CLIENT_READ_TIMEOUT))
+        .map_err(|error| format!("cannot set client timeout: {error}"))?;
+
+    let mut reader = BufReader::new(&stream);
     let mut writer = &stream;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
+    loop {
+        let line = match read_bounded_line(&mut reader) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = writeln!(writer, "ERR {error}");
+                break;
+            }
         };
 
         if line.is_empty() {
@@ -724,6 +779,14 @@ fn handle_client(
                 let _ = writeln!(writer, "ERR bad count");
                 continue;
             };
+            if count > MAX_KEY_COUNT {
+                let _ = writeln!(writer, "ERR count too large");
+                continue;
+            }
+            if !validate_text(text) {
+                let _ = writeln!(writer, "ERR text too large");
+                continue;
+            }
             let success = uinput.replace(count, text);
             let response = if success {
                 "OK"
@@ -733,6 +796,10 @@ fn handle_client(
             let _ = writeln!(writer, "{response}");
         } else if let Some(n_str) = line.strip_prefix("BACKSPACE:") {
             if let Ok(n) = n_str.parse::<usize>() {
+                if n > MAX_KEY_COUNT {
+                    let _ = writeln!(writer, "ERR count too large");
+                    continue;
+                }
                 let success = uinput.backspace_n(n);
                 let _ = writeln!(
                     writer,
@@ -747,6 +814,10 @@ fn handle_client(
                 let _ = writeln!(writer, "ERR bad count");
             }
         } else if let Some(text) = line.strip_prefix("TYPE:") {
+            if !validate_text(text) {
+                let _ = writeln!(writer, "ERR text too large");
+                continue;
+            }
             let is_ascii = text
                 .bytes()
                 .all(|b| UinputDevice::char_to_keycode(b).is_some());
@@ -765,6 +836,10 @@ fn handle_client(
                 }
             );
         } else if let Some(text) = line.strip_prefix("PASTE:") {
+            if !validate_text(text) {
+                let _ = writeln!(writer, "ERR text too large");
+                continue;
+            }
             let success = uinput.paste_unicode(text);
             let _ = writeln!(
                 writer,
@@ -912,6 +987,42 @@ mod phase0_tests {
         let mut responses = String::new();
         client.read_to_string(&mut responses).unwrap();
         responses
+    }
+
+    #[test]
+    fn oversized_request_is_rejected_without_dispatching() {
+        let device = test_device(-1);
+        let request = format!("TYPE:{}\n", "a".repeat(MAX_REQUEST_BYTES));
+        assert_eq!(
+            run_test_commands(&device, &request),
+            "ERR request too large\n"
+        );
+    }
+
+    #[test]
+    fn text_and_key_count_limits_are_enforced() {
+        let device = test_device(-1);
+        let commands = format!(
+            "TYPE:{}\nPASTE:{}\nREPLACE:{}:a\nBACKSPACE:{}\n",
+            "a".repeat(MAX_TEXT_BYTES + 1),
+            "a".repeat(MAX_TEXT_BYTES + 1),
+            MAX_KEY_COUNT + 1,
+            MAX_KEY_COUNT + 1,
+        );
+        assert_eq!(
+            run_test_commands(&device, &commands),
+            "ERR text too large\nERR text too large\nERR count too large\nERR count too large\n"
+        );
+    }
+
+    #[test]
+    fn request_at_size_limit_is_parsed() {
+        let prefix = "TYPE:";
+        let payload = "a".repeat(MAX_REQUEST_BYTES - prefix.len() - 1);
+        let request = format!("{prefix}{payload}\n");
+        let mut reader = BufReader::new(request.as_bytes());
+        let line = read_bounded_line(&mut reader).unwrap().unwrap();
+        assert_eq!(line.len(), MAX_REQUEST_BYTES - 1);
     }
 
     #[test]

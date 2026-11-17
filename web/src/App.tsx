@@ -1,8 +1,9 @@
+import { lazy, Suspense } from 'react';
 import Navbar from './components/Navbar';
 import Hero from './components/Hero';
 import Features from './components/Features';
 import TerminalSimulator from './components/TerminalSimulator';
-import SetupGuide from './components/SetupGuide';
+const SetupGuide = lazy(() => import('./components/SetupGuide'));
 import Footer from './components/Footer';
 
 export default function App() {
@@ -24,7 +25,9 @@ export default function App() {
         <TerminalSimulator />
 
         {/* Step-by-step Linux System-Level Setup Guide */}
-        <SetupGuide />
+        <Suspense fallback={<div className="min-h-96 bg-[#0a0b0d]" aria-label="Đang tải hướng dẫn cài đặt" />}>
+          <SetupGuide />
+        </Suspense>
       </main>
 
       {/* Footer component with social repository links & author credits */}

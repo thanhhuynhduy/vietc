@@ -84,6 +84,12 @@ RestartSec=3
 # Only kill the daemon on stop; the IBus it respawns (IbusRestartGuard) must
 # survive so input works again after vietc exits.
 KillMode=process
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 EnvironmentFile=-/etc/default/vietc
 
 [Install]

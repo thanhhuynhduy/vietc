@@ -21,7 +21,7 @@ export default function SetupGuide() {
         id: 1,
         title: "Cài đặt VietC (một lệnh duy nhất)",
         description: "Script tự động phát hiện distro, cài đặt dependencies, biên dịch và cài đặt toàn bộ daemon, công cụ vietcctl và ứng dụng khay hệ thống vietc-tray.",
-        command: `curl -fsSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/install.sh | bash`,
+        command: `# Tải install.sh và SHA256SUMS từ cùng một GitHub Release\nsha256sum --check --ignore-missing SHA256SUMS\nsudo bash ./install.sh`,
         notes: "Tự động: cài đặt wtype/Wayland direct injection, cấu hình biểu tượng khay EN/VN/TLX động, cấp quyền uinput rootless và tự khởi chạy khi đăng nhập."
       },
       {
@@ -39,7 +39,7 @@ vietcctl status`,
         id: 3,
         title: "Gỡ cài đặt (Uninstall)",
         description: "Xoá hoàn toàn VietC khỏi hệ thống, bao gồm binary, service và udev rules.",
-        command: `curl -sSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/uninstall.sh | sudo bash`,
+        command: `# Tải uninstall.sh và SHA256SUMS từ cùng một GitHub Release\nsha256sum --check --ignore-missing SHA256SUMS\nsudo bash ./uninstall.sh`,
         notes: "Xoá /usr/bin/vietc-daemon, /usr/bin/vietcctl, /usr/bin/vietc-tray và ~/.config/vietc/."
       }
     ],
@@ -48,7 +48,7 @@ vietcctl status`,
         id: 1,
         title: "Cài đặt VietC trên Arch / Omarchy / Manjaro",
         description: "Chạy 1 lệnh duy nhất để tự động cài đặt trên Arch Linux và các bản phối phái sinh.",
-        command: `curl -fsSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/install.sh | bash`,
+        command: `# Tải install.sh và SHA256SUMS từ cùng một GitHub Release\nsha256sum --check --ignore-missing SHA256SUMS\nsudo bash ./install.sh`,
         notes: "Tự động phát hiện pacman, cài base-devel, wtype, wayland, libevdev và lọc thiết bị bàn phím chính xác."
       },
       {
@@ -66,7 +66,7 @@ vietcctl cycle`,
         id: 3,
         title: "Gỡ cài đặt",
         description: "Xoá VietC hoàn toàn khỏi hệ thống Arch.",
-        command: `curl -sSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/uninstall.sh | sudo bash`,
+        command: `# Tải uninstall.sh và SHA256SUMS từ cùng một GitHub Release\nsha256sum --check --ignore-missing SHA256SUMS\nsudo bash ./uninstall.sh`,
       }
     ],
     fedora: [
@@ -74,7 +74,7 @@ vietcctl cycle`,
         id: 1,
         title: "Cài đặt VietC trên Fedora / RHEL",
         description: "Tự động cài đặt VietC trên Fedora và RHEL với 1 lệnh.",
-        command: `curl -fsSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/install.sh | bash`,
+        command: `# Tải install.sh và SHA256SUMS từ cùng một GitHub Release\nsha256sum --check --ignore-missing SHA256SUMS\nsudo bash ./install.sh`,
         notes: "Tự động dùng dnf, cài đặt thư viện wtype, Wayland và uinput dependencies."
       },
       {
@@ -89,7 +89,7 @@ vietcctl status`,
         id: 3,
         title: "Gỡ cài đặt",
         description: "Xoá VietC hoàn toàn khỏi Fedora.",
-        command: `curl -sSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/uninstall.sh | sudo bash`,
+        command: `# Tải uninstall.sh và SHA256SUMS từ cùng một GitHub Release\nsha256sum --check --ignore-missing SHA256SUMS\nsudo bash ./uninstall.sh`,
       }
     ]
   };

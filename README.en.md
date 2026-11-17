@@ -29,7 +29,9 @@ search for the test    ➔   search for the test  (Intelligent Auto-Restore)
 Install Viet+ with a single command on any supported Linux distribution:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/install.sh | bash
+# Download install.sh and SHA256SUMS from the same GitHub Release, then:
+sha256sum --check --ignore-missing SHA256SUMS
+sudo bash ./install.sh
 ```
 
 ### How to Switch Modes

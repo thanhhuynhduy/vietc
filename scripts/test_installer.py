@@ -37,6 +37,29 @@ class DevicePermissionsTests(unittest.TestCase):
 
 
 class InstallerPathTests(unittest.TestCase):
+    def test_daemon_is_not_granted_privileged_capabilities(self):
+        source = (ROOT / "install.sh").read_text()
+        self.assertNotIn("cap_sys_admin", source)
+        self.assertNotIn("cap_dac_override", source)
+        self.assertNotRegex(source, r"setcap\s+[^-\n].*vietc-daemon")
+        self.assertIn("setcap -r /usr/bin/vietc-daemon", source)
+
+    def test_scripts_do_not_redownload_mutable_branches_as_root(self):
+        for name in ("install.sh", "uninstall.sh"):
+            with self.subTest(script=name):
+                source = (ROOT / name).read_text()
+                self.assertNotRegex(source, r"raw\.githubusercontent\.com/.*/main/.*\|\s*sudo\s+bash")
+                self.assertIn("Refusing to re-download and execute a mutable remote script as root", source)
+
+    def test_apt_repository_requires_signatures(self):
+        source = (ROOT / "packaging/arch-repo/push-to-gh-pages.sh").read_text()
+        self.assertNotIn("trusted=yes", source)
+        self.assertIn("signed-by=/usr/share/keyrings/vietc-archive-keyring.gpg", source)
+        self.assertIn("--clearsign", source)
+        self.assertIn("Release.gpg", source)
+        self.assertIn("InRelease", source)
+        self.assertIn("APT_SIGNING_KEY", source)
+
     def test_privileged_path_never_includes_user_cargo_directory(self):
         source = (ROOT / "install.sh").read_text()
         exports = re.findall(r'^\s*export PATH=.*$', source, re.MULTILINE)

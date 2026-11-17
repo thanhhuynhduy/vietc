@@ -167,8 +167,7 @@ t() {
             no_prebuilt) echo -e "${RED}Không tìm thấy tệp nhị phân dựng sẵn cho v$1 ($2).${NC}" ;;
             visit_releases) echo -e "${YELLOW}Truy cập https://github.com/vndangkhoa/vietc/releases${NC}" ;;
             installing_bins) echo -e "Đang cài đặt vào /usr/bin/..." ;;
-            setcap_ok) echo -e "${GREEN}setcap: vietc-daemon có thể chiếm bàn phím mà không cần quyền root đầy đủ${NC}" ;;
-            setcap_fail) echo -e "${YELLOW}setcap thất bại — hãy chạy với sudo để chiếm bàn phím${NC}" ;;
+            capability_removed) echo -e "${GREEN}Đã xác nhận vietc-daemon không mang Linux capability đặc quyền.${NC}" ;;
             bamboo_setup) echo -e "Chế độ bộ điều khiển phụ Bamboo: đang cài đặt/kiểm tra ibus-bamboo + cấu hình IBus..." ;;
             bamboo_install_manual) echo -e "${YELLOW}Không thể tự động cài ibus-bamboo; hãy cài thủ công: https://github.com/BambooEngine/ibus-bamboo${NC}" ;;
             bamboo_aur) echo -e "${YELLOW}Hãy cài ibus-bamboo thủ công (AUR).${NC}" ;;
@@ -217,7 +216,7 @@ t() {
             ns_active) echo -e "Đầu vào đã hoạt động trong phiên này. Để khởi động lại sau này:" ;;
             ns_manage) echo -e "  ${GREEN}systemctl --user restart vietc.service${NC}" ;;
             ns_uninstall_hdr) echo -e "Để gỡ cài đặt:" ;;
-            ns_uninstall) echo -e "  ${GREEN}curl -sSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/uninstall.sh | sudo bash${NC}" ;;
+            ns_uninstall) echo -e "  ${GREEN}Download uninstall.sh and SHA256SUMS from the same GitHub Release, verify the checksum, then run: sudo bash ./uninstall.sh${NC}" ;;
             *) echo -e "$key" ;;
         esac
     else
@@ -244,8 +243,7 @@ t() {
             no_prebuilt) echo -e "${RED}No prebuilt binary found for v$1 ($2).${NC}" ;;
             visit_releases) echo -e "${YELLOW}Visit https://github.com/vndangkhoa/vietc/releases${NC}" ;;
             installing_bins) echo -e "Installing to /usr/bin/..." ;;
-            setcap_ok) echo -e "${GREEN}setcap: vietc-daemon can grab keyboard without full root${NC}" ;;
-            setcap_fail) echo -e "${YELLOW}setcap failed — run with sudo for grab${NC}" ;;
+            capability_removed) echo -e "${GREEN}Confirmed vietc-daemon has no privileged Linux capabilities.${NC}" ;;
             bamboo_setup) echo -e "Bamboo aux-controller mode: installing/verifying ibus-bamboo + IBus config..." ;;
             bamboo_install_manual) echo -e "${YELLOW}Could not auto-install ibus-bamboo; install manually: https://github.com/BambooEngine/ibus-bamboo${NC}" ;;
             bamboo_aur) echo -e "${YELLOW}Install ibus-bamboo manually (AUR).${NC}" ;;
@@ -293,7 +291,7 @@ t() {
             ns_active) echo -e "Input is active in this session. To restart later:" ;;
             ns_manage) echo -e "  ${GREEN}systemctl --user restart vietc.service${NC}" ;;
             ns_uninstall_hdr) echo -e "To uninstall:" ;;
-            ns_uninstall) echo -e "  ${GREEN}curl -sSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/uninstall.sh | sudo bash${NC}" ;;
+            ns_uninstall) echo -e "  ${GREEN}Download uninstall.sh and SHA256SUMS from the same GitHub Release, verify the checksum, then run: sudo bash ./uninstall.sh${NC}" ;;
             *) echo -e "$key" ;;
         esac
     fi
@@ -311,11 +309,12 @@ fi
 if [ "$EUID" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then
         echo -e "${YELLOW}Viet+ installer requires sudo permissions.${NC}"
-        if [ -f "$0" ]; then
-            exec sudo bash "$0" "$@"
-        else
-            exec curl -fsSL https://raw.githubusercontent.com/vndangkhoa/vietc/main/install.sh | sudo bash -s -- "$@"
+        if [ ! -f "$0" ]; then
+            echo "Refusing to re-download and execute a mutable remote script as root." >&2
+            echo "Download install.sh from a GitHub release, verify it with that release's SHA256SUMS, then run: sudo bash ./install.sh" >&2
+            exit 1
         fi
+        exec sudo bash "$0" "$@"
     else
         t sudo
         exit 1
@@ -607,13 +606,12 @@ else
     [ -f "$BIN_DIR/vietcctl" ] && install -m 755 "$BIN_DIR/vietcctl" /usr/bin/vietcctl || true
 fi
 
-# Grant cap_sys_admin so evdev grab works without full root (Linux ≥ 5.8)
-# Also grant cap_dac_override for /dev/uinput access if not in input group
+# The daemon must remain unprivileged. Device access is granted to the active
+# desktop session by systemd-logind through the uaccess udev rules below.
 if command -v setcap &>/dev/null; then
-    setcap cap_sys_admin,cap_dac_override+ep /usr/bin/vietc-daemon 2>/dev/null && \
-        t setcap_ok || \
-        t setcap_fail
+    setcap -r /usr/bin/vietc-daemon 2>/dev/null || true
 fi
+t capability_removed
 
 # Clean old /usr/local/bin/ binaries
 rm -f /usr/local/bin/vietc /usr/local/bin/vietc-daemon /usr/local/bin/vietc-cli \
@@ -727,6 +725,12 @@ RestartSec=3
 # Only kill the daemon on stop; the IBus it respawns (IbusRestartGuard) must
 # survive so input works again after vietc exits.
 KillMode=process
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 # Ensure GNOME session env reaches the user manager (Ubuntu needs this for
 # DISPLAY/WAYLAND_DISPLAY/IBUS_ADDRESS on first install).
 EnvironmentFile=-/etc/default/vietc

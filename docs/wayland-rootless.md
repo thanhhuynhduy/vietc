@@ -129,6 +129,12 @@ ExecStart=/usr/bin/vietc-daemon
 Restart=on-failure
 RestartSec=3
 KillMode=process
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 EnvironmentFile=-/etc/default/vietc
 
 [Install]
