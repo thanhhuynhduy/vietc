@@ -32,6 +32,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libdbus-1-dev libwayland-dev libxkbcommon-dev libx11-dev libxtst-dev
+
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
@@ -76,7 +81,7 @@ jobs:
         run: npm run test:ci
 
       - name: Run installer security regression tests
-        run: python3 scripts/test_installer.py
+        run: python3 ../scripts/test_installer.py
 
       - name: Build production bundle
         run: npm run build
