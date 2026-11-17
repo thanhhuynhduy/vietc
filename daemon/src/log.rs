@@ -1,57 +1,27 @@
-use std::fs;
-use std::path::PathBuf;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-fn get_log_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("vietc").join("vietc.log"))
-}
+pub fn init() -> Result<(), Box<dyn std::error::Error>> {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-fn get_timestamp() -> String {
-    if let Ok(n) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        let secs = n.as_secs();
-        let millis = n.subsec_millis();
-        unsafe {
-            let t = secs as libc::time_t;
-            let mut tm = std::mem::zeroed::<libc::tm>();
-            if !libc::localtime_r(&t, &mut tm).is_null() {
-                return format!(
-                    "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-                    tm.tm_year + 1900,
-                    tm.tm_mon + 1,
-                    tm.tm_mday,
-                    tm.tm_hour,
-                    tm.tm_min,
-                    tm.tm_sec,
-                    millis
-                );
-            }
+    match tracing_journald::layer() {
+        Ok(journald) => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(journald)
+                .try_init()?;
+        }
+        Err(error) => {
+            eprintln!("[vietc] native journald logging unavailable ({error}); using stderr");
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer().with_target(true))
+                .try_init()?;
         }
     }
-    "".to_string()
+
+    Ok(())
 }
 
 pub fn log_info(msg: &str) {
-    eprintln!("{}", msg);
-
-    if let Some(log_path) = get_log_path() {
-        if let Some(parent) = log_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
-        if let Ok(metadata) = fs::metadata(&log_path) {
-            if metadata.len() > 10 * 1024 * 1024 {
-                let backup_path = log_path.with_extension("log.old");
-                let _ = fs::rename(&log_path, backup_path);
-            }
-        }
-
-        if let Ok(mut file) = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-        {
-            use std::io::Write;
-            let timestamp = get_timestamp();
-            let _ = writeln!(file, "[{}] {}", timestamp, msg);
-        }
-    }
+    tracing::info!(message = msg);
 }

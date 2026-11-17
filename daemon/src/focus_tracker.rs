@@ -21,6 +21,7 @@ fn accessibility_bus_address() -> Result<String, Box<dyn Error>> {
     Ok(address)
 }
 
+#[cfg(test)]
 fn observe_atspi_focus(shared_focus: &SharedFocusSnapshot, application_identity: Option<&str>) {
     observe_atspi_focus_with_path(shared_focus, application_identity, None);
 }

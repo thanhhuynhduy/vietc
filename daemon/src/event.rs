@@ -337,12 +337,30 @@ mod tests {
 
     #[test]
     fn shifted_punctuation_and_parentheses_translate_and_compose_cleanly() {
-        assert_eq!(key_to_char_with_case(evdev::Key::KEY_9, true, false), Some('('));
-        assert_eq!(key_to_char_with_case(evdev::Key::KEY_0, true, false), Some(')'));
-        assert_eq!(key_to_char_with_case(evdev::Key::KEY_9, true, true), Some('('));
-        assert_eq!(key_to_char_with_case(evdev::Key::KEY_1, true, false), Some('!'));
-        assert_eq!(key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, false, false), Some('['));
-        assert_eq!(key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, true, false), Some('{'));
+        assert_eq!(
+            key_to_char_with_case(evdev::Key::KEY_9, true, false),
+            Some('(')
+        );
+        assert_eq!(
+            key_to_char_with_case(evdev::Key::KEY_0, true, false),
+            Some(')')
+        );
+        assert_eq!(
+            key_to_char_with_case(evdev::Key::KEY_9, true, true),
+            Some('(')
+        );
+        assert_eq!(
+            key_to_char_with_case(evdev::Key::KEY_1, true, false),
+            Some('!')
+        );
+        assert_eq!(
+            key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, false, false),
+            Some('[')
+        );
+        assert_eq!(
+            key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, true, false),
+            Some('{')
+        );
 
         // Physical sequence for "(nhuw)": Shift+9, n, h, u, w, Shift+0
         let seq = [

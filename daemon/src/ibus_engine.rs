@@ -1336,4 +1336,3 @@ mod tests {
         assert_eq!(extract_content_type_purpose(&variant), Some(8));
     }
 }
-

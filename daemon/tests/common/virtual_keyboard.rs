@@ -18,6 +18,7 @@ fn add_all_keys(set: &mut AttributeSet<Key>) {
     }
 }
 
+#[allow(dead_code)]
 impl VirtualKeyboard {
     pub fn create(name: &str) -> Result<Self> {
         let mut keys = AttributeSet::new();

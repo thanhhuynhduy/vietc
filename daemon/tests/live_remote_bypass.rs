@@ -67,7 +67,10 @@ impl Vk {
             value: v,
         };
         let b = unsafe {
-            std::slice::from_raw_parts(&ev as *const _ as *const u8, std::mem::size_of::<InputEvent>())
+            std::slice::from_raw_parts(
+                &ev as *const _ as *const u8,
+                std::mem::size_of::<InputEvent>(),
+            )
         };
         self.0.write_all(b).unwrap();
     }
@@ -82,8 +85,18 @@ impl Vk {
     fn typ(&mut self, s: &str) {
         for ch in s.chars() {
             let code = match ch {
-                'a' => 30, 'e' => 18, 'g' => 34, 'i' => 23, 'j' => 36, 'n' => 49,
-                's' => 31, 't' => 20, 'v' => 47, 'o' => 24, 'm' => 50, ' ' => 57,
+                'a' => 30,
+                'e' => 18,
+                'g' => 34,
+                'i' => 23,
+                'j' => 36,
+                'n' => 49,
+                's' => 31,
+                't' => 20,
+                'v' => 47,
+                'o' => 24,
+                'm' => 50,
+                ' ' => 57,
                 _ => panic!("{ch:?}"),
             };
             self.tap(code);
@@ -102,20 +115,24 @@ fn sleep(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
 }
 
-fn wl_copy(t: &str) {
-    let mut c = Command::new("wl-copy").stdin(Stdio::piped()).spawn().unwrap();
-    c.stdin.take().unwrap().write_all(t.as_bytes()).unwrap();
-    std::thread::spawn(move || {
-        let _ = c.wait();
-    });
+fn wl_copy(t: &str) -> std::process::Child {
+    let mut child = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(t.as_bytes()).unwrap();
     sleep(300);
+    child
 }
 fn wl_paste() -> Option<String> {
     let o = Command::new("wl-paste").arg("-n").output().ok()?;
-    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+    o.status
+        .success()
+        .then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
 #[test]
+#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, real browser and desktop clipboard"]
 fn remote_desktop_window_is_bypassed() {
     let pages: Arc<Mutex<HashMap<String, String>>> = Arc::default();
     let p2 = pages.clone();
@@ -144,11 +161,16 @@ fn remote_desktop_window_is_bypassed() {
                     }
                 }
             }
-            let Some(p) = data.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+            let Some(p) = data.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
             let head = String::from_utf8_lossy(&data[..p]).to_string();
             let host = head
                 .lines()
-                .find_map(|l| l.strip_prefix("Host: ").or_else(|| l.strip_prefix("host: ")))
+                .find_map(|l| {
+                    l.strip_prefix("Host: ")
+                        .or_else(|| l.strip_prefix("host: "))
+                })
                 .unwrap_or("")
                 .split(':')
                 .next()
@@ -158,7 +180,9 @@ fn remote_desktop_window_is_bypassed() {
                 p2.lock()
                     .unwrap()
                     .insert(host, String::from_utf8_lossy(&data[p + 4..]).to_string());
-                let _ = st.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = st.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
             } else {
                 let html = "<!DOCTYPE html><html><head><meta charset=utf-8><title>remote-sim</title></head><body><textarea id=t autofocus style='width:90%;height:60vh;font-size:20px'></textarea><script>const t=document.getElementById('t');t.focus();setInterval(()=>{fetch('/r',{method:'POST',body:t.value}).catch(()=>{})},100);</script></body></html>";
                 let _ = st.write_all(
@@ -176,7 +200,7 @@ fn remote_desktop_window_is_bypassed() {
     sleep(1500);
     let mut report = Vec::new();
     for (host, expect_raw) in [("rustdesk.localhost", true), ("127.0.0.1", false)] {
-        Command::new("microsoft-edge")
+        let mut edge = Command::new("microsoft-edge")
             .args([
                 &format!("--user-data-dir=/tmp/vietc-edge-remote-{host}"),
                 "--new-window",
@@ -189,17 +213,28 @@ fn remote_desktop_window_is_bypassed() {
             .spawn()
             .unwrap();
         sleep(5000);
-        wl_copy("REMOTE-OLD-CLIPBOARD");
+        let mut clipboard_owner = wl_copy("REMOTE-OLD-CLIPBOARD");
         vk.typ("tieengs vieetj mootj ");
         sleep(1500);
         let text = pages.lock().unwrap().get(host).cloned().unwrap_or_default();
         let clip = wl_paste();
-        let expected = if expect_raw { "tieengs vieetj mootj " } else { "tiếng việt một " };
+        let expected = if expect_raw {
+            "tieengs vieetj mootj "
+        } else {
+            "tiếng việt một "
+        };
         report.push(format!(
             "[{}] window={host} text={text:?} expected={expected:?} clipboard_after={clip:?}",
-            if text == expected && clip.as_deref() == Some("REMOTE-OLD-CLIPBOARD") { "PASS" } else { "FAIL" }
+            if text == expected && clip.as_deref() == Some("REMOTE-OLD-CLIPBOARD") {
+                "PASS"
+            } else {
+                "FAIL"
+            }
         ));
-        let _ = Command::new("pkill").args(["-f", &format!("vietc-edge-remote-{host}")]).status();
+        let _ = edge.kill();
+        let _ = edge.wait();
+        let _ = clipboard_owner.kill();
+        let _ = clipboard_owner.wait();
         sleep(1500);
     }
     println!("\n======== REMOTE BYPASS LIVE REPORT ========");

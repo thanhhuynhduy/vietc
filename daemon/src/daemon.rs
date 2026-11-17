@@ -595,9 +595,11 @@ mod tests {
 
     #[test]
     fn forwarded_keys_preserve_prefix_after_backspace_and_transforms() {
-        let mut config = Config::default();
-        config.input_method = "telex".into();
-        config.start_enabled = true;
+        let config = Config {
+            input_method: "telex".into(),
+            start_enabled: true,
+            ..Default::default()
+        };
         let mut daemon = Daemon::new(
             config,
             PathBuf::from("/tmp/vietc-forwarded-test.toml"),
@@ -838,8 +840,10 @@ mod tests {
 
     #[test]
     fn replay_and_inject_only_replaces_changed_suffix_preserving_common_prefix() {
-        let mut config = Config::default();
-        config.input_method = "telex".into();
+        let config = Config {
+            input_method: "telex".into(),
+            ..Default::default()
+        };
         let mut daemon = Daemon::new(
             config,
             PathBuf::from("/tmp/vietc_suffix_diff_test.toml"),

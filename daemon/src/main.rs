@@ -18,9 +18,9 @@ mod im_plan;
 mod inject;
 mod log;
 mod password_detector;
+mod pointer_watcher;
 mod signal;
 mod stdin;
-mod pointer_watcher;
 #[cfg(feature = "wayland")]
 mod toplevel_tracker;
 mod wayland_im;
@@ -85,6 +85,7 @@ impl Drop for IbusRestartGuard {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    log::init()?;
     install_signal_handlers();
     let _instance_lock = match ensure_single_instance("vietc-daemon") {
         Ok(lock) => lock,

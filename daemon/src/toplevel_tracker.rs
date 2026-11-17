@@ -50,17 +50,17 @@ struct Published {
 enum Publish {
     Nothing,
     /// A different window became active.
-    NewWindow { serial: u64, app_id: Option<String> },
+    NewWindow {
+        serial: u64,
+        app_id: Option<String>,
+    },
     /// The active window's app_id arrived/changed after activation.
     ClassOnly(Option<String>),
 }
 
 /// Pure decision: compare the currently active toplevel with what was
 /// published last. Kept free of Wayland types so it can be unit-tested.
-fn plan_publish(
-    last: &Published,
-    active: Option<(u64, Option<String>)>,
-) -> (Publish, Published) {
+fn plan_publish(last: &Published, active: Option<(u64, Option<String>)>) -> (Publish, Published) {
     let Some((serial, app_id)) = active else {
         return (Publish::Nothing, last.clone());
     };
@@ -291,7 +291,9 @@ pub fn spawn_toplevel_focus_tracker(focus: SharedFocusSnapshot) {
         match run_once(focus.clone()) {
             Ok(()) => return,
             Err(RunError::Unsupported) => {
-                log_info("[vietc] Compositor has no toplevel-info protocol; using AT-SPI focus only");
+                log_info(
+                    "[vietc] Compositor has no toplevel-info protocol; using AT-SPI focus only",
+                );
                 return;
             }
             Err(RunError::Transient(error)) => {

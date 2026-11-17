@@ -29,7 +29,9 @@ fn is_pointer_device(device: &evdev::Device) -> bool {
         .is_some_and(|keys| keys.contains(evdev::Key::BTN_LEFT))
 }
 
-fn scan_new(open_paths: &mut HashSet<std::path::PathBuf>) -> Vec<(std::path::PathBuf, evdev::Device)> {
+fn scan_new(
+    open_paths: &mut HashSet<std::path::PathBuf>,
+) -> Vec<(std::path::PathBuf, evdev::Device)> {
     let mut found = Vec::new();
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
         return found;
@@ -79,8 +81,13 @@ pub fn spawn_pointer_watcher() -> Arc<AtomicU64> {
                     revents: 0,
                 })
                 .collect();
-            let ready =
-                unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, POLL_TIMEOUT_MS) };
+            let ready = unsafe {
+                libc::poll(
+                    pfds.as_mut_ptr(),
+                    pfds.len() as libc::nfds_t,
+                    POLL_TIMEOUT_MS,
+                )
+            };
             if ready <= 0 {
                 continue;
             }

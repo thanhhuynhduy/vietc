@@ -1230,7 +1230,10 @@ mod remote_bypass_tests {
         ] {
             let mut state = manager();
             state.update_with_app(class.to_string());
-            assert!(!state.is_current_app_bypassed(), "{class} must not be bypassed");
+            assert!(
+                !state.is_current_app_bypassed(),
+                "{class} must not be bypassed"
+            );
         }
     }
 }

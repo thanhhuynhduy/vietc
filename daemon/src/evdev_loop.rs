@@ -77,6 +77,53 @@ fn is_navigation_or_control_key(key: evdev::Key) -> bool {
     )
 }
 
+fn finish_forwarded_stroke(
+    injector: &dyn vietc_protocol::KeyInjector,
+    keycode: u16,
+    value: i32,
+    forwarded_keys: &mut HashSet<u16>,
+) -> bool {
+    if (value == 0 || value == 2) && forwarded_keys.contains(&keycode) {
+        injector.send_key_event(keycode, value);
+        if value == 0 {
+            forwarded_keys.remove(&keycode);
+        }
+        return true;
+    }
+    false
+}
+
+fn bypass_uncertain_edit(
+    injector: &dyn vietc_protocol::KeyInjector,
+    grabbed: bool,
+    keycode: u16,
+    value: i32,
+    consumed_keys: &mut HashSet<u16>,
+    forwarded_keys: &mut HashSet<u16>,
+) -> bool {
+    if finish_forwarded_stroke(injector, keycode, value, forwarded_keys) {
+        return true;
+    }
+    if !injector.has_uncertain_edit() {
+        return false;
+    }
+    // The triggering transform's release/repeat must remain consumed, but new
+    // physical keys (including Backspace and shortcuts) must not be swallowed.
+    if value == 1 {
+        consumed_keys.remove(&keycode);
+    }
+    if grabbed && !((value == 0 || value == 2) && consumed_keys.contains(&keycode)) {
+        injector.send_key_event(keycode, value);
+        if value == 1 {
+            forwarded_keys.insert(keycode);
+        }
+    }
+    if value == 0 {
+        consumed_keys.remove(&keycode);
+    }
+    true
+}
+
 fn update_keyboard_state(
     key_state: &mut evdev::AttributeSet<evdev::Key>,
     caps_lock: &mut bool,
@@ -133,6 +180,7 @@ struct KeyboardState {
     caps_lock: bool,
     grabbed: bool,
     consumed_keys: HashSet<u16>,
+    forwarded_keys: HashSet<u16>,
 }
 
 impl KeyboardState {
@@ -142,6 +190,7 @@ impl KeyboardState {
             caps_lock,
             grabbed,
             consumed_keys: HashSet::new(),
+            forwarded_keys: HashSet::new(),
         }
     }
 }
@@ -334,6 +383,7 @@ pub fn run_with_evdev(
             let mut caps = device_states[i].caps_lock;
             let mut key_state = std::mem::take(&mut device_states[i].keys);
             let mut consumed_keys = std::mem::take(&mut device_states[i].consumed_keys);
+            let mut forwarded_keys = std::mem::take(&mut device_states[i].forwarded_keys);
             for event in event_list {
                 if event.event_type() != evdev::EventType::KEY {
                     continue;
@@ -345,6 +395,11 @@ pub fn run_with_evdev(
                 // Update modifier and lock state before translating this event.
                 update_keyboard_state(&mut key_state, &mut caps, key, value);
                 injector.set_caps_lock(caps);
+                // Complete a stroke already forwarded during uncertainty before
+                // focus recovery, policy, dedup or normal Backspace handling.
+                if finish_forwarded_stroke(&*injector, keycode, value, &mut forwarded_keys) {
+                    continue;
+                }
 
                 // A mouse click may have moved the caret or switched windows
                 // without any keyboard event: the half-typed word no longer
@@ -401,7 +456,7 @@ pub fn run_with_evdev(
                     continue;
                 }
 
-                if value == 1 && daemon.config.deduplicate_keys {
+                if value == 1 && daemon.config.deduplicate_keys && !injector.has_uncertain_edit() {
                     let dedupable = keycode < 256 && !is_modifier_pressed(&key_state);
                     if dedup.observe(
                         keycode as u32,
@@ -444,18 +499,13 @@ pub fn run_with_evdev(
                     if focus_changed {
                         log_info(&format!(
                             "[vietc] Focus generation changed: {} -> {} identity={:?} (gap={:?})",
-                            last_focus_generation,
-                            focus.generation,
-                            focus.identity,
-                            gap
+                            last_focus_generation, focus.generation, focus.identity, gap
                         ));
                         let previous_generation = last_focus_generation;
                         let new_target = focus.target.clone();
                         last_focus_generation = focus.generation;
-                        injector.cancel_pending_replacement(
-                            last_focus_generation,
-                            "target-changed",
-                        );
+                        injector
+                            .cancel_pending_replacement(last_focus_generation, "target-changed");
                         log_info(&format!(
                             "[vietc] composition reset: focus_generation={} old_target_generation={} old_target={:?} new_target={:?} reason=target-changed",
                             last_focus_generation,
@@ -477,8 +527,7 @@ pub fn run_with_evdev(
                                 .clone()
                                 .unwrap_or_default();
                             let class = if class.is_empty() {
-                                crate::app_state::get_focused_window_class()
-                                    .unwrap_or_default()
+                                crate::app_state::get_focused_window_class().unwrap_or_default()
                             } else {
                                 class
                             };
@@ -533,7 +582,9 @@ pub fn run_with_evdev(
                                 daemon.engine.reset();
                                 daemon.replay_reset();
                                 daemon.write_status();
-                                log_info("[vietc] Password field detected (periodic) — engine disabled");
+                                log_info(
+                                    "[vietc] Password field detected (periodic) — engine disabled",
+                                );
                             } else if !is_pw
                                 && !currently_enabled
                                 && daemon.app_state.get_default_state()
@@ -545,6 +596,18 @@ pub fn run_with_evdev(
                             }
                         }
                     }
+                }
+
+                if bypass_uncertain_edit(
+                    &*injector,
+                    grabbed,
+                    keycode,
+                    value,
+                    &mut consumed_keys,
+                    &mut forwarded_keys,
+                ) {
+                    daemon.reset_composition_state();
+                    continue;
                 }
 
                 if !grabbed {
@@ -623,7 +686,11 @@ pub fn run_with_evdev(
                                 daemon.handle_transaction_outcome(outcome);
                             }
                         }
-                        consumed_keys.insert(keycode);
+                        if value == 0 {
+                            consumed_keys.remove(&keycode);
+                        } else {
+                            consumed_keys.insert(keycode);
+                        }
                         continue;
                     }
 
@@ -632,9 +699,13 @@ pub fn run_with_evdev(
                             log_info(&format!(
                                 "[vietc] grabbed key: code={} ch='{}' buf='{}' enabled={}",
                                 keycode,
-                                key_to_char_with_case(key, is_modifier_held_shift(&key_state), caps)
-                                    .map(|c| c.escape_default().to_string())
-                                    .unwrap_or_default(),
+                                key_to_char_with_case(
+                                    key,
+                                    is_modifier_held_shift(&key_state),
+                                    caps
+                                )
+                                .map(|c| c.escape_default().to_string())
+                                .unwrap_or_default(),
                                 daemon.engine.buffer().escape_default(),
                                 daemon.engine.is_enabled(),
                             ));
@@ -645,7 +716,6 @@ pub fn run_with_evdev(
                         if let Some(ch) =
                             key_to_char_with_case(key, is_modifier_held_shift(&key_state), caps)
                         {
-
                             let buf_before = daemon.engine.buffer().chars().count();
                             let commands = daemon.process_key(ch);
                             if !commands.is_empty() {
@@ -717,6 +787,7 @@ pub fn run_with_evdev(
             device_states[i].keys = key_state;
             device_states[i].caps_lock = caps;
             device_states[i].consumed_keys = consumed_keys;
+            device_states[i].forwarded_keys = forwarded_keys;
         }
 
         // Remove any devices that errored out (e.g. a uinput virtual keyboard
@@ -727,6 +798,9 @@ pub fn run_with_evdev(
             for &d in dead.iter().rev() {
                 let name = devices[d].1.clone();
                 devices.remove(d);
+                for code in &device_states[d].forwarded_keys {
+                    injector.send_key_event(*code, 0);
+                }
                 device_states.remove(d);
                 let path = dev_path_of(&name);
                 known_paths.remove(&path);
@@ -759,6 +833,111 @@ fn dev_path_of(label: &str) -> String {
 mod grabbed_event_stream_tests {
     use super::*;
     use crate::commands::OutputCommand;
+
+    struct UncertainInjector {
+        events: std::cell::RefCell<Vec<(u16, i32)>>,
+        uncertain: std::cell::Cell<bool>,
+    }
+
+    impl Default for UncertainInjector {
+        fn default() -> Self {
+            Self {
+                events: Default::default(),
+                uncertain: std::cell::Cell::new(true),
+            }
+        }
+    }
+
+    impl vietc_protocol::KeyInjector for UncertainInjector {
+        fn send_backspace(&self) -> vietc_protocol::inject::InjectResult {
+            panic!("uncertain edits must not perform automatic deletion")
+        }
+        fn send_char(&self, _: char) -> vietc_protocol::inject::InjectResult {
+            panic!("uncertain edits must bypass composition")
+        }
+        fn send_string(&self, _: &str) -> vietc_protocol::inject::InjectResult {
+            panic!("uncertain edits must not retry insertion")
+        }
+        fn send_key_event(&self, code: u16, value: i32) -> vietc_protocol::inject::InjectResult {
+            self.events.borrow_mut().push((code, value));
+            vietc_protocol::inject::InjectResult::Success
+        }
+        fn has_uncertain_edit(&self) -> bool {
+            self.uncertain.get()
+        }
+        fn flush(&self) -> vietc_protocol::inject::InjectResult {
+            vietc_protocol::inject::InjectResult::Success
+        }
+    }
+
+    #[test]
+    fn uncertain_paste_forwards_new_keys_but_keeps_original_trigger_release_consumed() {
+        let injector = UncertainInjector::default();
+        // Include the stale Backspace marker produced by older daemon builds.
+        let mut consumed = HashSet::from([31, 14]);
+        let mut forwarded = HashSet::new();
+        for (code, value) in [
+            (31, 2),
+            (31, 0),
+            (14, 1),
+            (14, 0),
+            (29, 1),
+            (46, 1),
+            (46, 0),
+            (29, 0),
+        ] {
+            assert!(bypass_uncertain_edit(
+                &injector,
+                true,
+                code,
+                value,
+                &mut consumed,
+                &mut forwarded,
+            ));
+        }
+        assert!(consumed.is_empty());
+        assert_eq!(
+            &*injector.events.borrow(),
+            &[(14, 1), (14, 0), (29, 1), (46, 1), (46, 0), (29, 0)]
+        );
+    }
+
+    #[test]
+    fn uncertain_ungrabbed_input_is_not_forwarded_twice() {
+        let injector = UncertainInjector::default();
+        let mut consumed = HashSet::new();
+        let mut forwarded = HashSet::new();
+        assert!(bypass_uncertain_edit(
+            &injector,
+            false,
+            30,
+            1,
+            &mut consumed,
+            &mut forwarded,
+        ));
+        assert!(injector.events.borrow().is_empty());
+    }
+
+    #[test]
+    fn uncertain_backspace_release_survives_focus_recovery_mid_stroke() {
+        let injector = UncertainInjector::default();
+        let mut consumed = HashSet::new();
+        let mut forwarded = HashSet::new();
+        assert!(bypass_uncertain_edit(
+            &injector,
+            true,
+            14,
+            1,
+            &mut consumed,
+            &mut forwarded
+        ));
+        // Another physical key observes a new field and clears the latch.
+        injector.uncertain.set(false);
+        assert!(finish_forwarded_stroke(&injector, 14, 2, &mut forwarded));
+        assert!(finish_forwarded_stroke(&injector, 14, 0, &mut forwarded));
+        assert!(forwarded.is_empty());
+        assert_eq!(&*injector.events.borrow(), &[(14, 1), (14, 2), (14, 0)]);
+    }
 
     #[derive(Clone, Copy)]
     enum TestEvent {
@@ -878,9 +1057,11 @@ mod grabbed_event_stream_tests {
                 InjectResult::Success
             }
         }
-        let mut config = crate::config::Config::default();
-        config.start_enabled = true;
-        config.input_method = "telex".into();
+        let config = crate::config::Config {
+            start_enabled: true,
+            input_method: "telex".into(),
+            ..Default::default()
+        };
         let mut daemon = Daemon::new(
             config,
             std::path::PathBuf::from("/tmp/vietc-shift-test.toml"),

@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use wayland_client::protocol::wl_keyboard::{KeyState, KeymapFormat};
 use wayland_client::protocol::wl_registry::{Event as WlRegistryEvent, WlRegistry};
@@ -503,10 +502,11 @@ pub fn run_wayland_im(
                 revents: 0,
             };
             let poll_ret = unsafe { libc::poll(&mut pfd, 1, 50) };
-            if poll_ret > 0 && (pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0 {
-                if guard.read().is_err() {
-                    break;
-                }
+            if poll_ret > 0
+                && (pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR)) != 0
+                && guard.read().is_err()
+            {
+                break;
             }
         }
         if event_queue.dispatch_pending(&mut state).is_err() {
@@ -690,4 +690,3 @@ mod tests {
         assert!(!is_non_printable_boundary_key(58)); // CapsLock
     }
 }
-

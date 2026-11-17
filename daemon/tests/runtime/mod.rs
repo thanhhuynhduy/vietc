@@ -4921,6 +4921,7 @@ fn select_controlled_firefox_window(
         .cloned()
 }
 
+#[allow(dead_code)]
 fn controlled_firefox_window(
     firefox_root_pid: u32,
     timeout: Duration,
@@ -6192,6 +6193,7 @@ fn activate_stress_browser(
         .map_err(|_| RuntimeCommandError::TimedOut)
 }
 
+#[allow(dead_code)]
 fn switch_stress_browser(timeout: Duration) -> Result<(), RuntimeCommandError> {
     let mut keyboard =
         common::virtual_keyboard::VirtualKeyboard::create("vietc-phase6-focus-switch-vk")
@@ -6862,7 +6864,11 @@ fn privileged_cosmic_edit_types_vietnamese_end_to_end() {
             workspace_root.join("target/runtime-artifacts/cosmic-edit-vietnamese-e2e.txt"),
             format!(
                 "raw={raw:?}\nexpected={expected:?}\nobserved={observed:?}\nstatus={}\n",
-                if observed == expected { "PASS" } else { "FAILED" }
+                if observed == expected {
+                    "PASS"
+                } else {
+                    "FAILED"
+                }
             ),
         )
         .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
