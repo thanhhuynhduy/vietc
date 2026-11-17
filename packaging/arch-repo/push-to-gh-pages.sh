@@ -83,7 +83,7 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Fetch remote URL
-REMOTE_URL=$(git -C "$PROJECT_ROOT" remote get-url "$REMOTE" 2>/dev/null || echo "https://github.com/vndangkhoa/vietc.git")
+REMOTE_URL=$(git -C "$PROJECT_ROOT" remote get-url "$REMOTE" 2>/dev/null || echo "https://github.com/thanhhuynhduy/vietc.git")
 
 # === Prepare gh-pages content ===
 
@@ -128,7 +128,7 @@ cat > "$TMP_DIR/index.html" << 'EOF'
     <div class="card">
         <h1>⚡ Viet+ — Bộ gõ tiếng Việt cho Linux</h1>
         <p>Zero underline, low latency. Hỗ trợ <strong>Wayland</strong> (IBus, zwp_v2) và <strong>X11</strong> (evdev, XTEST).</p>
-        <p>GitHub: <a href="https://github.com/vndangkhoa/vietc">github.com/vndangkhoa/vietc</a></p>
+        <p>GitHub: <a href="https://github.com/thanhhuynhduy/vietc">github.com/vndangkhoa/vietc</a></p>
     </div>
 
     <div class="card">

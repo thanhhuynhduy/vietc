@@ -13,8 +13,8 @@ fi
 
 echo "=== Updating AUR package configurations for Viet+ v${VERSION} ==="
 
-TARBALL_URL="https://github.com/vndangkhoa/vietc/archive/refs/tags/v${VERSION}.tar.gz"
-BIN_TARBALL_URL="https://github.com/vndangkhoa/vietc/releases/download/v${VERSION}/vietc_${VERSION}_linux_amd64.tar.gz"
+TARBALL_URL="https://github.com/thanhhuynhduy/vietc/archive/refs/tags/v${VERSION}.tar.gz"
+BIN_TARBALL_URL="https://github.com/thanhhuynhduy/vietc/releases/download/v${VERSION}/vietc_${VERSION}_linux_amd64.tar.gz"
 
 echo "1. Fetching SHA256 for source release (v${VERSION})..."
 TEMP_DIR=$(mktemp -d)

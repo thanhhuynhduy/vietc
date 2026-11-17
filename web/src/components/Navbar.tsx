@@ -66,7 +66,7 @@ export default function Navbar() {
         {/* EXTERNAL GITHUB BUTTON */}
         <div className="flex items-center gap-2">
           <a
-            href="https://github.com/vndangkhoa/vietc"
+            href="https://github.com/thanhhuynhduy/vietc"
             target="_blank"
             rel="noopener noreferrer"
             className="px-3.5 py-1.5 rounded-xl bg-white/5 border border-white/10 hover:border-emerald-500/30 text-slate-300 hover:text-emerald-400 transition-all flex items-center gap-1.5 text-xs font-semibold"

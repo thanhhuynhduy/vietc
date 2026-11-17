@@ -28,7 +28,7 @@ fi
 # 3. Clone and build
 echo -e "${YELLOW}[3/5] Cloning and building...${NC}"
 if [ ! -d vietc ]; then
-  git clone https://github.com/vndangkhoa/vietc.git
+  git clone https://github.com/thanhhuynhduy/vietc.git
 fi
 cd vietc && git checkout staging && cargo build --release
 

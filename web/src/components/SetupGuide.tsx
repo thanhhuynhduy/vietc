@@ -99,7 +99,7 @@ vietcctl status`,
       id: 1,
       title: "Clone mã nguồn",
       description: "Nhánh main chứa code mới nhất với fix Ubuntu IBus.",
-      command: `git clone https://github.com/vndangkhoa/vietc.git
+      command: `git clone https://github.com/thanhhuynhduy/vietc.git
 cd vietc`,
     },
     {

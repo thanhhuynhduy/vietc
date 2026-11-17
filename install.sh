@@ -165,7 +165,7 @@ t() {
             downloading_tarball) echo -e "Đang tải tệp nén tarball..." ;;
             downloading_deb) echo -e "Đang tải gói .deb..." ;;
             no_prebuilt) echo -e "${RED}Không tìm thấy tệp nhị phân dựng sẵn cho v$1 ($2).${NC}" ;;
-            visit_releases) echo -e "${YELLOW}Truy cập https://github.com/vndangkhoa/vietc/releases${NC}" ;;
+            visit_releases) echo -e "${YELLOW}Truy cập https://github.com/thanhhuynhduy/vietc/releases${NC}" ;;
             installing_bins) echo -e "Đang cài đặt vào /usr/bin/..." ;;
             capability_removed) echo -e "${GREEN}Đã xác nhận vietc-daemon không mang Linux capability đặc quyền.${NC}" ;;
             bamboo_setup) echo -e "Chế độ bộ điều khiển phụ Bamboo: đang cài đặt/kiểm tra ibus-bamboo + cấu hình IBus..." ;;
@@ -241,7 +241,7 @@ t() {
             downloading_tarball) echo -e "Downloading tarball..." ;;
             downloading_deb) echo -e "Downloading .deb package..." ;;
             no_prebuilt) echo -e "${RED}No prebuilt binary found for v$1 ($2).${NC}" ;;
-            visit_releases) echo -e "${YELLOW}Visit https://github.com/vndangkhoa/vietc/releases${NC}" ;;
+            visit_releases) echo -e "${YELLOW}Visit https://github.com/thanhhuynhduy/vietc/releases${NC}" ;;
             installing_bins) echo -e "Installing to /usr/bin/..." ;;
             capability_removed) echo -e "${GREEN}Confirmed vietc-daemon has no privileged Linux capabilities.${NC}" ;;
             bamboo_setup) echo -e "Bamboo aux-controller mode: installing/verifying ibus-bamboo + IBus config..." ;;
@@ -499,7 +499,7 @@ if [ "$FROM_SOURCE" = true ]; then
     # Clone source if not in repo
     if [ ! -f Cargo.toml ] || [ ! -d .git ]; then
         t cloning
-        git clone https://github.com/vndangkhoa/vietc.git "$TMPDIR/source"
+        git clone https://github.com/thanhhuynhduy/vietc.git "$TMPDIR/source"
         cd "$TMPDIR/source"
         # If building as non-root but TMPDIR was created as root, ensure build user can write
         if [ "$REAL_USER" != "root" ] && [ "$(id -u)" = "0" ]; then
@@ -537,7 +537,7 @@ if [ "$FROM_SOURCE" = true ]; then
     (cd ui && run_as_build_user cargo build --release)
 else
     t fetching_release
-    RELEASE_JSON=$(curl -sSfL "https://api.github.com/repos/vndangkhoa/vietc/releases/latest" 2>/dev/null || echo "")
+    RELEASE_JSON=$(curl -sSfL "https://api.github.com/repos/thanhhuynhduy/vietc/releases/latest" 2>/dev/null || echo "")
     TAG=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed 's/.*"v\(.*\)",/\1/')
     if [ -z "$TAG" ]; then
         t fetch_failed
@@ -545,21 +545,65 @@ else
     fi
     t latest_version "$TAG"
 
-    # Try tarball first, then .deb
+    # Try tarball first, then .deb. Every downloaded artifact must match the
+    # checksum published by the same immutable release tag before extraction.
     TARBALL="vietc_${TAG}_linux_${ARCH}.tar.gz"
-    TARBALL_URL="https://github.com/vndangkhoa/vietc/releases/download/v${TAG}/${TARBALL}"
+    TARBALL_URL="https://github.com/thanhhuynhduy/vietc/releases/download/v${TAG}/${TARBALL}"
     DEB="vietc_${TAG}-1_amd64.deb"
-    DEB_URL="https://github.com/vndangkhoa/vietc/releases/download/v${TAG}/${DEB}"
+    DEB_URL="https://github.com/thanhhuynhduy/vietc/releases/download/v${TAG}/${DEB}"
+    CHECKSUMS_URL="https://github.com/thanhhuynhduy/vietc/releases/download/v${TAG}/SHA256SUMS"
     INSTALL_DIR="$TMPDIR/install"
     mkdir -p "$INSTALL_DIR"
 
-    if curl -sSfL -o "$TMPDIR/$TARBALL" "$TARBALL_URL" 2>/dev/null; then
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        echo "sha256sum is required to verify release artifacts." >&2
+        exit 1
+    fi
+    if ! curl --proto '=https' --tlsv1.2 -sSfL \
+        -o "$TMPDIR/SHA256SUMS" "$CHECKSUMS_URL"; then
+        echo "Failed to download SHA256SUMS for release v${TAG}; refusing installation." >&2
+        exit 1
+    fi
+
+    verify_release_artifact() {
+        local asset="$1"
+        local checksum_line
+
+        checksum_line="$(awk -v name="$asset" '
+            {
+                file = $2
+                sub(/^\*/, "", file)
+                sub(/^\.\//, "", file)
+                if (file == name) {
+                    print $1 "  " name
+                    matches++
+                }
+            }
+            END {
+                if (matches != 1) {
+                    exit 1
+                }
+            }
+        ' "$TMPDIR/SHA256SUMS")" || {
+            echo "Missing or ambiguous checksum for ${asset}; refusing installation." >&2
+            return 1
+        }
+
+        printf '%s\n' "$checksum_line" |
+            (cd "$TMPDIR" && sha256sum --check --strict -)
+    }
+
+    if curl --proto '=https' --tlsv1.2 -sSfL \
+        -o "$TMPDIR/$TARBALL" "$TARBALL_URL" 2>/dev/null; then
         t downloading_tarball
+        verify_release_artifact "$TARBALL" || exit 1
         tar -xzf "$TMPDIR/$TARBALL" -C "$INSTALL_DIR"
         BIN_DIR="$INSTALL_DIR/vietc_${TAG}_linux_${ARCH}/bin"
         PKG_DIR="$INSTALL_DIR/vietc_${TAG}_linux_${ARCH}"
-    elif curl -sSfL -o "$TMPDIR/$DEB" "$DEB_URL" 2>/dev/null; then
+    elif curl --proto '=https' --tlsv1.2 -sSfL \
+        -o "$TMPDIR/$DEB" "$DEB_URL" 2>/dev/null; then
         t downloading_deb
+        verify_release_artifact "$DEB" || exit 1
         if command -v dpkg-deb &>/dev/null; then
             dpkg-deb -x "$TMPDIR/$DEB" "$INSTALL_DIR"
         else

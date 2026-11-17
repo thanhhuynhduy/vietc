@@ -1,6 +1,6 @@
 # vietc-vk
 
-Standalone **virtual-keyboard test tool** for [Viet+ (vietc)](https://github.com/vndangkhoa/vietc) —
+Standalone **virtual-keyboard test tool** for [Viet+ (vietc)](https://github.com/thanhhuynhduy/vietc) —
 a Vietnamese input method for Linux.
 
 It creates a real `/dev/uinput` virtual keyboard. vietc (already running, grabbing all

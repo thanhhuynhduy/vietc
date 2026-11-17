@@ -37,7 +37,7 @@ export default function Footer() {
         {/* Right External Links */}
         <div className="flex items-center gap-4 text-slate-500">
           <a
-            href="https://github.com/vndangkhoa/vietc"
+            href="https://github.com/thanhhuynhduy/vietc"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-emerald-400 transition-colors"
@@ -46,7 +46,7 @@ export default function Footer() {
             <Github size={18} />
           </a>
           <a
-            href="https://github.com/vndangkhoa/vietc/issues"
+            href="https://github.com/thanhhuynhduy/vietc/issues"
             target="_blank"
             rel="noopener noreferrer"
             className="hover:text-emerald-400 transition-colors"

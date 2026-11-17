@@ -135,7 +135,7 @@ Build-Depends: debhelper-compat (= 13),
                libwayland-dev,
                libxkbcommon-dev
 Standards-Version: 4.6.2
-Homepage: https://github.com/vndangkhoa/vietc
+Homepage: https://github.com/thanhhuynhduy/vietc
 
 Package: vietc
 Architecture: any
