@@ -59,21 +59,21 @@ fn sync_app_class(
     }
 }
 
-fn is_navigation_or_control_key(key: evdev::Key) -> bool {
+fn is_navigation_or_control_key(key: evdev::KeyCode) -> bool {
     matches!(
         key,
-        evdev::Key::KEY_LEFT
-            | evdev::Key::KEY_RIGHT
-            | evdev::Key::KEY_UP
-            | evdev::Key::KEY_DOWN
-            | evdev::Key::KEY_HOME
-            | evdev::Key::KEY_END
-            | evdev::Key::KEY_PAGEUP
-            | evdev::Key::KEY_PAGEDOWN
-            | evdev::Key::KEY_DELETE
-            | evdev::Key::KEY_INSERT
-            | evdev::Key::KEY_ESC
-            | evdev::Key::KEY_TAB
+        evdev::KeyCode::KEY_LEFT
+            | evdev::KeyCode::KEY_RIGHT
+            | evdev::KeyCode::KEY_UP
+            | evdev::KeyCode::KEY_DOWN
+            | evdev::KeyCode::KEY_HOME
+            | evdev::KeyCode::KEY_END
+            | evdev::KeyCode::KEY_PAGEUP
+            | evdev::KeyCode::KEY_PAGEDOWN
+            | evdev::KeyCode::KEY_DELETE
+            | evdev::KeyCode::KEY_INSERT
+            | evdev::KeyCode::KEY_ESC
+            | evdev::KeyCode::KEY_TAB
     )
 }
 
@@ -125,9 +125,9 @@ fn bypass_uncertain_edit(
 }
 
 fn update_keyboard_state(
-    key_state: &mut evdev::AttributeSet<evdev::Key>,
+    key_state: &mut evdev::AttributeSet<evdev::KeyCode>,
     caps_lock: &mut bool,
-    key: evdev::Key,
+    key: evdev::KeyCode,
     value: i32,
 ) {
     if value == 1 {
@@ -136,7 +136,7 @@ fn update_keyboard_state(
         key_state.remove(key);
     }
 
-    if key == evdev::Key::KEY_CAPSLOCK && value == 1 {
+    if key == evdev::KeyCode::KEY_CAPSLOCK && value == 1 {
         *caps_lock = !*caps_lock;
     }
 }
@@ -146,10 +146,13 @@ fn execute_with_shift_released(
     commands: &[crate::commands::OutputCommand],
     visible_revision: &mut u64,
     focus_generation: u64,
-    key_state: &evdev::AttributeSet<evdev::Key>,
+    key_state: &evdev::AttributeSet<evdev::KeyCode>,
 ) -> crate::commands::TransactionOutcome {
     use vietc_protocol::inject::InjectResult;
-    let shifts = [evdev::Key::KEY_LEFTSHIFT, evdev::Key::KEY_RIGHTSHIFT];
+    let shifts = [
+        evdev::KeyCode::KEY_LEFTSHIFT,
+        evdev::KeyCode::KEY_RIGHTSHIFT,
+    ];
     let mut released = true;
     for key in shifts {
         if key_state.contains(key) {
@@ -176,7 +179,7 @@ fn execute_with_shift_released(
 }
 
 struct KeyboardState {
-    keys: evdev::AttributeSet<evdev::Key>,
+    keys: evdev::AttributeSet<evdev::KeyCode>,
     caps_lock: bool,
     grabbed: bool,
     consumed_keys: HashSet<u16>,
@@ -208,7 +211,11 @@ pub fn run_with_evdev(
         pointer_activity,
     } = shared;
     let mut injector = create_injector(display)?;
-    let focus_generation_signal = shared_focus.lock().unwrap().generation_signal.clone();
+    let focus_generation_signal = shared_focus
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .generation_signal
+        .clone();
     injector.bind_focus_generation(focus_generation_signal);
 
     let mut device_states: Vec<KeyboardState> = devices
@@ -267,7 +274,10 @@ pub fn run_with_evdev(
     }
 
     let mut dedup = crate::key_dedup::DedupState::new();
-    let initial_focus = shared_focus.lock().unwrap().clone();
+    let initial_focus = shared_focus
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let mut last_focus_generation = initial_focus.generation;
     let mut last_focus_target = initial_focus.target;
     let mut last_window_class = String::new();
@@ -390,7 +400,7 @@ pub fn run_with_evdev(
                 }
                 let keycode = event.code();
                 let value = event.value();
-                let key = evdev::Key(keycode);
+                let key = evdev::KeyCode(keycode);
 
                 // Update modifier and lock state before translating this event.
                 update_keyboard_state(&mut key_state, &mut caps, key, value);
@@ -414,9 +424,9 @@ pub fn run_with_evdev(
 
                 if matches!(
                     key,
-                    evdev::Key::KEY_CAPSLOCK
-                        | evdev::Key::KEY_LEFTSHIFT
-                        | evdev::Key::KEY_RIGHTSHIFT
+                    evdev::KeyCode::KEY_CAPSLOCK
+                        | evdev::KeyCode::KEY_LEFTSHIFT
+                        | evdev::KeyCode::KEY_RIGHTSHIFT
                 ) {
                     let trace_index = CAPS_SHIFT_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
                     if trace_index < CAPS_SHIFT_TRACE_LIMIT {
@@ -429,8 +439,8 @@ pub fn run_with_evdev(
                         log_info(&format!(
                             "[vietc] keyboard-state trace={trace_index} device={i} key={key:?} action={action} value={value} caps_led={} left_shift={} right_shift={}",
                             caps,
-                            key_state.contains(evdev::Key::KEY_LEFTSHIFT),
-                            key_state.contains(evdev::Key::KEY_RIGHTSHIFT),
+                            key_state.contains(evdev::KeyCode::KEY_LEFTSHIFT),
+                            key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT),
                         ));
                     }
                 }
@@ -492,7 +502,10 @@ pub fn run_with_evdev(
                     let gap = last_key_time.elapsed();
                     last_key_time = std::time::Instant::now();
 
-                    let focus = shared_focus.lock().unwrap().clone();
+                    let focus = shared_focus
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone();
                     let active_window_class = focus.class.unwrap_or_default();
                     let focus_changed = focus.generation != last_focus_generation;
 
@@ -649,12 +662,12 @@ pub fn run_with_evdev(
                         if value == 1
                             && !matches!(
                                 key,
-                                evdev::Key::KEY_LEFTCTRL
-                                    | evdev::Key::KEY_RIGHTCTRL
-                                    | evdev::Key::KEY_LEFTALT
-                                    | evdev::Key::KEY_RIGHTALT
-                                    | evdev::Key::KEY_LEFTMETA
-                                    | evdev::Key::KEY_RIGHTMETA
+                                evdev::KeyCode::KEY_LEFTCTRL
+                                    | evdev::KeyCode::KEY_RIGHTCTRL
+                                    | evdev::KeyCode::KEY_LEFTALT
+                                    | evdev::KeyCode::KEY_RIGHTALT
+                                    | evdev::KeyCode::KEY_LEFTMETA
+                                    | evdev::KeyCode::KEY_RIGHTMETA
                             )
                         {
                             daemon.reset_composition_state();
@@ -669,7 +682,7 @@ pub fn run_with_evdev(
                         continue;
                     }
 
-                    if key == evdev::Key::KEY_BACKSPACE {
+                    if key == evdev::KeyCode::KEY_BACKSPACE {
                         if value == 1 || value == 2 {
                             let commands = daemon.process_key('\x08');
                             if commands.is_empty() {
@@ -1018,9 +1031,9 @@ mod grabbed_event_stream_tests {
     }
 
     fn translated_key(
-        key_state: &evdev::AttributeSet<evdev::Key>,
+        key_state: &evdev::AttributeSet<evdev::KeyCode>,
         caps_lock: bool,
-        key: evdev::Key,
+        key: evdev::KeyCode,
     ) -> char {
         key_to_char_with_case(key, is_modifier_held_shift(key_state), caps_lock)
             .expect("test key must translate")
@@ -1071,8 +1084,8 @@ mod grabbed_event_stream_tests {
         daemon.process_key('b');
         let commands = daemon.process_key('\x08');
         let mut keys = evdev::AttributeSet::new();
-        keys.insert(evdev::Key::KEY_LEFTSHIFT);
-        keys.insert(evdev::Key::KEY_RIGHTSHIFT);
+        keys.insert(evdev::KeyCode::KEY_LEFTSHIFT);
+        keys.insert(evdev::KeyCode::KEY_RIGHTSHIFT);
         for restore_fails in [false, true] {
             let recorder = Recorder(RefCell::new(Vec::new()), restore_fails);
             let mut revision = 0;
@@ -1113,25 +1126,50 @@ mod grabbed_event_stream_tests {
         let mut key_state = evdev::AttributeSet::new();
         let mut caps_lock = false;
 
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            1,
+        );
         assert!(caps_lock);
         assert_eq!(
-            translated_key(&key_state, caps_lock, evdev::Key::KEY_A),
+            translated_key(&key_state, caps_lock, evdev::KeyCode::KEY_A),
             'A'
         );
 
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_LEFTSHIFT, 1);
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_LEFTSHIFT,
+            1,
+        );
         assert_eq!(
-            translated_key(&key_state, caps_lock, evdev::Key::KEY_A),
+            translated_key(&key_state, caps_lock, evdev::KeyCode::KEY_A),
             'a'
         );
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_LEFTSHIFT, 0);
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_LEFTSHIFT,
+            0,
+        );
 
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 0);
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            0,
+        );
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            1,
+        );
         assert!(!caps_lock);
         assert_eq!(
-            translated_key(&key_state, caps_lock, evdev::Key::KEY_A),
+            translated_key(&key_state, caps_lock, evdev::KeyCode::KEY_A),
             'a'
         );
     }
@@ -1161,27 +1199,42 @@ mod grabbed_event_stream_tests {
         let mut caps_lock = false;
         let mut translated = String::new();
 
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            1,
+        );
         for key in [
-            evdev::Key::KEY_T,
-            evdev::Key::KEY_I,
-            evdev::Key::KEY_E,
-            evdev::Key::KEY_E,
-            evdev::Key::KEY_N,
-            evdev::Key::KEY_G,
-            evdev::Key::KEY_S,
+            evdev::KeyCode::KEY_T,
+            evdev::KeyCode::KEY_I,
+            evdev::KeyCode::KEY_E,
+            evdev::KeyCode::KEY_E,
+            evdev::KeyCode::KEY_N,
+            evdev::KeyCode::KEY_G,
+            evdev::KeyCode::KEY_S,
         ] {
             translated.push(translated_key(&key_state, caps_lock, key));
         }
         translated.push(' ');
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 0);
-        update_keyboard_state(&mut key_state, &mut caps_lock, evdev::Key::KEY_CAPSLOCK, 1);
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            0,
+        );
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            1,
+        );
         for key in [
-            evdev::Key::KEY_N,
-            evdev::Key::KEY_E,
-            evdev::Key::KEY_E,
-            evdev::Key::KEY_S,
-            evdev::Key::KEY_U,
+            evdev::KeyCode::KEY_N,
+            evdev::KeyCode::KEY_E,
+            evdev::KeyCode::KEY_E,
+            evdev::KeyCode::KEY_S,
+            evdev::KeyCode::KEY_U,
         ] {
             translated.push(translated_key(&key_state, caps_lock, key));
         }

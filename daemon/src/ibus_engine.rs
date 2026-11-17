@@ -611,7 +611,10 @@ pub fn run_ibus_engine(
                 let enabled = s == "vn";
                 if state.engine_enabled.load(Ordering::SeqCst) != enabled {
                     state.engine_enabled.store(enabled, Ordering::SeqCst);
-                    let mut contexts = state.contexts.lock().unwrap();
+                    let mut contexts = state
+                        .contexts
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     for (ctx_path, ctx) in contexts.iter_mut() {
                         ctx.enabled = enabled;
                         if !enabled {
@@ -631,10 +634,16 @@ pub fn run_ibus_engine(
                     "telex" => InputMethod::Telex,
                     _ => InputMethod::Vni,
                 };
-                let mut method_guard = state.method.lock().unwrap();
+                let mut method_guard = state
+                    .method
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if *method_guard != new_im {
                     *method_guard = new_im;
-                    let mut contexts = state.contexts.lock().unwrap();
+                    let mut contexts = state
+                        .contexts
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     for (ctx_path, ctx) in contexts.iter_mut() {
                         flush_preedit(ctx, &conn, ctx_path);
                         ctx.engine.set_method(new_im);
@@ -646,7 +655,10 @@ pub fn run_ibus_engine(
 
         // Auto-hide auxiliary text badge after timeout (500ms)
         let to_hide = {
-            let mut guard = state.aux_popup.lock().unwrap();
+            let mut guard = state
+                .aux_popup
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some((ref p, expiry)) = *guard {
                 if std::time::Instant::now() >= expiry {
                     let path = p.clone();
@@ -835,10 +847,16 @@ fn error_reply(conn: &Connection, msg: &Message, name: &str, text: &str) {
 }
 
 fn create_engine(state: &IBusState, conn: &Connection, _name: &str) -> String {
-    let mut counter = state.counter.lock().unwrap();
+    let mut counter = state
+        .counter
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *counter += 1;
     let path = format!("/org/freedesktop/IBus/Engine/{}", *counter);
-    let method = *state.method.lock().unwrap();
+    let method = *state
+        .method
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut engine = Engine::new(method);
     engine.set_auto_restore(state.auto_restore);
     let ctx = EngineContext {
@@ -849,7 +867,11 @@ fn create_engine(state: &IBusState, conn: &Connection, _name: &str) -> String {
         preedit: String::new(),
         dedup: crate::key_dedup::DedupState::new(),
     };
-    state.contexts.lock().unwrap().insert(path.clone(), ctx);
+    state
+        .contexts
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.clone(), ctx);
     // Register the path so it genuinely exists on the bus (enables introspection
     // for the daemon's engine proxy). The actual handling is done by the
     // connection-level handler installed via `add_handler`.
@@ -887,7 +909,12 @@ fn extract_content_type_purpose(item: &MessageItem) -> Option<u32> {
 }
 
 fn set_content_type(state: &IBusState, path: &str, purpose: u32, conn: &Connection) {
-    if let Some(ctx) = state.contexts.lock().unwrap().get_mut(path) {
+    if let Some(ctx) = state
+        .contexts
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_mut(path)
+    {
         let bypass = is_password_purpose(purpose);
         ctx.password_bypass = bypass;
         if bypass {
@@ -899,7 +926,12 @@ fn set_content_type(state: &IBusState, path: &str, purpose: u32, conn: &Connecti
 }
 
 fn set_focus(state: &IBusState, path: &str, focused: bool, conn: &Connection) {
-    if let Some(ctx) = state.contexts.lock().unwrap().get_mut(path) {
+    if let Some(ctx) = state
+        .contexts
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_mut(path)
+    {
         ctx.focus_id = focused;
         if !focused {
             ctx.password_bypass = false;
@@ -911,7 +943,12 @@ fn set_focus(state: &IBusState, path: &str, focused: bool, conn: &Connection) {
 }
 
 fn set_enabled(state: &IBusState, path: &str, enabled: bool, conn: &Connection) {
-    if let Some(ctx) = state.contexts.lock().unwrap().get_mut(path) {
+    if let Some(ctx) = state
+        .contexts
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_mut(path)
+    {
         ctx.enabled = enabled;
         if !enabled {
             flush_preedit(ctx, conn, path);
@@ -922,7 +959,12 @@ fn set_enabled(state: &IBusState, path: &str, enabled: bool, conn: &Connection) 
 }
 
 fn reset_context(state: &IBusState, path: &str, conn: &Connection) {
-    if let Some(ctx) = state.contexts.lock().unwrap().get_mut(path) {
+    if let Some(ctx) = state
+        .contexts
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_mut(path)
+    {
         if !ctx.preedit.is_empty() {
             ctx.preedit.clear();
             emit_update_preedit(conn, path, "");
@@ -945,7 +987,10 @@ fn handle_process_key_event(
     const IBUS_RELEASE_MASK: u32 = 1 << 30;
     if (state_flags & IBUS_RELEASE_MASK) != 0 {
         if (state_flags & CTRL) == 0 || keyval == 32 {
-            *state.ctrl_space_latched.lock().unwrap() = false;
+            *state
+                .ctrl_space_latched
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
         }
         return false;
     }
@@ -957,7 +1002,10 @@ fn handle_process_key_event(
 
     // Reset latch if Ctrl is not pressed
     if (state_flags & CTRL) == 0 {
-        *state.ctrl_space_latched.lock().unwrap() = false;
+        *state
+            .ctrl_space_latched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
     }
 
     // Ctrl+Space cycles ENG -> VNI -> TELEX -> ENG.
@@ -965,8 +1013,14 @@ fn handle_process_key_event(
     let is_ctrl_space = is_space && (state_flags & CTRL) != 0 && (state_flags & (ALT | SUPER)) == 0;
 
     if is_ctrl_space {
-        let mut latched = state.ctrl_space_latched.lock().unwrap();
-        let mut last_toggle = state.last_ctrl_space.lock().unwrap();
+        let mut latched = state
+            .ctrl_space_latched
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut last_toggle = state
+            .last_ctrl_space
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = std::time::Instant::now();
 
         if *latched || now.duration_since(*last_toggle) < std::time::Duration::from_millis(200) {
@@ -977,7 +1031,10 @@ fn handle_process_key_event(
         *last_toggle = now;
 
         let is_enabled = state.engine_enabled.load(Ordering::SeqCst);
-        let mut method_guard = state.method.lock().unwrap();
+        let mut method_guard = state
+            .method
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let (new_enabled, new_method, label) = if !is_enabled {
             (true, InputMethod::Vni, "VNI")
@@ -991,7 +1048,10 @@ fn handle_process_key_event(
         *method_guard = new_method;
 
         // Commit any active preedit before switching mode/method so no text is lost
-        let mut contexts = state.contexts.lock().unwrap();
+        let mut contexts = state
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for (ctx_path, ctx) in contexts.iter_mut() {
             flush_preedit(ctx, conn, ctx_path);
             ctx.engine.set_method(new_method);
@@ -1031,14 +1091,20 @@ fn handle_process_key_event(
         || ((state_flags & CTRL) != 0 && !is_shift_key && !is_ctrl_key);
 
     if is_shortcut {
-        let mut guard = state.contexts.lock().unwrap();
+        let mut guard = state
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(ctx) = guard.get_mut(path) {
             flush_preedit(ctx, conn, path);
         }
         return false;
     }
 
-    let mut guard = state.contexts.lock().unwrap();
+    let mut guard = state
+        .contexts
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let ctx = match guard.get_mut(path) {
         Some(c) => c,
         None => return false,

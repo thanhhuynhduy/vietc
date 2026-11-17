@@ -20,9 +20,9 @@ vietc-protocol = { path = "../protocol" }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-evdev = "0.12"
+evdev = "0.13.2"
 libc = "0.2"
-dirs = "5"
+dirs = "7.0.0"
 dbus = "0.9"
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols-misc = { version = "0.3", optional = true, features = ["client"] }
@@ -35,4 +35,4 @@ tracing-journald = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
-tungstenite = "0.24"
+tungstenite = "0.30.0"

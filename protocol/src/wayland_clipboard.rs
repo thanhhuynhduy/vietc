@@ -83,7 +83,12 @@ impl ClipboardOffer {
         let worker = thread::Builder::new()
             .name("wayland-clipboard".into())
             .spawn(move || {
-                let result = if state.state.lock().unwrap().stop {
+                let result = if state
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .stop
+                {
                     Ok(())
                 } else {
                     connector()
@@ -92,7 +97,10 @@ impl ClipboardOffer {
                 if let Err(e) = result {
                     state.fail(&e);
                 } else {
-                    let mut s = state.state.lock().unwrap();
+                    let mut s = state
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if s.ownership == Ownership::Owned {
                         s.ownership = Ownership::Unavailable;
                     }
@@ -113,7 +121,11 @@ impl ClipboardOffer {
     pub(super) fn arm(&self) -> io::Result<()> {
         let until = deadline(CONTROL_TIMEOUT)?;
         {
-            let mut s = self.shared.state.lock().unwrap();
+            let mut s = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             s.ensure_owned()?;
             if !s.ready {
                 return Err(err(io::ErrorKind::WouldBlock, "publication not ready"));
@@ -134,7 +146,11 @@ impl ClipboardOffer {
         loop {
             // Do not invoke caller code while holding the state lock.
             let focused = still_focused();
-            let s = self.shared.state.lock().unwrap();
+            let s = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let now = Instant::now();
             if let Some(result) = s.check(now, until, focused) {
                 return result;
@@ -150,7 +166,11 @@ impl ClipboardOffer {
 
     /// Last observed ownership. Unavailable must not be treated as Replaced.
     pub(super) fn ownership(&self) -> Ownership {
-        let s = self.shared.state.lock().unwrap();
+        let s = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if s.ownership == Ownership::Owned && (!s.ready || s.stop) {
             Ownership::Unavailable
         } else {
@@ -165,7 +185,11 @@ impl ClipboardOffer {
     /// Initiate bounded draining without joining. Keep this handle alive until
     /// is_finished(); dropping it earlier still explicitly aborts accepted pipes.
     pub(super) fn request_retire(&self) {
-        self.shared.state.lock().unwrap().retire = true;
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retire = true;
         self.shared.changed.notify_all();
     }
 
@@ -185,7 +209,11 @@ impl ClipboardOffer {
     }
 
     fn await_control(&self, until: Instant, done: impl Fn(&State) -> bool) -> io::Result<()> {
-        let mut s = self.shared.state.lock().unwrap();
+        let mut s = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             if let Some((kind, message)) = &s.error {
                 return Err(err(*kind, message));
@@ -212,7 +240,11 @@ impl ClipboardOffer {
 
 impl Drop for ClipboardOffer {
     fn drop(&mut self) {
-        self.shared.state.lock().unwrap().stop = true;
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stop = true;
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -313,7 +345,12 @@ fn run(
     until: Instant,
 ) -> io::Result<()> {
     block_sigpipe()?; // Thread-local: never change the process-wide SIGPIPE disposition.
-    if shared.state.lock().unwrap().stop {
+    if shared
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .stop
+    {
         return Ok(());
     }
     let mut queue = connection.new_event_queue::<Worker>();
@@ -331,7 +368,11 @@ fn run(
     let mut arm_pending = false;
     let result = (|| loop {
         let retiring = {
-            let state = w.shared.state.lock().unwrap();
+            let state = w
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.stop {
                 return Ok(());
             }
@@ -350,7 +391,11 @@ fn run(
             published = true;
         }
         {
-            let s = w.shared.state.lock().unwrap();
+            let s = w
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !s.ready && Instant::now() >= until {
                 return Err(err(io::ErrorKind::TimedOut, "publication deadline"));
             }
@@ -433,7 +478,13 @@ impl Worker {
     fn drain(&mut self, payload: &[u8]) -> io::Result<()> {
         // Accepted FDs are independent of the selection and Wayland connection.
         // In particular, cancellation/disconnection must not truncate these pipes.
-        while !self.shared.state.lock().unwrap().stop {
+        while !self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stop
+        {
             self.serve_pending(payload);
             if self.transfers.is_empty() {
                 return Ok(());
@@ -523,7 +574,11 @@ impl Worker {
                 "no Wayland data-control protocol",
             ));
         }
-        self.shared.state.lock().unwrap().ownership = Ownership::Owned;
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .ownership = Ownership::Owned;
         Ok(())
     }
 }
@@ -537,7 +592,11 @@ impl Dispatch<wl_callback::WlCallback, Barrier> for Worker {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let mut s = w.shared.state.lock().unwrap();
+        let mut s = w
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match barrier {
             Barrier::Registry => w.discovered = true,
             Barrier::Published => s.ready = true,
@@ -640,6 +699,7 @@ mod transfer {
         time::{Duration, Instant},
     };
     pub(super) const MAX_TRANSFERS: usize = 16;
+
     pub(super) fn freeze_payload(text: &str) -> io::Result<Arc<[u8]>> {
         if text.len() > 1024 * 1024 {
             return Err(err(
@@ -705,17 +765,26 @@ mod transfer {
     }
     impl Shared {
         pub fn lose(&self, ownership: Ownership) {
-            self.state.lock().unwrap().ownership = ownership;
+            self.state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .ownership = ownership;
             self.changed.notify_all();
         }
         pub fn fail(&self, error: &io::Error) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.ownership = Ownership::Unavailable;
             state.error = Some((error.kind(), error.to_string()));
             self.changed.notify_all();
         }
         pub fn enqueue(&self, fd: OwnedFd, mime: &str, pending: &mut Vec<Transfer>) {
-            let s = self.state.lock().unwrap();
+            let s = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if s.ownership != Ownership::Owned
                 || s.stop
                 || s.retire
@@ -734,7 +803,10 @@ mod transfer {
         pub fn complete(&self, transfer: Transfer) {
             let eligible = transfer.eligible;
             drop(transfer); // Close BEFORE publishing PayloadServed under the mutex.
-            let mut s = self.state.lock().unwrap();
+            let mut s = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if eligible && s.ownership == Ownership::Owned && !s.stop {
                 s.served = true;
                 self.changed.notify_all();
@@ -850,7 +922,10 @@ mod tests {
     fn ready() -> Shared {
         let shared = Shared::default();
         {
-            let mut s = shared.state.lock().unwrap();
+            let mut s = shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             s.ready = true;
             s.ownership = Ownership::Owned;
         }
@@ -920,26 +995,44 @@ mod tests {
         shared.enqueue(fd, "text/plain", &mut pending);
         let mut t = pending.pop().unwrap();
         assert!(!t.eligible);
-        shared.state.lock().unwrap().armed = true;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .armed = true;
         assert!(t.step(b"pre-arm").unwrap());
         shared.complete(t);
         let mut received = Vec::new();
         reader.read_to_end(&mut received).unwrap();
         assert_eq!(received, b"pre-arm");
-        assert!(!shared.state.lock().unwrap().served);
+        assert!(
+            !shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served
+        );
     }
 
     #[test]
     fn only_armed_text_full_write_and_close_counts() {
         let shared = ready();
-        shared.state.lock().unwrap().armed = true;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .armed = true;
         let (mut reader, fd) = pipe();
         let mut pending = Vec::new();
         shared.enqueue(fd, "image/png", &mut pending);
         assert!(pending.is_empty());
         assert_eq!(reader.read(&mut [0; 1]).unwrap(), 0);
         for mime in ["UTF8_STRING", "text/plain;charset=utf-8", "text/plain"] {
-            shared.state.lock().unwrap().served = false;
+            shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served = false;
             let (mut reader, fd) = pipe();
             shared.enqueue(fd, mime, &mut pending);
             let mut t = pending.pop().unwrap();
@@ -951,10 +1044,22 @@ mod tests {
                 reader.read(&mut [0; 1]).unwrap_err().kind(),
                 io::ErrorKind::WouldBlock
             );
-            assert!(!shared.state.lock().unwrap().served);
+            assert!(
+                !shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .served
+            );
             shared.complete(t);
             assert_eq!(reader.read(&mut [0; 1]).unwrap(), 0);
-            assert!(shared.state.lock().unwrap().served);
+            assert!(
+                shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .served
+            );
         }
     }
 
@@ -962,7 +1067,10 @@ mod tests {
     fn deadline_focus_and_cancellation_are_deterministic_and_non_destructive() {
         let shared = ready();
         let now = Instant::now();
-        let mut s = shared.state.lock().unwrap();
+        let mut s = shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(
             s.check(now, now, true).unwrap().unwrap_err().kind(),
             io::ErrorKind::InvalidInput
@@ -981,7 +1089,10 @@ mod tests {
         s.served = true;
         drop(s);
         shared.lose(Ownership::Replaced);
-        let s = shared.state.lock().unwrap();
+        let s = shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(
             s.check(now, now, true).unwrap().unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
@@ -991,7 +1102,11 @@ mod tests {
     #[test]
     fn timeout_keeps_service_alive_but_cancellation_prevents_late_ack() {
         let shared = ready();
-        shared.state.lock().unwrap().armed = true;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .armed = true;
         let now = Instant::now();
         assert_eq!(
             shared
@@ -1020,20 +1135,34 @@ mod tests {
             .check(now, now, true)
             .unwrap()
             .is_ok());
-        shared.state.lock().unwrap().served = false;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .served = false;
         let (_reader, fd) = pipe();
         shared.enqueue(fd, "text/plain", &mut pending);
         let mut t = pending.pop().unwrap();
         shared.lose(Ownership::Replaced);
         assert!(t.step(b"late").unwrap());
         shared.complete(t);
-        assert!(!shared.state.lock().unwrap().served);
+        assert!(
+            !shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served
+        );
     }
 
     #[test]
     fn empty_payload_completes_only_when_fd_is_closed() {
         let shared = ready();
-        shared.state.lock().unwrap().armed = true;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .armed = true;
         let (mut reader, fd) = pipe();
         let mut pending = Vec::new();
         shared.enqueue(fd, "text/plain", &mut pending);
@@ -1045,7 +1174,13 @@ mod tests {
         );
         shared.complete(t);
         assert_eq!(reader.read(&mut [0; 1]).unwrap(), 0);
-        assert!(shared.state.lock().unwrap().served);
+        assert!(
+            shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served
+        );
     }
 
     #[test]
@@ -1055,19 +1190,33 @@ mod tests {
         let mut pending = Vec::new();
         shared.enqueue(fd, "text/plain", &mut pending);
         let deadline = pending[0].deadline;
-        shared.state.lock().unwrap().retire = true;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retire = true;
         let (mut reader, fd) = pipe();
         shared.enqueue(fd, "text/plain", &mut pending);
         assert_eq!(reader.read(&mut [0; 1]).unwrap(), 0);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].deadline, deadline);
-        assert!(!shared.state.lock().unwrap().stop);
+        assert!(
+            !shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .stop
+        );
     }
 
     #[test]
     fn outstanding_limit_and_expiry_do_not_acknowledge() {
         let shared = ready();
-        shared.state.lock().unwrap().armed = true;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .armed = true;
         let mut pending = Vec::new();
         let mut readers = Vec::new();
         for _ in 0..MAX_TRANSFERS + 1 {
@@ -1078,8 +1227,21 @@ mod tests {
         assert_eq!(pending.len(), MAX_TRANSFERS);
         assert!(pending[0].expired(pending[0].deadline));
         drop(pending);
-        assert!(!shared.state.lock().unwrap().served);
-        assert_eq!(shared.state.lock().unwrap().ownership, Ownership::Owned);
+        assert!(
+            !shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served
+        );
+        assert_eq!(
+            shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .ownership,
+            Ownership::Owned
+        );
     }
 }
 
@@ -1269,7 +1431,14 @@ mod wire_tests {
         let registry = peer.discovery(1, ext);
         peer.publication(registry, ext);
         // Seeing set_selection is not sufficient: publication requires sync.done.
-        assert!(!offer.shared.state.lock().unwrap().ready);
+        assert!(
+            !offer
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .ready
+        );
         assert!(!offer.owns_selection());
         peer.done(peer.publication);
         offer
@@ -1283,7 +1452,14 @@ mod wire_tests {
         thread::scope(|scope| {
             let result = scope.spawn(|| offer.arm());
             let callback = uint(&peer.request(1, 0));
-            assert!(!offer.shared.state.lock().unwrap().armed);
+            assert!(
+                !offer
+                    .shared
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .armed
+            );
             before_done(peer);
             peer.done(callback);
             result.join().unwrap().unwrap();
@@ -1381,10 +1557,17 @@ mod wire_tests {
             assert!(peer.request(peer.source, 1).is_empty());
             assert!(!offer.owns_selection());
             let shared = offer.shared.clone();
-            shared.state.lock().unwrap().served = false;
+            shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served = false;
             let retiring = scope.spawn(move || offer.retire());
             let until = deadline(BOUND).unwrap();
-            let mut state = shared.state.lock().unwrap();
+            let mut state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             while !state.retire {
                 let left = until.saturating_duration_since(Instant::now());
                 assert!(!left.is_zero(), "retirement did not start");
@@ -1398,7 +1581,10 @@ mod wire_tests {
             assert_eq!(filler, [b'x'; 4096]);
             assert_eq!(read_to_eof(late), text.as_bytes());
             retiring.join().unwrap();
-            let state = shared.state.lock().unwrap();
+            let state = shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             assert!(!state.served, "cancelled transfer must not acknowledge");
             assert_eq!(state.ownership, Ownership::Replaced);
             assert!(state.error.is_none());
@@ -1418,7 +1604,11 @@ mod wire_tests {
     #[test]
     fn retiring_worker_expires_accepted_fd_at_its_original_deadline() {
         let shared = Arc::new(Shared::default());
-        shared.state.lock().unwrap().retire = true;
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retire = true;
         let (mut reader, writer) = UnixStream::pair().unwrap();
         reader.set_read_timeout(Some(BOUND)).unwrap();
         let mut transfer = Transfer::new(writer.into(), true, Instant::now()).unwrap();
@@ -1433,7 +1623,13 @@ mod wire_tests {
         worker.drain(b"must not extend the deadline").unwrap();
         assert_eq!(reader.read(&mut [0; 1]).unwrap(), 0);
         assert!(worker.transfers.is_empty());
-        assert!(!shared.state.lock().unwrap().served);
+        assert!(
+            !shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served
+        );
     }
 
     fn wait_until_finished(offer: &ClipboardOffer) {
@@ -1471,7 +1667,11 @@ mod wire_tests {
             "transport failure aborted the accepted pipe"
         );
         {
-            let state = offer.shared.state.lock().unwrap();
+            let state = offer
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             assert!(state.error.is_some());
             assert!(!state.retire && !state.stop && !state.served);
         }
@@ -1480,7 +1680,14 @@ mod wire_tests {
         assert_eq!(bytes, text.as_bytes());
         wait_until_finished(&offer);
         assert_eq!(offer.ownership(), Ownership::Unavailable);
-        assert!(!offer.shared.state.lock().unwrap().served);
+        assert!(
+            !offer
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .served
+        );
         assert!(offer.wait_for_transfer(Duration::ZERO, || true).is_err());
         offer.retire(); // Join only after is_finished: no outstanding read is aborted.
     }
@@ -1504,7 +1711,14 @@ mod wire_tests {
             request.join().unwrap();
         });
         assert!(!offer.is_finished());
-        assert!(!offer.shared.state.lock().unwrap().stop);
+        assert!(
+            !offer
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .stop
+        );
         let mut reader = reader.unwrap();
         let mut filler = [0; 4096];
         reader.read_exact(&mut filler).unwrap();

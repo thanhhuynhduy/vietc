@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 mod clipboard;
+mod clipboard_backup;
 mod key_injection;
 mod replacement_transaction;
 mod session_environment;

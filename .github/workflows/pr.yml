@@ -38,8 +38,42 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Enforce Rust source-size limits
+        run: python3 scripts/check_source_size.py
+
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Run workspace tests
         run: cargo test --workspace --all-features
+
+  web-quality:
+    name: Web typecheck, tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm run test:ci
+
+      - name: Build production bundle
+        run: npm run build

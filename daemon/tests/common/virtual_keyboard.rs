@@ -5,16 +5,16 @@ use std::io::Result;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use evdev::uinput::VirtualDeviceBuilder;
-use evdev::{AttributeSet, EventType, InputEvent, Key};
+use evdev::uinput::VirtualDevice;
+use evdev::{AttributeSet, EventType, InputEvent, KeyCode};
 
 pub struct VirtualKeyboard {
     device: evdev::uinput::VirtualDevice,
 }
 
-fn add_all_keys(set: &mut AttributeSet<Key>) {
+fn add_all_keys(set: &mut AttributeSet<KeyCode>) {
     for code in 1..=255u16 {
-        set.insert(Key::new(code));
+        set.insert(KeyCode::new(code));
     }
 }
 
@@ -24,7 +24,7 @@ impl VirtualKeyboard {
         let mut keys = AttributeSet::new();
         add_all_keys(&mut keys);
 
-        let device = VirtualDeviceBuilder::new()?
+        let device = VirtualDevice::builder()?
             .name(name)
             .with_keys(&keys)?
             .build()?;
@@ -56,8 +56,8 @@ impl VirtualKeyboard {
     }
 
     fn key_event(&mut self, keycode: u16, value: i32) -> Result<()> {
-        let event = InputEvent::new(EventType::KEY, keycode, value);
-        let sync = InputEvent::new(EventType::SYNCHRONIZATION, 0, 0);
+        let event = InputEvent::new(EventType::KEY.0, keycode, value);
+        let sync = InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0);
         self.device.emit(&[event, sync])
     }
 

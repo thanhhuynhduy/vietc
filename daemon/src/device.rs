@@ -17,17 +17,17 @@ pub fn is_valid_keyboard(device: &evdev::Device) -> bool {
     }
     // Reject pointers/mice based on relative axes (REL_X / REL_Y)
     if let Some(rel) = device.supported_relative_axes() {
-        if rel.contains(evdev::RelativeAxisType::REL_X)
-            || rel.contains(evdev::RelativeAxisType::REL_Y)
+        if rel.contains(evdev::RelativeAxisCode::REL_X)
+            || rel.contains(evdev::RelativeAxisCode::REL_Y)
         {
             return false;
         }
     }
     if let Some(keys) = device.supported_keys() {
-        keys.contains(evdev::Key::KEY_A)
-            && keys.contains(evdev::Key::KEY_Z)
-            && keys.contains(evdev::Key::KEY_SPACE)
-            && keys.contains(evdev::Key::KEY_ENTER)
+        keys.contains(evdev::KeyCode::KEY_A)
+            && keys.contains(evdev::KeyCode::KEY_Z)
+            && keys.contains(evdev::KeyCode::KEY_SPACE)
+            && keys.contains(evdev::KeyCode::KEY_ENTER)
     } else {
         false
     }

@@ -18,15 +18,15 @@ const POLL_TIMEOUT_MS: i32 = 200;
 
 fn is_pointer_button(code: u16) -> bool {
     matches!(
-        evdev::Key(code),
-        evdev::Key::BTN_LEFT | evdev::Key::BTN_RIGHT | evdev::Key::BTN_MIDDLE
+        evdev::KeyCode(code),
+        evdev::KeyCode::BTN_LEFT | evdev::KeyCode::BTN_RIGHT | evdev::KeyCode::BTN_MIDDLE
     )
 }
 
 fn is_pointer_device(device: &evdev::Device) -> bool {
     device
         .supported_keys()
-        .is_some_and(|keys| keys.contains(evdev::Key::BTN_LEFT))
+        .is_some_and(|keys| keys.contains(evdev::KeyCode::BTN_LEFT))
 }
 
 fn scan_new(
@@ -132,10 +132,10 @@ mod tests {
 
     #[test]
     fn only_real_pointer_buttons_count() {
-        assert!(is_pointer_button(evdev::Key::BTN_LEFT.code()));
-        assert!(is_pointer_button(evdev::Key::BTN_RIGHT.code()));
-        assert!(is_pointer_button(evdev::Key::BTN_MIDDLE.code()));
-        assert!(!is_pointer_button(evdev::Key::KEY_A.code()));
-        assert!(!is_pointer_button(evdev::Key::BTN_TOUCH.code()));
+        assert!(is_pointer_button(evdev::KeyCode::BTN_LEFT.code()));
+        assert!(is_pointer_button(evdev::KeyCode::BTN_RIGHT.code()));
+        assert!(is_pointer_button(evdev::KeyCode::BTN_MIDDLE.code()));
+        assert!(!is_pointer_button(evdev::KeyCode::KEY_A.code()));
+        assert!(!is_pointer_button(evdev::KeyCode::BTN_TOUCH.code()));
     }
 }

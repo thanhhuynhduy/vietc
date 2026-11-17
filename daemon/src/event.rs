@@ -51,61 +51,69 @@ pub fn is_vn_control_key(method: &str, ch: char) -> bool {
     }
 }
 
-pub fn is_modifier_pressed(key_state: &evdev::AttributeSet<evdev::Key>) -> bool {
-    key_state.contains(evdev::Key::KEY_LEFTCTRL)
-        || key_state.contains(evdev::Key::KEY_RIGHTCTRL)
-        || key_state.contains(evdev::Key::KEY_LEFTALT)
-        || key_state.contains(evdev::Key::KEY_RIGHTALT)
-        || key_state.contains(evdev::Key::KEY_LEFTMETA)
-        || key_state.contains(evdev::Key::KEY_RIGHTMETA)
+pub fn is_modifier_pressed(key_state: &evdev::AttributeSet<evdev::KeyCode>) -> bool {
+    key_state.contains(evdev::KeyCode::KEY_LEFTCTRL)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTCTRL)
+        || key_state.contains(evdev::KeyCode::KEY_LEFTALT)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTALT)
+        || key_state.contains(evdev::KeyCode::KEY_LEFTMETA)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTMETA)
 }
 
-pub fn is_modifier_held_shift(key_state: &evdev::AttributeSet<evdev::Key>) -> bool {
-    key_state.contains(evdev::Key::KEY_LEFTSHIFT) || key_state.contains(evdev::Key::KEY_RIGHTSHIFT)
+pub fn is_modifier_held_shift(key_state: &evdev::AttributeSet<evdev::KeyCode>) -> bool {
+    key_state.contains(evdev::KeyCode::KEY_LEFTSHIFT)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT)
 }
 
 pub fn is_caps_lock_on(device: &evdev::Device) -> bool {
     if let Ok(leds) = device.get_led_state() {
-        leds.contains(evdev::LedType::LED_CAPSL)
+        leds.contains(evdev::LedCode::LED_CAPSL)
     } else {
         false
     }
 }
 
-pub fn is_toggle_key(key: evdev::Key, key_name: &str) -> bool {
-    if key == evdev::Key::KEY_LEFTCTRL || key == evdev::Key::KEY_RIGHTCTRL {
+pub fn is_toggle_key(key: evdev::KeyCode, key_name: &str) -> bool {
+    if key == evdev::KeyCode::KEY_LEFTCTRL || key == evdev::KeyCode::KEY_RIGHTCTRL {
         return true;
     }
     let target = match key_name.to_lowercase().as_str() {
-        "space" => evdev::Key::KEY_SPACE,
-        "shift" => return key == evdev::Key::KEY_LEFTSHIFT || key == evdev::Key::KEY_RIGHTSHIFT,
-        "capslock" => evdev::Key::KEY_CAPSLOCK,
-        "ctrl" => return key == evdev::Key::KEY_LEFTCTRL || key == evdev::Key::KEY_RIGHTCTRL,
-        "alt" => return key == evdev::Key::KEY_LEFTALT || key == evdev::Key::KEY_RIGHTALT,
+        "space" => evdev::KeyCode::KEY_SPACE,
+        "shift" => {
+            return key == evdev::KeyCode::KEY_LEFTSHIFT || key == evdev::KeyCode::KEY_RIGHTSHIFT
+        }
+        "capslock" => evdev::KeyCode::KEY_CAPSLOCK,
+        "ctrl" => {
+            return key == evdev::KeyCode::KEY_LEFTCTRL || key == evdev::KeyCode::KEY_RIGHTCTRL
+        }
+        "alt" => return key == evdev::KeyCode::KEY_LEFTALT || key == evdev::KeyCode::KEY_RIGHTALT,
         _ => return false,
     };
     key == target
 }
 
-pub fn is_toggle_combination_state(key_state: &evdev::AttributeSet<evdev::Key>, key: &str) -> bool {
-    let ctrl_pressed = key_state.contains(evdev::Key::KEY_LEFTCTRL)
-        || key_state.contains(evdev::Key::KEY_RIGHTCTRL);
+pub fn is_toggle_combination_state(
+    key_state: &evdev::AttributeSet<evdev::KeyCode>,
+    key: &str,
+) -> bool {
+    let ctrl_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTCTRL)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTCTRL);
 
     if !ctrl_pressed {
         return false;
     }
 
     let target = match key.to_lowercase().as_str() {
-        "space" => evdev::Key::KEY_SPACE,
+        "space" => evdev::KeyCode::KEY_SPACE,
         "shift" => {
-            return key_state.contains(evdev::Key::KEY_LEFTSHIFT)
-                || key_state.contains(evdev::Key::KEY_RIGHTSHIFT);
+            return key_state.contains(evdev::KeyCode::KEY_LEFTSHIFT)
+                || key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT);
         }
-        "capslock" => evdev::Key::KEY_CAPSLOCK,
+        "capslock" => evdev::KeyCode::KEY_CAPSLOCK,
         "ctrl" => return true,
         "alt" => {
-            return key_state.contains(evdev::Key::KEY_LEFTALT)
-                || key_state.contains(evdev::Key::KEY_RIGHTALT);
+            return key_state.contains(evdev::KeyCode::KEY_LEFTALT)
+                || key_state.contains(evdev::KeyCode::KEY_RIGHTALT);
         }
         _ => return false,
     };
@@ -113,7 +121,7 @@ pub fn is_toggle_combination_state(key_state: &evdev::AttributeSet<evdev::Key>, 
     key_state.contains(target)
 }
 
-pub fn key_to_char_with_case(key: evdev::Key, shift: bool, caps_lock: bool) -> Option<char> {
+pub fn key_to_char_with_case(key: evdev::KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
     key_to_char(key).map(|ch| {
         if ch.is_ascii_alphabetic() {
             if shift ^ caps_lock {
@@ -152,59 +160,59 @@ pub fn key_to_char_with_case(key: evdev::Key, shift: bool, caps_lock: bool) -> O
     })
 }
 
-pub fn key_to_char(key: evdev::Key) -> Option<char> {
+pub fn key_to_char(key: evdev::KeyCode) -> Option<char> {
     match key {
-        evdev::Key::KEY_A => Some('a'),
-        evdev::Key::KEY_B => Some('b'),
-        evdev::Key::KEY_C => Some('c'),
-        evdev::Key::KEY_D => Some('d'),
-        evdev::Key::KEY_E => Some('e'),
-        evdev::Key::KEY_F => Some('f'),
-        evdev::Key::KEY_G => Some('g'),
-        evdev::Key::KEY_H => Some('h'),
-        evdev::Key::KEY_I => Some('i'),
-        evdev::Key::KEY_J => Some('j'),
-        evdev::Key::KEY_K => Some('k'),
-        evdev::Key::KEY_L => Some('l'),
-        evdev::Key::KEY_M => Some('m'),
-        evdev::Key::KEY_N => Some('n'),
-        evdev::Key::KEY_O => Some('o'),
-        evdev::Key::KEY_P => Some('p'),
-        evdev::Key::KEY_Q => Some('q'),
-        evdev::Key::KEY_R => Some('r'),
-        evdev::Key::KEY_S => Some('s'),
-        evdev::Key::KEY_T => Some('t'),
-        evdev::Key::KEY_U => Some('u'),
-        evdev::Key::KEY_V => Some('v'),
-        evdev::Key::KEY_W => Some('w'),
-        evdev::Key::KEY_X => Some('x'),
-        evdev::Key::KEY_Y => Some('y'),
-        evdev::Key::KEY_Z => Some('z'),
-        evdev::Key::KEY_0 => Some('0'),
-        evdev::Key::KEY_1 => Some('1'),
-        evdev::Key::KEY_2 => Some('2'),
-        evdev::Key::KEY_3 => Some('3'),
-        evdev::Key::KEY_4 => Some('4'),
-        evdev::Key::KEY_5 => Some('5'),
-        evdev::Key::KEY_6 => Some('6'),
-        evdev::Key::KEY_7 => Some('7'),
-        evdev::Key::KEY_8 => Some('8'),
-        evdev::Key::KEY_9 => Some('9'),
-        evdev::Key::KEY_SPACE => Some(' '),
-        evdev::Key::KEY_TAB => Some('\t'),
-        evdev::Key::KEY_DOT => Some('.'),
-        evdev::Key::KEY_COMMA => Some(','),
-        evdev::Key::KEY_MINUS => Some('-'),
-        evdev::Key::KEY_EQUAL => Some('='),
-        evdev::Key::KEY_LEFTBRACE => Some('['),
-        evdev::Key::KEY_RIGHTBRACE => Some(']'),
-        evdev::Key::KEY_BACKSLASH => Some('\\'),
-        evdev::Key::KEY_SEMICOLON => Some(';'),
-        evdev::Key::KEY_APOSTROPHE => Some('\''),
-        evdev::Key::KEY_GRAVE => Some('`'),
-        evdev::Key::KEY_SLASH => Some('/'),
-        evdev::Key::KEY_BACKSPACE => Some('\x08'),
-        evdev::Key::KEY_ENTER => Some('\n'),
+        evdev::KeyCode::KEY_A => Some('a'),
+        evdev::KeyCode::KEY_B => Some('b'),
+        evdev::KeyCode::KEY_C => Some('c'),
+        evdev::KeyCode::KEY_D => Some('d'),
+        evdev::KeyCode::KEY_E => Some('e'),
+        evdev::KeyCode::KEY_F => Some('f'),
+        evdev::KeyCode::KEY_G => Some('g'),
+        evdev::KeyCode::KEY_H => Some('h'),
+        evdev::KeyCode::KEY_I => Some('i'),
+        evdev::KeyCode::KEY_J => Some('j'),
+        evdev::KeyCode::KEY_K => Some('k'),
+        evdev::KeyCode::KEY_L => Some('l'),
+        evdev::KeyCode::KEY_M => Some('m'),
+        evdev::KeyCode::KEY_N => Some('n'),
+        evdev::KeyCode::KEY_O => Some('o'),
+        evdev::KeyCode::KEY_P => Some('p'),
+        evdev::KeyCode::KEY_Q => Some('q'),
+        evdev::KeyCode::KEY_R => Some('r'),
+        evdev::KeyCode::KEY_S => Some('s'),
+        evdev::KeyCode::KEY_T => Some('t'),
+        evdev::KeyCode::KEY_U => Some('u'),
+        evdev::KeyCode::KEY_V => Some('v'),
+        evdev::KeyCode::KEY_W => Some('w'),
+        evdev::KeyCode::KEY_X => Some('x'),
+        evdev::KeyCode::KEY_Y => Some('y'),
+        evdev::KeyCode::KEY_Z => Some('z'),
+        evdev::KeyCode::KEY_0 => Some('0'),
+        evdev::KeyCode::KEY_1 => Some('1'),
+        evdev::KeyCode::KEY_2 => Some('2'),
+        evdev::KeyCode::KEY_3 => Some('3'),
+        evdev::KeyCode::KEY_4 => Some('4'),
+        evdev::KeyCode::KEY_5 => Some('5'),
+        evdev::KeyCode::KEY_6 => Some('6'),
+        evdev::KeyCode::KEY_7 => Some('7'),
+        evdev::KeyCode::KEY_8 => Some('8'),
+        evdev::KeyCode::KEY_9 => Some('9'),
+        evdev::KeyCode::KEY_SPACE => Some(' '),
+        evdev::KeyCode::KEY_TAB => Some('\t'),
+        evdev::KeyCode::KEY_DOT => Some('.'),
+        evdev::KeyCode::KEY_COMMA => Some(','),
+        evdev::KeyCode::KEY_MINUS => Some('-'),
+        evdev::KeyCode::KEY_EQUAL => Some('='),
+        evdev::KeyCode::KEY_LEFTBRACE => Some('['),
+        evdev::KeyCode::KEY_RIGHTBRACE => Some(']'),
+        evdev::KeyCode::KEY_BACKSLASH => Some('\\'),
+        evdev::KeyCode::KEY_SEMICOLON => Some(';'),
+        evdev::KeyCode::KEY_APOSTROPHE => Some('\''),
+        evdev::KeyCode::KEY_GRAVE => Some('`'),
+        evdev::KeyCode::KEY_SLASH => Some('/'),
+        evdev::KeyCode::KEY_BACKSPACE => Some('\x08'),
+        evdev::KeyCode::KEY_ENTER => Some('\n'),
         _ => None,
     }
 }
@@ -309,13 +317,13 @@ mod tests {
     #[test]
     fn uppercase_telex_raw_keys_survive_runtime_injection_path() {
         let raw = [
-            evdev::Key::KEY_T,
-            evdev::Key::KEY_I,
-            evdev::Key::KEY_E,
-            evdev::Key::KEY_E,
-            evdev::Key::KEY_N,
-            evdev::Key::KEY_G,
-            evdev::Key::KEY_S,
+            evdev::KeyCode::KEY_T,
+            evdev::KeyCode::KEY_I,
+            evdev::KeyCode::KEY_E,
+            evdev::KeyCode::KEY_E,
+            evdev::KeyCode::KEY_N,
+            evdev::KeyCode::KEY_G,
+            evdev::KeyCode::KEY_S,
         ];
         let keys = raw
             .into_iter()
@@ -328,48 +336,48 @@ mod tests {
 
     #[test]
     fn test_toggle_key_filtering() {
-        assert!(is_toggle_key(evdev::Key::KEY_SPACE, "space"));
-        assert!(is_toggle_key(evdev::Key::KEY_LEFTCTRL, "space"));
-        assert!(!is_toggle_key(evdev::Key::KEY_T, "space"));
-        assert!(is_toggle_key(evdev::Key::KEY_LEFTSHIFT, "shift"));
-        assert!(is_toggle_key(evdev::Key::KEY_RIGHTSHIFT, "shift"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_SPACE, "space"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_LEFTCTRL, "space"));
+        assert!(!is_toggle_key(evdev::KeyCode::KEY_T, "space"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_LEFTSHIFT, "shift"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_RIGHTSHIFT, "shift"));
     }
 
     #[test]
     fn shifted_punctuation_and_parentheses_translate_and_compose_cleanly() {
         assert_eq!(
-            key_to_char_with_case(evdev::Key::KEY_9, true, false),
+            key_to_char_with_case(evdev::KeyCode::KEY_9, true, false),
             Some('(')
         );
         assert_eq!(
-            key_to_char_with_case(evdev::Key::KEY_0, true, false),
+            key_to_char_with_case(evdev::KeyCode::KEY_0, true, false),
             Some(')')
         );
         assert_eq!(
-            key_to_char_with_case(evdev::Key::KEY_9, true, true),
+            key_to_char_with_case(evdev::KeyCode::KEY_9, true, true),
             Some('(')
         );
         assert_eq!(
-            key_to_char_with_case(evdev::Key::KEY_1, true, false),
+            key_to_char_with_case(evdev::KeyCode::KEY_1, true, false),
             Some('!')
         );
         assert_eq!(
-            key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, false, false),
+            key_to_char_with_case(evdev::KeyCode::KEY_LEFTBRACE, false, false),
             Some('[')
         );
         assert_eq!(
-            key_to_char_with_case(evdev::Key::KEY_LEFTBRACE, true, false),
+            key_to_char_with_case(evdev::KeyCode::KEY_LEFTBRACE, true, false),
             Some('{')
         );
 
         // Physical sequence for "(nhuw)": Shift+9, n, h, u, w, Shift+0
         let seq = [
-            (evdev::Key::KEY_9, true),
-            (evdev::Key::KEY_N, false),
-            (evdev::Key::KEY_H, false),
-            (evdev::Key::KEY_U, false),
-            (evdev::Key::KEY_W, false),
-            (evdev::Key::KEY_0, true),
+            (evdev::KeyCode::KEY_9, true),
+            (evdev::KeyCode::KEY_N, false),
+            (evdev::KeyCode::KEY_H, false),
+            (evdev::KeyCode::KEY_U, false),
+            (evdev::KeyCode::KEY_W, false),
+            (evdev::KeyCode::KEY_0, true),
         ];
         let translated: String = seq
             .into_iter()
@@ -380,12 +388,12 @@ mod tests {
 
         // Physical sequence for "(nhuw" followed by Backspace must yield "(nhu", never "9nhu"
         let seq_with_bs = [
-            (evdev::Key::KEY_9, true),
-            (evdev::Key::KEY_N, false),
-            (evdev::Key::KEY_H, false),
-            (evdev::Key::KEY_U, false),
-            (evdev::Key::KEY_W, false),
-            (evdev::Key::KEY_BACKSPACE, false),
+            (evdev::KeyCode::KEY_9, true),
+            (evdev::KeyCode::KEY_N, false),
+            (evdev::KeyCode::KEY_H, false),
+            (evdev::KeyCode::KEY_U, false),
+            (evdev::KeyCode::KEY_W, false),
+            (evdev::KeyCode::KEY_BACKSPACE, false),
         ];
         let translated_bs: String = seq_with_bs
             .into_iter()

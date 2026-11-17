@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use super::clipboard_backup::{
+    classify_clipboard_types, ClipboardKind, NonTextClipboard, MAX_BINARY_CLIPBOARD_BYTES,
+};
 use super::replacement_transaction::{ClipboardAction, ClipboardBurstState, ReplacementPhase};
 use super::UinputInjector;
 
@@ -19,41 +22,6 @@ pub(super) fn trace_clipboard(sequence_id: u64, phase: &str, detail: &str) {
             "[vietc] clipboard trace={} sequence_id={} phase={} {}",
             trace_index, sequence_id, phase, detail
         );
-    }
-}
-
-/// Largest non-text clipboard payload we are willing to back up and restore.
-const MAX_BINARY_CLIPBOARD_BYTES: usize = 64 * 1024 * 1024;
-
-/// Clipboard contents that are not plain text and therefore cannot go through
-/// the text snapshot path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum NonTextClipboard {
-    Empty,
-    Data { mime: String, bytes: Vec<u8> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ClipboardKind {
-    Empty,
-    Text,
-    Other(String),
-}
-
-fn is_text_mime(mime: &str) -> bool {
-    mime.starts_with("text/plain") || matches!(mime, "UTF8_STRING" | "STRING" | "TEXT")
-}
-
-/// Decide how a clipboard offering `types` must be backed up: plain text is
-/// preserved as text; anything else (image, file list...) is preserved as raw
-/// bytes of its first offered type; nothing offered means an empty clipboard.
-fn classify_clipboard_types(types: &[String]) -> ClipboardKind {
-    if types.is_empty() {
-        ClipboardKind::Empty
-    } else if types.iter().any(|mime| is_text_mime(mime)) {
-        ClipboardKind::Text
-    } else {
-        ClipboardKind::Other(types[0].clone())
     }
 }
 
@@ -97,7 +65,11 @@ impl ClipboardRestorer {
 
     pub(super) fn shutdown_and_join(&mut self) -> std::thread::Result<()> {
         {
-            let mut inner = self.state.inner.lock().unwrap();
+            let mut inner = self
+                .state
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             inner.shutdown = true;
             inner.restore_due = None;
             inner.burst.reset();
@@ -275,10 +247,18 @@ impl UinputInjector {
             }
         }
         let t_total = std::time::Instant::now();
-        let _clipboard_io = self.clip.io_lock.lock().unwrap();
+        let _clipboard_io = self
+            .clip
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let needs_snapshot = {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             st.restore_due = None;
             !st.burst.is_active()
         };
@@ -292,7 +272,11 @@ impl UinputInjector {
             .flatten();
 
         let sequence_id = {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             st.burst
                 .begin_injection(current_clipboard.clone(), text, focus_generation);
             st.burst.transaction_id().unwrap()
@@ -309,7 +293,11 @@ impl UinputInjector {
 
         trace_clipboard(sequence_id, "prepared", "state=writing");
         if !Self::copy_to_clipboard(text) {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             st.burst.mark_failed(sequence_id);
             trace_clipboard(sequence_id, "failed", "phase=clipboard-write");
             st.burst.reset();
@@ -317,7 +305,11 @@ impl UinputInjector {
         }
 
         if !Self::wait_for_clipboard_value(text) {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             st.burst.mark_failed(sequence_id);
             let elapsed_ms = st.burst.elapsed().map_or(0, |elapsed| elapsed.as_millis());
             trace_clipboard(
@@ -329,7 +321,11 @@ impl UinputInjector {
             return false;
         }
         {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let transitioned = st
                 .burst
                 .transition(sequence_id, ReplacementPhase::ClipboardWritten);
@@ -339,7 +335,11 @@ impl UinputInjector {
 
         if backspaces > 0 {
             if self.send_backspaces(backspaces).is_err() {
-                let mut st = self.clip.inner.lock().unwrap();
+                let mut st = self
+                    .clip
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 st.burst.mark_failed(sequence_id);
                 trace_clipboard(sequence_id, "failed", "phase=backspace-dispatch");
                 st.burst.reset();
@@ -353,14 +353,22 @@ impl UinputInjector {
         }
 
         if self.send_ctrl_v().is_err() {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             st.burst.mark_failed(sequence_id);
             trace_clipboard(sequence_id, "failed", "phase=paste-dispatch");
             st.burst.reset();
             return false;
         }
         {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let transitioned = st
                 .burst
                 .transition(sequence_id, ReplacementPhase::PasteDispatched);
@@ -370,7 +378,11 @@ impl UinputInjector {
         trace_clipboard(sequence_id, "paste_dispatched", "state=sent");
 
         if !Self::wait_for_target_consumption(&self.clip, sequence_id, text, focus_generation) {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             st.burst.mark_failed(sequence_id);
             st.restore_due = None;
             trace_clipboard(sequence_id, "failed", "phase=target-observation");
@@ -382,7 +394,11 @@ impl UinputInjector {
 
         let current_clipboard = Self::read_clipboard_expecting(text);
         let action = {
-            let mut st = self.clip.inner.lock().unwrap();
+            let mut st = self
+                .clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let action = st.burst.finish_restore(current_clipboard.as_deref());
             if non_text_backup.is_some() && current_clipboard.as_deref() == Some(text) {
                 // The user's clipboard was empty/non-text: there is no text to
@@ -407,7 +423,12 @@ impl UinputInjector {
                     "state=non-text-restore-failed"
                 },
             );
-            self.clip.inner.lock().unwrap().burst.reset();
+            self.clip
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .burst
+                .reset();
             let elapsed = t_total.elapsed().as_millis();
             if elapsed > 20 {
                 eprintln!(
@@ -422,11 +443,21 @@ impl UinputInjector {
             ClipboardAction::Restore(saved) => {
                 trace_clipboard(sequence_id, "restore", "state=writing");
                 if !Self::copy_to_clipboard(&saved) {
-                    self.clip.inner.lock().unwrap().burst.reset();
+                    self.clip
+                        .inner
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .burst
+                        .reset();
                     trace_clipboard(sequence_id, "restore", "state=write-failed");
                     false
                 } else if !Self::wait_for_clipboard_value(&saved) {
-                    self.clip.inner.lock().unwrap().burst.reset();
+                    self.clip
+                        .inner
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .burst
+                        .reset();
                     trace_clipboard(sequence_id, "verified-read-back", "state=failed");
                     false
                 } else {
@@ -463,7 +494,10 @@ impl UinputInjector {
 
     #[cfg(feature = "wayland-protocol")]
     pub(super) fn wayland_paste_is_uncertain(&self) -> bool {
-        self.uncertain_focus.lock().unwrap().is_some()
+        self.uncertain_focus
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
     }
 
     #[cfg(feature = "wayland-protocol")]
@@ -520,14 +554,27 @@ impl UinputInjector {
         use crate::clipboard_transaction::{paste_with_transfer, PasteCompletion};
         use crate::wayland_clipboard::{ClipboardOffer, Ownership};
 
-        let _clipboard_io = self.clip.io_lock.lock().unwrap();
-        let mut retained = self.wayland_paste.lock().unwrap();
-        let mut retired = self.retired_wayland_offers.lock().unwrap();
+        let _clipboard_io = self
+            .clip
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut retained = self
+            .wayland_paste
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut retired = self
+            .retired_wayland_offers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Reap only workers that already finished. A stalled recipient must not
         // make the grabbed-keyboard capture thread join a five-second drain.
         retired.retain(|offer| !offer.is_finished());
         if retired.len() + 2 > 8 {
-            *self.uncertain_focus.lock().unwrap() = Some(focus_generation);
+            *self
+                .uncertain_focus
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(focus_generation);
             eprintln!("[vietc] Clipboard transfer backlog; native input only until focus changes");
             return false;
         }
@@ -548,7 +595,10 @@ impl UinputInjector {
             Some(previous) if previous.offer.ownership() == Ownership::Unavailable => {
                 // Unknown ownership is not evidence of an external copy. Keep
                 // the only saved snapshot and do not overwrite a possible new owner.
-                *self.uncertain_focus.lock().unwrap() = Some(focus_generation);
+                *self
+                    .uncertain_focus
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(focus_generation);
                 eprintln!("[vietc] Clipboard transport unavailable; saved snapshot retained, no keys sent");
                 return false;
             }
@@ -580,7 +630,10 @@ impl UinputInjector {
             eprintln!(
                 "[vietc] Clipboard publication uncertain; snapshot retained, no keys sent: {error}"
             );
-            *self.uncertain_focus.lock().unwrap() = Some(focus_generation);
+            *self
+                .uncertain_focus
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(focus_generation);
             *retained = Some(RetainedWaylandPaste { offer, backup });
             return false;
         }
@@ -644,7 +697,10 @@ impl UinputInjector {
             }
             PasteCompletion::Indeterminate => {
                 eprintln!("[vietc] Wayland paste indeterminate; keeping payload available, no clipboard restore or retry");
-                *self.uncertain_focus.lock().unwrap() = Some(focus_generation);
+                *self
+                    .uncertain_focus
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(focus_generation);
                 *retained = Some(RetainedWaylandPaste { offer, backup });
                 false
             }
@@ -674,7 +730,10 @@ impl UinputInjector {
             transaction_id,
             injected_text,
             || {
-                let state = state.inner.lock().unwrap();
+                let state = state
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state
                     .burst
                     .matches(transaction_id, focus_generation)
@@ -688,7 +747,10 @@ impl UinputInjector {
             return false;
         }
 
-        let mut inner = state.inner.lock().unwrap();
+        let mut inner = state
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !inner.burst.matches(transaction_id, focus_generation) {
             return false;
         }
@@ -790,21 +852,30 @@ fn run_restorer_with(
     mut copy_to_clipboard: impl FnMut(&str) -> bool,
 ) {
     loop {
-        let mut st = state.inner.lock().unwrap();
+        let mut st = state
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             if st.shutdown {
                 return;
             }
             match st.restore_due {
                 None => {
-                    st = state.cv.wait(st).unwrap();
+                    st = state
+                        .cv
+                        .wait(st)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                 }
                 Some(due) => {
                     let now = Instant::now();
                     if now >= due {
                         break;
                     }
-                    let (guard, _) = state.cv.wait_timeout(st, due - now).unwrap();
+                    let (guard, _) = state
+                        .cv
+                        .wait_timeout(st, due - now)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     st = guard;
                 }
             }
@@ -812,10 +883,16 @@ fn run_restorer_with(
         st.restore_due = None;
         drop(st);
 
-        let _clipboard_io = state.io_lock.lock().unwrap();
+        let _clipboard_io = state
+            .io_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let current_clipboard = read_clipboard();
         let action = {
-            let mut st = state.inner.lock().unwrap();
+            let mut st = state
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if st.shutdown {
                 st.burst.reset();
                 return;
@@ -826,7 +903,10 @@ fn run_restorer_with(
         if let ClipboardAction::Restore(restored) = action {
             let current_clipboard = read_clipboard();
             let should_restore = {
-                let mut st = state.inner.lock().unwrap();
+                let mut st = state
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 if st.shutdown {
                     st.burst.reset();
                     return;
@@ -841,11 +921,17 @@ fn run_restorer_with(
             }
 
             let transaction_id = {
-                let st = state.inner.lock().unwrap();
+                let st = state
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 st.burst.transaction_id()
             };
             let restored_ok = copy_to_clipboard(&restored);
-            let mut st = state.inner.lock().unwrap();
+            let mut st = state
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if st.shutdown {
                 st.burst.reset();
                 return;
@@ -1040,17 +1126,29 @@ mod restorer_tests {
                 state,
                 || Some("injected text".to_string()),
                 |text| {
-                    worker_restored.lock().unwrap().push(text.to_string());
+                    worker_restored
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(text.to_string());
                     true
                 },
             );
         });
 
         restorer.shutdown_and_join().unwrap();
-        let restore_count_after_join = restored.lock().unwrap().len();
+        let restore_count_after_join = restored
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len();
         std::thread::sleep(Duration::from_millis(20));
 
-        assert_eq!(restored.lock().unwrap().len(), restore_count_after_join);
+        assert_eq!(
+            restored
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .len(),
+            restore_count_after_join
+        );
     }
 
     #[test]
@@ -1086,65 +1184,46 @@ mod restorer_tests {
         let handle = std::thread::spawn(move || {
             run_restorer_with(
                 worker_state,
-                || worker_reads.lock().unwrap().pop_front().flatten(),
+                || {
+                    worker_reads
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .pop_front()
+                        .flatten()
+                },
                 |text| {
-                    worker_restored.lock().unwrap().push(text.to_string());
+                    worker_restored
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(text.to_string());
                     true
                 },
             );
         });
 
         for _ in 0..100 {
-            if reads.lock().unwrap().is_empty() {
+            if reads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
+            {
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
         {
-            let mut inner = state.inner.lock().unwrap();
+            let mut inner = state
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             inner.shutdown = true;
         }
         state.cv.notify_all();
         handle.join().unwrap();
 
-        assert!(restored.lock().unwrap().is_empty());
-    }
-}
-
-#[cfg(test)]
-mod clipboard_backup_tests {
-    use super::*;
-
-    fn types(list: &[&str]) -> Vec<String> {
-        list.iter().map(|value| value.to_string()).collect()
-    }
-
-    #[test]
-    fn empty_clipboard_is_backed_up_as_empty() {
-        assert_eq!(classify_clipboard_types(&[]), ClipboardKind::Empty);
-    }
-
-    #[test]
-    fn any_plain_text_offer_uses_the_text_path() {
-        assert_eq!(
-            classify_clipboard_types(&types(&["text/html", "text/plain;charset=utf-8"])),
-            ClipboardKind::Text
-        );
-        assert_eq!(
-            classify_clipboard_types(&types(&["UTF8_STRING"])),
-            ClipboardKind::Text
-        );
-    }
-
-    #[test]
-    fn image_only_clipboard_keeps_its_own_type_instead_of_becoming_text() {
-        assert_eq!(
-            classify_clipboard_types(&types(&["image/png"])),
-            ClipboardKind::Other("image/png".to_string())
-        );
-        assert_eq!(
-            classify_clipboard_types(&types(&["text/uri-list", "x-special/gnome-copied-files"])),
-            ClipboardKind::Other("text/uri-list".to_string())
-        );
+        assert!(restored
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty());
     }
 }
