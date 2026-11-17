@@ -32,6 +32,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libdbus-1-dev libwayland-dev libxkbcommon-dev libx11-dev libxtst-dev
+
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
