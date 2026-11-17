@@ -31,3 +31,6 @@ packaging/ppa/build_*/
 
 # Local build distribution directory
 /dist/
+
+# Rust build and runtime artifacts
+target/
