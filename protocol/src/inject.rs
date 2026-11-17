@@ -89,6 +89,12 @@ pub trait KeyInjector {
         self.inject_replacement(backspaces, text)
     }
 
+    /// A dispatched edit has an unknown outcome. Capture should reset its
+    /// composition and pass native keys through until explicitly resynchronized.
+    fn has_uncertain_edit(&self) -> bool {
+        false
+    }
+
     fn flush(&self) -> InjectResult;
 
     fn send_backspaces(&self, count: usize) -> InjectResult {
