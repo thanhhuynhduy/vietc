@@ -8,6 +8,8 @@
 
 ### Bảo mật và sửa lỗi sau audit
 
+- **Bản sửa thử nghiệm clipboard Wayland**: Thay heuristic tự đọc clipboard trong 20 ms bằng nguồn data-control bất biến và bằng chứng truyền payload thật; không tự retry/restore khi kết quả chưa rõ, cho phép tiếp tục gõ phím thô khi phục hồi, xác minh cleanup riêng. Áp dụng cho service chạy bằng user desktop, không phải root. Chưa xác nhận hết race với clipboard manager và thứ tự sửa nội dung của app; xem [giới hạn và quy trình triển khai](docs/wayland-clipboard-fix.md).
+
 - Bỏ quyền `0666` trên thiết bị input; cấp quyền theo phiên đăng nhập đang hoạt động. Khi nâng cấp, thu hồi world-access cũ; khi gỡ, thử xóa ACL mở rộng rồi áp dụng lại udev rules của distro. **Chính sách trên máy chỉ thay đổi khi chạy installer/uninstaller mới.** Việc xóa ACL cũng ảnh hưởng ACL tùy chỉnh; thiếu `setfacl` hoặc lỗi udev được báo để quản trị viên xử lý.
 - Cố định PATH cho thao tác root; không tự sửa shell profile của user bằng root.
 - **Đồng bộ tuyệt đối màn hình (`screen`) & `engine.buffer()` trong Telex/VNI**: Ngăn bộ khớp mũ `aa`/`ee`/`oo` vượt qua ký tự `'w'` hoặc ghi đè nguyên âm đã mang dấu trăng/móc (`"awa"` → `"wa"`, `"owo"` → `"wo"`); chỉ hoàn tác `"ww"` khi ký tự `'w'` đầu đã được tiêu thụ; bổ sung hoàn tác phím dấu lặp lại trong chế độ VNI (`"a11"` → `"a1"`, `"a112"` → `"a12"`).

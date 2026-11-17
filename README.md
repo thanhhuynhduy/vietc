@@ -131,6 +131,14 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
+### Kênh phát hành
+
+- `main`: mã nguồn ổn định; tag `vX.Y.Z` kích hoạt pipeline phát hành chính thức.
+- `next`: kênh tích hợp cho thay đổi hệ thống và tính năng thử nghiệm. Mỗi lần push sẽ chạy kiểm thử headless, tạo tarball, checksum, metadata và GitHub prerelease riêng.
+- Có thể chạy workflow **Prerelease Candidate** thủ công để đặt nhãn ứng viên như `rc`, `beta` hoặc `wayland`.
+- Chỉ promotion thay đổi từ `next` sang `main` sau khi candidate đã được kiểm tra trên môi trường Wayland/X11 mục tiêu và có phương án rollback.
+- Mỗi candidate và stable release đính kèm `BUILD-METADATA`, `SHA256SUMS` và `RELEASE-EVIDENCE.md`; quy trình ghi nhận tại [`docs/release-evidence.md`](docs/release-evidence.md).
+
 ## Cấu trúc dự án
 
 - [`engine/`](engine/): bộ xử lý ngôn ngữ Telex, VNI, kiểm tra chính tả ngữ âm & từ điển tiếng Việt (`vietnamese.cm.dict`), auto-restore và state machine (`vietc-engine`).
