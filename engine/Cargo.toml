@@ -3,6 +3,7 @@ name = "vietc-engine"
 version = "0.1.24"
 edition = "2021"
 description = "Viet+ Vietnamese IME Core Engine"
+license = "MIT"
 
 [features]
 default = []

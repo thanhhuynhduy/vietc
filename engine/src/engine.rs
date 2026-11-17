@@ -128,7 +128,9 @@ impl Engine {
         }
         if composed.chars().count() <= 1 || composed.contains('đ') || composed.contains('Đ') {
             return !crate::spelling::is_in_vietnamese_dictionary(composed)
-                && composed.chars().any(|c| crate::spelling::is_in_vietnamese_dictionary(&c.to_string()));
+                && composed
+                    .chars()
+                    .any(|c| crate::spelling::is_in_vietnamese_dictionary(&c.to_string()));
         }
         !crate::spelling::is_in_vietnamese_dictionary(composed)
     }
@@ -517,11 +519,7 @@ impl Engine {
                 BoundaryState::Composing
             };
             self.last_transition = Some(TransitionKind::Edit);
-            return Some(self.replacement(
-                prev_len,
-                self.composed_tail(),
-                ReplacementReason::Edit,
-            ));
+            return Some(self.replacement(prev_len, self.composed_tail(), ReplacementReason::Edit));
         }
 
         if is_flush_char(ch) {
@@ -563,10 +561,7 @@ impl Engine {
             && ch.is_ascii_digit()
             && self.raw_buffer.is_empty()
             && self.pasted_prefix.is_empty()
-            && !self
-                .macros
-                .keys()
-                .any(|k| k.starts_with(&ch.to_string()))
+            && !self.macros.keys().any(|k| k.starts_with(&ch.to_string()))
         {
             return None;
         }

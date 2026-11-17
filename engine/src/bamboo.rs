@@ -216,28 +216,62 @@ impl BambooEngine {
                             is_vowel(c).then_some(c)
                         })
                         .collect();
-                    if vowels.len() >= 1 && last_syllable.len() >= 2 {
+                    if !vowels.is_empty() && last_syllable.len() >= 2 {
                         let c0 = self.composition[last_syllable.start]
                             .base_char
                             .to_ascii_lowercase();
                         let c1 = self.composition[last_syllable.start + 1]
                             .base_char
                             .to_ascii_lowercase();
-                        if (c0 == 'q' && c1 == 'u') || (c0 == 'g' && c1 == 'i') {
-                            if !vowels.is_empty() {
-                                vowels.remove(0);
-                            }
+                        if ((c0 == 'q' && c1 == 'u') || (c0 == 'g' && c1 == 'i'))
+                            && !vowels.is_empty()
+                        {
+                            vowels.remove(0);
                         }
                     }
                     vowels.push(lower);
                     let cluster: String = vowels.into_iter().collect();
                     let valid_free_order = matches!(
                         cluster.as_str(),
-                        "ai" | "ao" | "au" | "ay" | "âu" | "ây" | "eo" | "êu" | "ia" | "iu"
-                            | "ôi" | "ơi" | "ua" | "ui" | "ưa" | "ưi" | "ưu" | "oa" | "uê"
-                            | "uy" | "oai" | "oao" | "oay" | "oeo" | "iêu" | "yêu" | "uôi"
-                            | "ươi" | "ươu" | "uây" | "uya" | "uyu" | "iê" | "yê" | "uô"
-                            | "ươ" | "oă" | "uâ" | "uơ" | "uyê"
+                        "ai" | "ao"
+                            | "au"
+                            | "ay"
+                            | "âu"
+                            | "ây"
+                            | "eo"
+                            | "êu"
+                            | "ia"
+                            | "iu"
+                            | "ôi"
+                            | "ơi"
+                            | "ua"
+                            | "ui"
+                            | "ưa"
+                            | "ưi"
+                            | "ưu"
+                            | "oa"
+                            | "uê"
+                            | "uy"
+                            | "oai"
+                            | "oao"
+                            | "oay"
+                            | "oeo"
+                            | "iêu"
+                            | "yêu"
+                            | "uôi"
+                            | "ươi"
+                            | "ươu"
+                            | "uây"
+                            | "uya"
+                            | "uyu"
+                            | "iê"
+                            | "yê"
+                            | "uô"
+                            | "ươ"
+                            | "oă"
+                            | "uâ"
+                            | "uơ"
+                            | "uyê"
                     );
                     if !valid_free_order {
                         if let Some(last_mut) = self.composition.last_mut() {
@@ -526,8 +560,10 @@ impl BambooEngine {
             .to_ascii_lowercase();
         let has_final_consonant = vowels[1] + 1 < end;
 
-        if matches!((cv1, cv2), ('o', 'a') | ('o', 'e') | ('u', 'y') | ('i', 'o'))
-            || (has_final_consonant && matches!((cv1, cv2), ('i', 'e') | ('y', 'e') | ('u', 'o')))
+        if matches!(
+            (cv1, cv2),
+            ('o', 'a') | ('o', 'e') | ('u', 'y') | ('i', 'o')
+        ) || (has_final_consonant && matches!((cv1, cv2), ('i', 'e') | ('y', 'e') | ('u', 'o')))
         {
             return vowels[1];
         }

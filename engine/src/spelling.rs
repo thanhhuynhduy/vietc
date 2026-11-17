@@ -304,9 +304,7 @@ fn lookup_prefix(
     for (index, row) in seqs.iter().enumerate() {
         for token in row.split_whitespace() {
             let token_chars: Vec<char> = token.chars().collect();
-            if token_chars.len() < input_len
-                || (input_is_full && token_chars.len() != input_len)
-            {
+            if token_chars.len() < input_len || (input_is_full && token_chars.len() != input_len) {
                 continue;
             }
             let hit = input_chars
@@ -339,7 +337,12 @@ pub fn is_valid_vietnamese_prefix(word: &str) -> bool {
         return false;
     }
 
-    if lowercase_word.chars().filter(|&c| strip_tone(c) != c).count() > 1 {
+    if lowercase_word
+        .chars()
+        .filter(|&c| strip_tone(c) != c)
+        .count()
+        > 1
+    {
         return false;
     }
 
@@ -440,7 +443,12 @@ pub fn is_valid_vietnamese_syllable(word: &str) -> bool {
     }
 
     // A valid single Vietnamese syllable has at most one tone mark.
-    if lowercase_word.chars().filter(|&c| strip_tone(c) != c).count() > 1 {
+    if lowercase_word
+        .chars()
+        .filter(|&c| strip_tone(c) != c)
+        .count()
+        > 1
+    {
         return false;
     }
 
@@ -585,17 +593,24 @@ mod tests {
 
     #[test]
     fn test_vietnamese_dictionary_and_tone_normalization() {
-        assert_eq!(
-            without_tone_position("hoà"),
-            without_tone_position("hòa")
-        );
-        assert_eq!(
-            without_tone_position("thuỷ"),
-            without_tone_position("thủy")
-        );
+        assert_eq!(without_tone_position("hoà"), without_tone_position("hòa"));
+        assert_eq!(without_tone_position("thuỷ"), without_tone_position("thủy"));
         for word in [
-            "tiếng", "việt", "hoà", "hòa", "thuỷ", "thủy", "quả", "giếng", "được", "đường",
-            "nghiêng", "bên", "tôi", "không", "chào",
+            "tiếng",
+            "việt",
+            "hoà",
+            "hòa",
+            "thuỷ",
+            "thủy",
+            "quả",
+            "giếng",
+            "được",
+            "đường",
+            "nghiêng",
+            "bên",
+            "tôi",
+            "không",
+            "chào",
         ] {
             assert!(
                 is_in_vietnamese_dictionary(word),

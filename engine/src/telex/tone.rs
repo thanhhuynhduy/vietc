@@ -124,7 +124,9 @@ fn is_valid_tone_trigger(
             let valid_cluster = match cluster.as_str() {
                 "ai" | "ao" | "au" | "ay" | "âu" | "ây" | "eo" | "êu" | "ia" | "iu" | "ôi"
                 | "ơi" | "ua" | "ui" | "ưa" | "ưi" | "ưu" | "oai" | "oao" | "oay" | "oeo"
-                | "iêu" | "yêu" | "uôi" | "ươi" | "ươu" | "uây" | "uya" | "uyu" => !has_coda,
+                | "iêu" | "yêu" | "uôi" | "ươi" | "ươu" | "uây" | "uya" | "uyu" => {
+                    !has_coda
+                }
                 "oa" | "oe" | "uê" | "uy" => true,
                 "iê" | "yê" | "uô" | "ươ" | "oă" | "uâ" | "uơ" | "uyê" => true,
                 _ => false,
@@ -251,7 +253,6 @@ fn compute_target(
     trigger: usize,
     tone: Tone,
 ) -> ToneResolution {
-
     let glide_vowel = if raw.len() > 2
         && matches!((lower(raw[0]), lower(raw[1])), ('q', 'u') | ('g', 'i'))
         && is_vowel(raw[2])

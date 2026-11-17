@@ -221,11 +221,7 @@ fn telex_parser_recognizes_qu_and_gi_glides_as_valid() {
 #[test]
 fn english_double_s_words_auto_restore_on_space() {
     // U10: English words with double 's' ("ass", "class", "password") auto-restore on space
-    for (raw, expected) in [
-        ("ass", "ass"),
-        ("class", "class"),
-        ("password", "password"),
-    ] {
+    for (raw, expected) in [("ass", "ass"), ("class", "class"), ("password", "password")] {
         let mut engine = Engine::new(InputMethod::Telex);
         let mut screen = String::new();
         for ch in raw.chars() {
@@ -269,5 +265,3 @@ fn parenthesized_and_digit_prefixed_telex_words_compose_and_backspace_cleanly() 
     type_key(&mut engine3, &mut screen3, '\x08');
     assert_eq!(screen3, "9nhu");
 }
-
-
