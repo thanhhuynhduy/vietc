@@ -60,7 +60,7 @@ jobs:
         run: bash scripts/package-smoke-test.sh "$PACKAGE"
 
       - name: Upload tested package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vietc-debian-smoke-${{ github.sha }}
           path: ${{ env.PACKAGE }}

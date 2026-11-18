@@ -65,7 +65,7 @@ jobs:
           test -n "$(find dist -maxdepth 1 -type f -name '*.cdx.json' -print -quit)"
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vietc-sbom-${{ github.sha }}
           path: dist/*.cdx.json
