@@ -278,8 +278,14 @@ impl UinputInjector {
     pub(super) fn send_ctrl_v(&self) -> std::io::Result<()> {
         let is_terminal = self.terminal_app.load(Ordering::Relaxed) || {
             let st = self.clip.inner.lock().unwrap();
-            let app = &st.active_window;
+            let app = st.active_window.to_ascii_lowercase();
             app.contains("terminal")
+                || app.contains("cosmic-term")
+                || app.contains("cosmicterm")
+                || app.contains("ghostty")
+                || app.contains("foot")
+                || app.contains("wezterm")
+                || app.contains("ptyxis")
                 || app.contains("konsole")
                 || app.contains("kitty")
                 || app.contains("alacritty")
@@ -371,25 +377,30 @@ pub(super) fn char_to_linux_keycode(ch: char) -> Option<u16> {
         'x' => Some(45),
         'y' => Some(21),
         'z' => Some(44),
-        '0' => Some(11),
-        '1' => Some(2),
-        '2' => Some(3),
-        '3' => Some(4),
-        '4' => Some(5),
-        '5' => Some(6),
-        '6' => Some(7),
-        '7' => Some(8),
-        '8' => Some(9),
-        '9' => Some(10),
+        '0' | ')' => Some(11),
+        '1' | '!' => Some(2),
+        '2' | '@' => Some(3),
+        '3' | '#' => Some(4),
+        '4' | '$' => Some(5),
+        '5' | '%' => Some(6),
+        '6' | '^' => Some(7),
+        '7' | '&' => Some(8),
+        '8' | '*' => Some(9),
+        '9' | '(' => Some(10),
         ' ' => Some(57),
-        '.' => Some(52),
-        ',' => Some(51),
-        '-' => Some(12),
-        '=' => Some(13),
-        ';' => Some(39),
-        '\'' => Some(40),
-        '/' => Some(53),
-        '\\' => Some(43),
+        '\t' => Some(15),
+        '\n' => Some(28),
+        '.' | '>' => Some(52),
+        ',' | '<' => Some(51),
+        '-' | '_' => Some(12),
+        '=' | '+' => Some(13),
+        '[' | '{' => Some(26),
+        ']' | '}' => Some(27),
+        ';' | ':' => Some(39),
+        '\'' | '"' => Some(40),
+        '`' | '~' => Some(41),
+        '/' | '?' => Some(53),
+        '\\' | '|' => Some(43),
         _ => None,
     }
 }

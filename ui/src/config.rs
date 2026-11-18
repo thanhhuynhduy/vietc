@@ -82,16 +82,16 @@ pub struct Config {
 }
 
 fn default_input_method() -> String {
-    "vni".into()
+    "telex".into()
 }
 fn default_toggle_key() -> String {
     "space".into()
 }
 fn default_start_enabled() -> bool {
-    false
+    true
 }
 fn default_grab() -> bool {
-    false
+    true
 }
 fn default_true() -> bool {
     true
@@ -132,9 +132,15 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let path = config_path();
+        use std::os::unix::fs::DirBuilderExt;
+        let path = user_config_path();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            if !parent.exists() {
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(parent)?;
+            }
         }
         self.save_to(&path)
     }
@@ -157,6 +163,7 @@ impl Config {
             .write(true)
             .create_new(true)
             .mode(mode)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(&temporary)?;
         let result = (|| -> std::io::Result<()> {
             file.write_all(content.as_bytes())?;
@@ -171,28 +178,20 @@ impl Config {
     }
 }
 
-fn config_path() -> PathBuf {
-    config_paths()
-        .into_iter()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("vietc")
-                .join("config.toml")
-        })
+fn user_config_path() -> PathBuf {
+    dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("vietc")
+        .join("config.toml")
 }
 
 fn config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-
     if let Some(config_dir) = dirs::config_dir() {
         paths.push(config_dir.join("vietc").join("config.toml"));
     }
-
-    paths.push(PathBuf::from("vietc.toml"));
     paths.push(PathBuf::from("/etc/vietc/config.toml"));
-
     paths
 }
 
@@ -260,12 +259,12 @@ mod tests {
             std::env::temp_dir().join(format!("vietc-ui-config-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("config.toml");
-        fs::write(&path, "auto_ibus = false\n").unwrap();
+        fs::write(&path, "deduplicate_keys = true\n").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-        let config: Config = toml::from_str("auto_ibus = false\n").unwrap();
+        let config: Config = toml::from_str("deduplicate_keys = true\n").unwrap();
         config.save_to(&path).unwrap();
         let saved: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(saved["auto_ibus"].as_bool(), Some(false));
+        assert_eq!(saved["deduplicate_keys"].as_bool(), Some(true));
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o640

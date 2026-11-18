@@ -1,592 +1,106 @@
 // SPDX-License-Identifier: MIT
+//! Gboard-style Bilingual (Vietnamese + English) Lexicon & Context Scorer.
+//!
+//! Models Gboard Android's dual-hypothesis transliteration decoder:
+//! 1. Unigram frequency tiers distinguishing English-dominant collisions (`test`,
+//!    `this`, `rust`, `how`, `now`, `most`, `turn`, `own`, `list`, `host`...)
+//!    from Vietnamese-dominant collisions (`car`=`cả`, `been`=`bên`, `too`=`tô`,
+//!    `gif`=`gì`, `teen`=`tên`, `ddos`=`đó`, `its`=`ít`, `sown`=`sơn`).
+//! 2. Bigram language momentum (`LanguageContext`) from the preceding committed
+//!    word in the current sentence so phrases like `"bánh tét"` vs `"cargo test"`,
+//!    `"cảm ơn"` vs `"my own"`, `"hai bên"` vs `"have been"`, `"bác sĩ"` vs
+//!    `"six pack"`, `"cá trê"` vs `"binary tree"` resolve seamlessly.
+
 use std::collections::HashSet;
 
+const COMMON_ENGLISH_WORDS_RAW: &str = include_str!("english_words.txt");
+
+/// Words that are overwhelmingly English even inside Vietnamese sentences
+/// (`"team mình lets meet"`, `"làm ops"`, `"nuôi pets"`, `"chặn bots"`).
+/// Users who genuinely want the rare Vietnamese bound syllable (e.g. `"lét"` in
+/// `"lét đét"`) can press Backspace once after Space (Gboard undo) to keep it.
+const UNCONDITIONAL_ENGLISH_COLLISIONS: &[&str] = &[
+    "of", "lets", "ops", "bots", "dots", "pets", "kits", "puts", "pats", "pits",
+];
+
+const ENGLISH_DOMINANT_COLLISIONS: &[&str] = &[
+    "test", "rust", "this", "has", "his", "how", "now", "low", "see", "tree", "most", "host",
+    "cost", "lost", "post", "list", "last", "past", "cast", "must", "dust", "trust", "rest",
+    "best", "nest", "vest", "turn", "burn", "born", "corn", "horn", "form", "term", "arm", "bar",
+    "or", "as", "is", "us", "os", "if", "bus", "gas", "six", "mix", "box", "tax", "max", "own",
+    "down", "town", "room", "noon", "soon", "seen", "lawn", "dawn", "more", "core", "lose", "rose",
+    "nose", "chose", "those", "these", "here", "there", "where", "were", "care", "share", "base",
+    "case", "use", "pure", "cure", "hire", "fire", "user", "laser", "server", "order", "border",
+    "sister", "todo", "logo", "solo", "photo", "auto", "demo", "repo", "sudo", "cargo", "macro",
+    "docs", "bits",
+];
+
+const VIETNAMESE_DOMINANT_COLLISIONS: &[&str] = &[
+    "car",  // cả ("tất cả", "cả nhà" vs "my car")
+    "been", // bên ("bên cạnh", "hai bên" vs "have been")
+    "too",  // tô ("tô phở", "ô tô" vs "me too")
+    "gif",  // gì ("cái gì", "làm gì" vs "animated gif")
+    "teen", // tên ("họ tên", "tên gì" vs "my teen")
+    "moon", // môn ("bộ môn", "môn học" vs "full moon")
+    "ddos", // đó ("cái đó", "ở đó" vs "mitigate ddos" / "DDoS")
+    "its",  // ít ("ít nhất", "một ít" vs "in its")
+    "sown", // sơn ("nước sơn" vs "reap sown")
+    "tar",  // tả ("mô tả" vs "run tar")
+    "sets", // sét ("sấm sét" vs "data sets")
+    "lots", // lót ("miếng lót" vs "lots of")
+    "maps", // máp ("má" / "máp" vs "google maps")
+    "caps", // cáp ("dây cáp" vs "all caps")
+    "tips", // típ ("mắt típ" vs "quick tips")
+    "tops", // tóp ("tóp mỡ" vs "tank tops")
+    "cuts", // cút ("chim cút" vs "budget cuts")
+    "hits", // hít ("hít thở" vs "top hits")
+    "mats", // mát ("mát mẻ" vs "floor mats")
+    "hats", // hát ("ca hát" vs "wear hats")
+    "bats", // bát ("cái bát" vs "baseball bats")
+    "cats", // cát ("bãi cát" vs "two cats")
+    "rats", // rát ("bỏng rát" vs "lab rats")
+    "nuts", // nút ("nút bấm" vs "pine nuts")
+    "nets", // nét ("rõ nét" vs "safety nets")
+    "cups", // cúp ("cúp điện" vs "two cups")
+    "bow",  // bơ ("quả bơ" vs "take a bow")
+    "cow",  // cơ ("cơ hội" vs "milk cow")
+    "row",  // rơ ("rơ le" vs "next row")
+    "tow",  // tơ ("tơ lụa" vs "tow truck")
+    "mow",  // mơ ("ước mơ" vs "mow lawn")
+    "sow",  // sơ ("hồ sơ" vs "reap sow")
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanguageContext {
+    None,
+    Vietnamese,
+    English,
+}
+
 pub struct EnglishDict {
-    /// Common English words that shouldn't be converted to Vietnamese
-    words: HashSet<String>,
-    /// Words that are definitely Vietnamese (even if they look like English)
-    vietnamese_overrides: HashSet<String>,
+    words: HashSet<&'static str>,
+    unconditional_english_collisions: HashSet<&'static str>,
+    english_dominant_collisions: HashSet<&'static str>,
+    vietnamese_dominant_collisions: HashSet<&'static str>,
 }
 
 impl EnglishDict {
     pub fn new() -> Self {
-        let mut words = HashSet::new();
-
-        // Common English words that users type frequently
-        // These would trigger false Vietnamese conversions
-        let common_words = [
-            // Programming/tech
-            "the",
-            "and",
-            "for",
-            "are",
-            "but",
-            "not",
-            "you",
-            "all",
-            "can",
-            "had",
-            "her",
-            "was",
-            "one",
-            "our",
-            "out",
-            "day",
-            "get",
-            "has",
-            "him",
-            "his",
-            "how",
-            "its",
-            "may",
-            "new",
-            "now",
-            "old",
-            "see",
-            "way",
-            "who",
-            "did",
-            "does",
-            "each",
-            "from",
-            "have",
-            "here",
-            "just",
-            "like",
-            "long",
-            "look",
-            "made",
-            "make",
-            "many",
-            "most",
-            "over",
-            "such",
-            "take",
-            "than",
-            "them",
-            "then",
-            "that",
-            "this",
-            "time",
-            "very",
-            "when",
-            "what",
-            "will",
-            "with",
-            "also",
-            "back",
-            "been",
-            "call",
-            "came",
-            "come",
-            "could",
-            "does",
-            "done",
-            "down",
-            "each",
-            "even",
-            "find",
-            "first",
-            "from",
-            "give",
-            "goes",
-            "going",
-            "good",
-            "great",
-            "hand",
-            "have",
-            "head",
-            "help",
-            "high",
-            "home",
-            "hope",
-            "into",
-            "keep",
-            "know",
-            "last",
-            "left",
-            "life",
-            "like",
-            "line",
-            "live",
-            "look",
-            "made",
-            "make",
-            "many",
-            "mean",
-            "more",
-            "most",
-            "much",
-            "must",
-            "name",
-            "need",
-            "next",
-            "only",
-            "open",
-            "part",
-            "place",
-            "point",
-            "right",
-            "same",
-            "said",
-            "second",
-            "should",
-            "show",
-            "small",
-            "some",
-            "something",
-            "still",
-            "such",
-            "sure",
-            "take",
-            "tell",
-            "than",
-            "that",
-            "them",
-            "then",
-            "there",
-            "these",
-            "they",
-            "thing",
-            "think",
-            "this",
-            "those",
-            "time",
-            "turn",
-            "upon",
-            "very",
-            "want",
-            "well",
-            "went",
-            "were",
-            "what",
-            "when",
-            "where",
-            "which",
-            "while",
-            "will",
-            "with",
-            "work",
-            "would",
-            "year",
-            "your",
-            // Common words that conflict with Vietnamese
-            "ok",
-            "no",
-            "so",
-            "do",
-            "go",
-            "to",
-            "in",
-            "on",
-            "at",
-            "by",
-            "up",
-            "an",
-            "as",
-            "be",
-            "he",
-            "if",
-            "is",
-            "it",
-            "me",
-            "my",
-            "of",
-            "or",
-            "am",
-            "we",
-            "us",
-            "set",
-            "run",
-            "put",
-            "get",
-            "let",
-            "say",
-            "ask",
-            "try",
-            "use",
-            "add",
-            "end",
-            "few",
-            "far",
-            "got",
-            "big",
-            "off",
-            "old",
-            "own",
-            "red",
-            "hot",
-            "top",
-            "far",
-            "low",
-            "six",
-            "ten",
-            "red",
-            // Greetings & common
-            "hello",
-            "hi",
-            "hey",
-            "bye",
-            "thanks",
-            "thank",
-            "please",
-            "sorry",
-            "yes",
-            "yeah",
-            "no",
-            "ok",
-            "okay",
-            "sure",
-            "well",
-            "too",
-            "also",
-            // More common English
-            "about",
-            "after",
-            "again",
-            "being",
-            "below",
-            "between",
-            "both",
-            "came",
-            "come",
-            "could",
-            "does",
-            "done",
-            "down",
-            "each",
-            "even",
-            "find",
-            "first",
-            "from",
-            "give",
-            "goes",
-            "going",
-            "good",
-            "great",
-            "hand",
-            "have",
-            "head",
-            "help",
-            "high",
-            "home",
-            "hope",
-            "into",
-            "keep",
-            "kind",
-            "know",
-            "last",
-            "left",
-            "life",
-            "like",
-            "line",
-            "live",
-            "long",
-            "look",
-            "made",
-            "make",
-            "many",
-            "mean",
-            "more",
-            "most",
-            "much",
-            "must",
-            "name",
-            "need",
-            "next",
-            "only",
-            "open",
-            "part",
-            "place",
-            "point",
-            "right",
-            "same",
-            "said",
-            "second",
-            "should",
-            "show",
-            "small",
-            "some",
-            "something",
-            "still",
-            "sure",
-            "take",
-            "tell",
-            "than",
-            "that",
-            "them",
-            "then",
-            "there",
-            "these",
-            "they",
-            "thing",
-            "think",
-            "this",
-            "those",
-            "time",
-            "turn",
-            "upon",
-            "very",
-            "want",
-            "well",
-            "went",
-            "were",
-            "what",
-            "when",
-            "where",
-            "which",
-            "while",
-            "will",
-            "with",
-            "work",
-            "would",
-            "year",
-            "your",
-            "search",
-            "test",
-            "tests",
-            "this",
-            "that",
-            "these",
-            "those",
-            "there",
-            "their",
-            "tracking",
-            "track",
-            "defined",
-            "define",
-            "definition",
-            "intelligent",
-            "intel",
-            "system",
-            "input",
-            "output",
-            "method",
-            "user",
-            "users",
-            "request",
-            "requests",
-            "message",
-            "error",
-            "check",
-            "status",
-            "build",
-            "release",
-            "releases",
-            "cargo",
-            "rust",
-            "linux",
-            "wayland",
-            "hyprland",
-            "device",
-            "devices",
-            "driver",
-            "screen",
-            "window",
-            "server",
-            "client",
-            "service",
-            "services",
-            "config",
-            "configuration",
-            "file",
-            "files",
-            "directory",
-            "path",
-            "source",
-            "code",
-            "commit",
-            "branch",
-            "push",
-            "pull",
-            "fetch",
-            "merge",
-            "reset",
-            "type",
-            "types",
-            "typing",
-            "mode",
-            "modes",
-            "key",
-            "keys",
-            "press",
-            "event",
-            "events",
-            "loop",
-            "debug",
-            "info",
-            "warn",
-            "fail",
-            "failed",
-            "pass",
-            "passed",
-            "true",
-            "false",
-            "none",
-            "some",
-            "option",
-            "result",
-            "string",
-            "struct",
-            "trait",
-            "impl",
-            "async",
-            "await",
-            "spawn",
-            "thread",
-            "mutex",
-            "channel",
-            "state",
-            "engine",
-            "buffer",
-            "display",
-            "icon",
-            "tray",
-            "keyboard",
-            "pointer",
-            "interface",
-            "module",
-            "package",
-            "project",
-            "document",
-            "format",
-            "simple",
-            "complex",
-            "sentence",
-            "word",
-            "words",
-            "character",
-            "characters",
-            "letter",
-            "letters",
-            "number",
-            "numbers",
-            "symbol",
-            "space",
-            "shift",
-            "ctrl",
-            "alt",
-            "caps",
-            "lock",
-            "enter",
-            "escape",
-            "backspace",
-            "delete",
-            "online",
-            "offline",
-            "help",
-            "about",
-            "version",
-            "author",
-            "license",
-            "overview",
-            "summary",
-            "guide",
-            "example",
-            "reference",
-            "action",
-            "task",
-            "tasks",
-            "agent",
-            "prompt",
-            "update",
-            "create",
-            "remove",
-            "insert",
-            "clear",
-            "start",
-            "stop",
-            "restart",
-            "enable",
-            "disable",
-            "toggle",
-            "cycle",
-            "switch",
-            "select",
-            "choose",
-            "change",
-            "modify",
-            "save",
-            "load",
-            "open",
-            "close",
-            "read",
-            "write",
-            "send",
-            "recv",
-            "sync",
-            "diff",
-            "patch",
-            "unit",
-            "benchmark",
-            "suite",
-            "step",
-            "plan",
-            "execute",
-            "verify",
-            "walkthrough",
-            "context",
-            "history",
-            "session",
-            "terminal",
-            "console",
-            "browser",
-            "chat",
-            "query",
-            "table",
-            "list",
-            "item",
-            "items",
-            "value",
-            "values",
-            "name",
-            "names",
-            "desc",
-            "description",
-            "title",
-            "label",
-            "text",
-            "content",
-            "length",
-            "size",
-            "count",
-            "index",
-            "node",
-            "tree",
-            "graph",
-            "map",
-            "set",
-            "vec",
-            "array",
-            "object",
-            "json",
-            "toml",
-            "yaml",
-            "html",
-            "css",
-            "js",
-            "ts",
-            "rs",
-            "go",
-            "py",
-            "cpp",
-            "sh",
-        ];
-
-        for word in common_words {
-            words.insert(word.to_string());
-        }
-
-        let mut vietnamese_overrides = HashSet::new();
-        // Common Vietnamese words that look like English
-        let overrides = ["không", "xin", "chào", "cảm", "ơn", "tôi", "bạn"];
-        for word in overrides {
-            vietnamese_overrides.insert(word.to_string());
-        }
-
+        let words = COMMON_ENGLISH_WORDS_RAW
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
+        let unconditional_english_collisions =
+            UNCONDITIONAL_ENGLISH_COLLISIONS.iter().copied().collect();
+        let english_dominant_collisions = ENGLISH_DOMINANT_COLLISIONS.iter().copied().collect();
+        let vietnamese_dominant_collisions =
+            VIETNAMESE_DOMINANT_COLLISIONS.iter().copied().collect();
         Self {
             words,
-            vietnamese_overrides,
+            unconditional_english_collisions,
+            english_dominant_collisions,
+            vietnamese_dominant_collisions,
         }
     }
 
@@ -594,26 +108,241 @@ impl EnglishDict {
         self.words.contains(word)
     }
 
-    #[allow(dead_code)]
-    pub fn is_vietnamese_override(&self, word: &str) -> bool {
-        self.vietnamese_overrides.contains(word)
+    pub fn is_unconditional_english_collision(&self, raw_lower: &str) -> bool {
+        self.unconditional_english_collisions.contains(raw_lower)
     }
 
-    #[allow(dead_code)]
-    pub fn should_restore(&self, word: &str) -> bool {
-        if self.vietnamese_overrides.contains(word) {
-            return false;
+    pub fn is_english_dominant_collision(&self, raw_lower: &str) -> bool {
+        self.english_dominant_collisions.contains(raw_lower)
+    }
+
+    pub fn is_vietnamese_dominant_collision(&self, raw_lower: &str) -> bool {
+        self.vietnamese_dominant_collisions.contains(raw_lower)
+    }
+
+    /// Classify the language of a committed word to provide Gboard-style Bigram
+    /// momentum for the next word in the sentence while keeping unmarked bilingual
+    /// homographs (`con`, `in`, `me`, `may`, `to`, `a`, `an`, `do`, `ve`, `re`...)
+    /// context-preserving (`prior_context`) instead of flipping language momentum.
+    pub fn classify_committed_word_with_prior(
+        &self,
+        final_word: &str,
+        raw: &str,
+        prior_context: LanguageContext,
+    ) -> LanguageContext {
+        if final_word.is_empty() {
+            return LanguageContext::None;
         }
-        self.is_english_word(word)
+        if !final_word.is_ascii() {
+            return LanguageContext::Vietnamese;
+        }
+        // Standalone capitalized English pronoun `"I"` (`"I see"`, `"I own"`, `"I've"`)
+        if final_word == "I" && raw == "I" {
+            return LanguageContext::English;
+        }
+        let lower = final_word.to_ascii_lowercase();
+        let raw_lower = raw.to_ascii_lowercase();
+
+        // English contraction suffixes after `'` (`I've`, `we're`, `you'll`, `don't`, `it's`, `I'd`, `I'm`)
+        if matches!(lower.as_str(), "ve" | "re" | "ll" | "t" | "s" | "d" | "m")
+            && prior_context == LanguageContext::English
+        {
+            return LanguageContext::English;
+        }
+
+        let in_vn = crate::spelling::is_valid_vietnamese_syllable(&lower)
+            && crate::spelling::is_in_vietnamese_dictionary(&lower);
+        let in_en = self.is_english_word(&lower) || self.is_english_word(&raw_lower);
+
+        // Unmarked ASCII homographs valid in BOTH Vietnamese and English (`con`, `in`, `me`,
+        // `may`, `son`, `can`, `say`, `to`, `do`, `a`, `an`, `long`, `ban`...) are neutral
+        // carriers: preserve the active sentence context rather than hijacking it!
+        if in_vn && in_en {
+            return prior_context;
+        }
+        if in_vn && !in_en {
+            return LanguageContext::Vietnamese;
+        }
+        if in_en
+            || lower.chars().any(|c| matches!(c, 'f' | 'j' | 'w' | 'z'))
+            || !crate::spelling::is_valid_vietnamese_syllable(&lower)
+        {
+            return LanguageContext::English;
+        }
+        prior_context
     }
 
     #[allow(dead_code)]
-    pub fn add_word(&mut self, word: String) {
-        self.words.insert(word);
+    pub fn classify_committed_word(&self, final_word: &str, raw: &str) -> LanguageContext {
+        self.classify_committed_word_with_prior(final_word, raw, LanguageContext::None)
     }
+}
 
-    #[allow(dead_code)]
-    pub fn remove_word(&mut self, word: &str) {
-        self.words.remove(word);
+/// Detect alphanumeric technical identifiers in VNI/Telex (e.g. `u32`, `i64`, `f32`,
+/// `mp4`, `h264`, `x86`, `sha256`, `ec2`, `s3`, `v2`) that should restore to raw ASCII.
+pub fn is_alphanumeric_tech_token(raw: &str) -> bool {
+    let lower = raw.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "f32"
+            | "f64"
+            | "v1"
+            | "v2"
+            | "v3"
+            | "v4"
+            | "s3"
+            | "ec2"
+            | "mp3"
+            | "mp4"
+            | "h264"
+            | "h265"
+            | "x86"
+            | "x64"
+            | "arm64"
+            | "utf8"
+            | "utf16"
+            | "sha1"
+            | "sha256"
+            | "sha512"
+            | "base64"
+            | "md5"
+            | "ipv4"
+            | "ipv6"
+            | "http2"
+            | "http3"
+            | "web3"
+    ) {
+        return true;
     }
+    let chars: Vec<char> = lower.chars().collect();
+    if chars.len() >= 3
+        && chars[0].is_ascii_alphabetic()
+        && chars[1..].iter().all(|c| c.is_ascii_digit())
+        && chars[1] != chars[2]
+    {
+        return true;
+    }
+    false
+}
+
+/// Detect mixed internal uppercase tech casing (`"DDoS"`, `"GraphQL"`, `"PyTorch"`, `"iPhone"`, `"macOS"`)
+/// while preserving inverted-CapsLock Vietnamese (`"cHÀO"`, `"vIỆT"`) and early-Shift trailing
+/// Telex modifiers (`"chaoF"` -> `"chào"`, `"VieetJ"` -> `"Việt"`).
+pub fn has_mixed_internal_caps(raw: &str, composed: &str) -> bool {
+    let alpha: Vec<char> = raw.chars().filter(|c| c.is_alphabetic()).collect();
+    if alpha.len() < 3 {
+        return false;
+    }
+    // Inverted CapsLock (`cHAOF` -> `cHÀO`, `vIEETJ` -> `vIỆT`): first letter lowercase, all rest uppercase.
+    if alpha[0].is_lowercase() && alpha[1..].iter().all(|c| c.is_uppercase()) {
+        return false;
+    }
+    // Early-Shift on trailing Telex modifier (`chaoF` -> `chào`, `VieetJ` -> `Việt`):
+    // interior letters (`1..len-1`) are lowercase and the composed word has no internal uppercase!
+    if alpha[1..alpha.len() - 1].iter().all(|c| c.is_lowercase())
+        && alpha[alpha.len() - 1].is_uppercase()
+        && !composed.chars().skip(1).any(|c| c.is_uppercase())
+    {
+        return false;
+    }
+    alpha
+        .windows(2)
+        .any(|w| w[0].is_lowercase() && w[1].is_uppercase())
+}
+
+/// Detect natural English double-letter stems (`cheese`, `business`, `address`, `stuff`, `IEEE`)
+/// so a Telex double-key undo restores the eaten letter rather than truncating the word.
+pub fn has_natural_english_double(raw_lower: &str) -> bool {
+    if raw_lower == "ieee" {
+        return true;
+    }
+    let chars: Vec<char> = raw_lower.chars().collect();
+    if chars.windows(3).any(|w| w[0] == w[1] && w[1] == w[2]) {
+        return false;
+    }
+    if raw_lower.ends_with("less")
+        || raw_lower.ends_with("ness")
+        || raw_lower.ends_with("press")
+        || raw_lower.ends_with("gress")
+        || raw_lower.ends_with("cess")
+        || raw_lower.ends_with("pass")
+        || raw_lower.ends_with("class")
+        || raw_lower.ends_with("glass")
+        || raw_lower.ends_with("cross")
+        || raw_lower.ends_with("dress")
+        || raw_lower.ends_with("stress")
+        || raw_lower.ends_with("off")
+        || matches!(
+            raw_lower,
+            "ass"
+                | "bass"
+                | "boss"
+                | "brass"
+                | "chess"
+                | "css"
+                | "discuss"
+                | "floss"
+                | "gloss"
+                | "grass"
+                | "gross"
+                | "guess"
+                | "harass"
+                | "kiss"
+                | "lass"
+                | "loss"
+                | "mass"
+                | "mess"
+                | "miss"
+                | "moss"
+                | "possess"
+                | "rss"
+                | "swiss"
+                | "toss"
+                | "truss"
+                | "unless"
+                | "stuff"
+                | "staff"
+                | "stiff"
+                | "cliff"
+                | "bluff"
+                | "sniff"
+                | "buff"
+                | "cuff"
+                | "puff"
+                | "diff"
+                | "tariff"
+                | "sheriff"
+        )
+    {
+        return true;
+    }
+    if raw_lower.starts_with("passw")
+        || raw_lower.starts_with("class")
+        || raw_lower.starts_with("cross")
+        || raw_lower.starts_with("addr")
+        || raw_lower.starts_with("busin")
+    {
+        return true;
+    }
+    for i in 0..chars.len().saturating_sub(2) {
+        let c0 = chars[i];
+        let c1 = chars[i + 1];
+        let c2 = chars[i + 2];
+        if c0 == c1
+            && matches!(c0, 's' | 'f' | 'r')
+            && matches!(c2, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+        {
+            return true;
+        }
+    }
+    false
 }

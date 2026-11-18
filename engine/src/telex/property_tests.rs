@@ -219,7 +219,7 @@ fn allowed_free_order_permutations_converge_for_all_required_classes() {
             category: "nucleus-double",
             letters: "hoa",
             triggers: "s",
-            expected: "hoá",
+            expected: "hóa",
         },
         PermutationCase {
             id: "double-ie",

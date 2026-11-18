@@ -1,9 +1,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[allow(dead_code)]
 pub const FOCUS_UNKNOWN_COMPOSITION_TTL: Duration = Duration::from_millis(750);
+pub const OMNIBOX_SELECTION_TTL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusReliability {
@@ -53,6 +54,10 @@ pub struct FocusSnapshot {
     /// pollers (xdotool/XWayland, /proc) are then ignored: on Wayland they
     /// describe a stale X11 window, not the focused one.
     pub class_from_compositor: bool,
+    /// True when AT-SPI2 observed an active inline autocomplete selection after
+    /// the caret in a focused browser omnibox / autocomplete entry.
+    pub omnibox_inline_selection: bool,
+    pub omnibox_selection_at: Option<Instant>,
 }
 
 impl Default for FocusSnapshot {
@@ -65,6 +70,8 @@ impl Default for FocusSnapshot {
             generation_signal: Arc::new(AtomicU64::new(0)),
             reliability: FocusReliability::Unavailable,
             class_from_compositor: false,
+            omnibox_inline_selection: false,
+            omnibox_selection_at: None,
         }
     }
 }
@@ -88,6 +95,11 @@ impl FocusSnapshot {
         self.class = class.filter(|value| !value.is_empty());
     }
 
+    pub fn set_omnibox_inline_selection(&mut self, active: bool) {
+        self.omnibox_inline_selection = active;
+        self.omnibox_selection_at = active.then(Instant::now);
+    }
+
     pub fn observe_target(&mut self, target: Option<TargetIdentity>, class: Option<String>) {
         let class = class.filter(|value| !value.is_empty());
 
@@ -97,6 +109,8 @@ impl FocusSnapshot {
                     self.generation = self.generation.wrapping_add(1);
                     self.generation_signal
                         .store(self.generation, Ordering::Release);
+                    self.omnibox_inline_selection = false;
+                    self.omnibox_selection_at = None;
                 }
                 self.identity = target
                     .surface_or_window
@@ -108,6 +122,8 @@ impl FocusSnapshot {
             }
             None => {
                 self.class = class;
+                self.omnibox_inline_selection = false;
+                self.omnibox_selection_at = None;
                 self.reliability = FocusReliability::Unavailable;
             }
         }
@@ -115,6 +131,23 @@ impl FocusSnapshot {
 }
 
 pub type SharedFocusSnapshot = Arc<Mutex<FocusSnapshot>>;
+
+pub fn clear_omnibox_inline_selection(shared: &SharedFocusSnapshot) {
+    let mut focus = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    focus.omnibox_inline_selection = false;
+    focus.omnibox_selection_at = None;
+}
+
+pub fn take_omnibox_inline_selection(shared: &SharedFocusSnapshot) -> bool {
+    let mut focus = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let active = std::mem::replace(&mut focus.omnibox_inline_selection, false);
+    let ts = focus.omnibox_selection_at.take();
+    active && ts.is_some_and(|at| at.elapsed() <= OMNIBOX_SELECTION_TTL)
+}
 
 #[allow(dead_code)]
 pub fn should_expire_unknown_composition(

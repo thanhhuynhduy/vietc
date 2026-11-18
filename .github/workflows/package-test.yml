@@ -34,7 +34,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libdbus-1-dev libwayland-dev libxkbcommon-dev libx11-dev libxtst-dev
+          sudo apt-get install --yes libdbus-1-dev libevdev-dev libwayland-dev libx11-dev libxtst-dev
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -43,7 +43,7 @@ jobs:
         run: |
           python3 scripts/test_installer.py
           python3 scripts/test_build_targets.py
-          bash -n install.sh uninstall.sh packaging/build-tarball.sh packaging/release.sh
+          bash -n install.sh uninstall.sh packaging/build-tarball.sh packaging/release.sh packaging/deb/build-deb.sh
 
       - name: Build Debian package
         run: |

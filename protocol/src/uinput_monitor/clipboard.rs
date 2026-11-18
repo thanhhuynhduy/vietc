@@ -129,7 +129,7 @@ impl UinputInjector {
     }
 
     fn read_clipboard() -> Option<String> {
-        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
         let (prog, args): (&str, &[&str]) = if is_wayland {
             ("wl-paste", &["-n"])
         } else {
@@ -145,7 +145,7 @@ impl UinputInjector {
     }
 
     fn clipboard_types() -> Option<Vec<String>> {
-        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
         if !is_wayland {
             return None;
         }
@@ -237,7 +237,7 @@ impl UinputInjector {
         backspaces: usize,
         focus_generation: u64,
     ) -> bool {
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
             #[cfg(feature = "wayland-protocol")]
             return self.paste_via_wayland_clipboard(text, backspaces, focus_generation);
             #[cfg(not(feature = "wayland-protocol"))]
@@ -798,7 +798,7 @@ impl UinputInjector {
     }
 
     fn copy_to_clipboard(s: &str) -> bool {
-        let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
         let (prog, args): (&str, &[&str]) = if is_wayland {
             ("wl-copy", &[])
         } else {

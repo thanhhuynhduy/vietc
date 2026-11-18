@@ -72,6 +72,26 @@ pub trait KeyInjector {
         InjectResult::Success
     }
 
+    /// Whether the focused window is a bypassed game, VM, or remote desktop
+    /// whose key events (including held autorepeat `value == 2`) must go raw
+    /// through `/dev/uinput` rather than `zwp_virtual_keyboard_v1`.
+    fn set_bypass_mode(&self, _bypass: bool) -> InjectResult {
+        InjectResult::Success
+    }
+
+    /// True when replacements already isolate physical `Shift` internally via
+    /// Wayland virtual-keyboard modifier state, avoiding fake `Shift` key taps.
+    fn uses_virtual_keyboard(&self) -> bool {
+        false
+    }
+
+    /// Whether the focused input has an active inline autocomplete selection
+    /// after the caret (e.g., browser URL omnibox) that requires a forward
+    /// `Delete` before `BackSpace` replacement.
+    fn set_omnibox_inline_selection(&self, _active: bool) -> InjectResult {
+        InjectResult::Success
+    }
+
     fn bind_focus_generation(&self, _generation: Arc<AtomicU64>) -> InjectResult {
         InjectResult::Success
     }

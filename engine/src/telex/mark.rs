@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use super::raw::VowelMark;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -88,7 +89,6 @@ fn has_valid_vietnamese_onset(raw: &[char], consumed: &[bool]) -> bool {
             | "tr"
             | "v"
             | "x"
-            | "z"
     )
 }
 
@@ -122,11 +122,16 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
 
         if matches!(current, 'a' | 'e' | 'o') {
             let matching = (0..i).rev().find(|&j| {
-                lower(raw[j]) == current
+                !consumed[j]
+                    && lower(raw[j]) == current
                     && marks[j] == VowelMark::None
                     && raw[j + 1..i]
                         .iter()
                         .all(|&ch| matches!(lower(ch), 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
+                    && !(current == 'o'
+                        && raw[j + 1..i]
+                            .iter()
+                            .any(|&ch| matches!(lower(ch), 'a' | 'e')))
             });
             if let Some(j) = matching {
                 marks[j] = VowelMark::Circumflex;
@@ -152,18 +157,60 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             .collect();
 
         if let Some(&last) = candidates.first() {
-            if marks[last] != VowelMark::None && last + 1 < i {
-                continue;
+            // Handle `-ươu` triphthong (`huouw` -> `hươu`, `ruouwj` -> `rượu`, `buouws` -> `bướu`)
+            if lower(raw[last]) == 'u' && candidates.len() >= 3 {
+                let mid = candidates[1];
+                let first = candidates[2];
+                let is_qu_glide =
+                    first > 0 && lower(raw[first]) == 'u' && lower(raw[first - 1]) == 'q';
+                if lower(raw[mid]) == 'o' && lower(raw[first]) == 'u' && !is_qu_glide {
+                    marks[first] = VowelMark::Horn;
+                    marks[mid] = VowelMark::Horn;
+                    marks[last] = VowelMark::None;
+                    consumed[i] = true;
+                    continue;
+                }
             }
+
+            // Allow Gboard-style shape override (`aaw` -> `ă`, `oow` -> `ơ`) when adjacent,
+            // while avoiding overriding already-marked vowels across consonants.
+            if marks[last] != VowelMark::None {
+                let adjacent_to_mark = last + 1 == i || (last + 2 == i && consumed[last + 1]);
+                if !adjacent_to_mark {
+                    continue;
+                }
+            }
+
             let base = lower(raw[last]);
             if matches!(base, 'o' | 'a') {
                 if let Some(&before) = candidates.get(1) {
                     let is_qu_glide =
                         before > 0 && lower(raw[before]) == 'u' && lower(raw[before - 1]) == 'q';
                     if lower(raw[before]) == 'u' && !is_qu_glide {
-                        marks[before] = VowelMark::Horn;
                         if base == 'o' {
-                            marks[last] = VowelMark::Horn;
+                            let has_tail = (last + 1..raw.len()).any(|k| {
+                                !consumed[k]
+                                    && k != i
+                                    && !matches!(
+                                        lower(raw[k]),
+                                        's' | 'f' | 'r' | 'x' | 'j' | 'z' | 'w'
+                                    )
+                            });
+                            let onset: String = raw[..before]
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(k, &c)| (!consumed[k]).then_some(lower(c)))
+                                .collect();
+                            // Open `-uơ` words (`huơ`, `khuơ`, `thuở`) keep plain `u` + horned `ơ`;
+                            // closed syllables (`thương`, `đường`, `tưới`) mark both `ư` and `ơ`.
+                            if !has_tail && matches!(onset.as_str(), "h" | "kh" | "th") {
+                                marks[last] = VowelMark::Horn;
+                            } else {
+                                marks[before] = VowelMark::Horn;
+                                marks[last] = VowelMark::Horn;
+                            }
+                        } else {
+                            marks[before] = VowelMark::Horn;
                         }
                         consumed[i] = true;
                         continue;
@@ -180,6 +227,23 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         }
     }
 
+    // Also allow `awa` -> `â` and `owo` -> `ô` shape override when adjacent.
+    for i in 2..raw.len() {
+        if tone_undo_at.is_some_and(|undo_idx| i > undo_idx) {
+            break;
+        }
+        let cur = lower(raw[i]);
+        if matches!(cur, 'a' | 'o')
+            && lower(raw[i - 1]) == 'w'
+            && consumed[i - 1]
+            && lower(raw[i - 2]) == cur
+            && matches!(marks[i - 2], VowelMark::Breve | VowelMark::Horn)
+        {
+            marks[i - 2] = VowelMark::Circumflex;
+            consumed[i] = true;
+        }
+    }
+
     // Repeating an active Telex mark trigger cancels the transform. Preserve
     // one literal trigger while consuming the key that originally applied it.
     for trigger in ['a', 'e', 'o'] {
@@ -192,9 +256,11 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             && marks[positions[0]] == VowelMark::Circumflex
             && consumed[positions[1]]
         {
-            let target = positions[0];
-            letters[target] = raw[target];
-            marks[target] = VowelMark::None;
+            for &pos in &positions {
+                letters[pos] = raw[pos];
+                marks[pos] = VowelMark::None;
+            }
+            consumed[positions[0]] = false;
             consumed[positions[1]] = true;
             for &pos in &positions[2..] {
                 consumed[pos] = false;

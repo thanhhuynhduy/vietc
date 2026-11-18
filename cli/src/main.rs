@@ -106,7 +106,7 @@ fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
                             output.push_str(restored);
                         }
                         EngineEvent::AutoRestore(word) => {
-                            for _ in 0..word.len() {
+                            for _ in 0..word.chars().count() {
                                 output.push('\x08');
                             }
                             output.push_str(word);

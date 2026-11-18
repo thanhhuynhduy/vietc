@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 mod bamboo;
+mod bigram;
 mod engine;
+mod engine_helpers;
 mod english;
 pub mod event;
 mod input_method;
+mod ring_buffer;
 pub mod spelling;
 mod state;
 pub mod telex;

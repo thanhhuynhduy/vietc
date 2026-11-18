@@ -65,7 +65,7 @@ struct RuntimeScenario {
     timeout: Duration,
 }
 
-fn runtime_scenarios() -> [RuntimeScenario; 12] {
+fn runtime_scenarios() -> [RuntimeScenario; 11] {
     const COMPONENT_TIMEOUT: Duration = Duration::from_secs(5);
     const RUNTIME_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -112,11 +112,6 @@ fn runtime_scenarios() -> [RuntimeScenario; 12] {
         },
         RuntimeScenario {
             name: "clipboard-user-race",
-            tier: RuntimeTier::Deterministic,
-            timeout: COMPONENT_TIMEOUT,
-        },
-        RuntimeScenario {
-            name: "xrecord-lifecycle-and-framing",
             tier: RuntimeTier::Deterministic,
             timeout: COMPONENT_TIMEOUT,
         },
@@ -1312,73 +1307,6 @@ enum FakeDisplayServer {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum XRecordFixture {
-    Hang,
-    ExitEarly(i32),
-}
-
-fn run_xrecord_helper_fixture(
-    fixture: XRecordFixture,
-    timeout: Duration,
-) -> Result<std::process::ExitStatus, RuntimeCommandError> {
-    let mut command = std::process::Command::new("sh");
-    match fixture {
-        XRecordFixture::Hang => {
-            command.args(["-c", "sleep 5"]);
-        }
-        XRecordFixture::ExitEarly(code) => {
-            command.args(["-c", &format!("exit {code}")]);
-        }
-    }
-
-    let status = run_command_with_timeout(&mut command, timeout)?;
-    if status.success() {
-        Ok(status)
-    } else {
-        Err(RuntimeCommandError::ScenarioFailed)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RuntimeXRecordEvent {
-    keycode: u8,
-    pressed: bool,
-    state: u16,
-}
-
-#[derive(Debug, Default)]
-struct RuntimeXRecordDecoder {
-    pending: Vec<u8>,
-}
-
-impl RuntimeXRecordDecoder {
-    fn push(&mut self, bytes: &[u8]) -> Vec<RuntimeXRecordEvent> {
-        const FRAME_SIZE: usize = 8;
-
-        self.pending.extend_from_slice(bytes);
-        let mut events = Vec::new();
-        while self.pending.len() >= FRAME_SIZE {
-            let frame: Vec<u8> = self.pending.drain(..FRAME_SIZE).collect();
-            events.push(RuntimeXRecordEvent {
-                keycode: frame[0],
-                pressed: frame[1] != 0,
-                state: u16::from_ne_bytes([frame[2], frame[3]]),
-            });
-        }
-        events
-    }
-
-    fn pending_len(&self) -> usize {
-        self.pending.len()
-    }
-}
-
-fn xrecord_fixture_frame(keycode: u8, pressed: bool, state: u16) -> [u8; 8] {
-    let state = state.to_ne_bytes();
-    [keycode, u8::from(pressed), state[0], state[1], 0, 0, 0, 0]
-}
-
-#[derive(Clone, Copy, Debug)]
 struct ReplacementStep {
     backspaces: usize,
     text: &'static str,
@@ -1564,44 +1492,6 @@ fn deterministic_x11_missing_selection_request_times_out_with_failure() {
         "missing SelectionRequest must fail within the configured deadline"
     );
     assert!(selection.served_targets().is_empty());
-}
-
-#[test]
-fn deterministic_xrecord_helper_hang_is_timed_out_and_reaped() {
-    let started = std::time::Instant::now();
-    let result = run_xrecord_helper_fixture(XRecordFixture::Hang, Duration::from_millis(50));
-
-    assert_eq!(result, Err(RuntimeCommandError::TimedOut));
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "hung XRecord helper must be terminated within the configured deadline"
-    );
-}
-
-#[test]
-fn deterministic_xrecord_helper_early_exit_is_reported() {
-    let result = run_xrecord_helper_fixture(XRecordFixture::ExitEarly(23), Duration::from_secs(1));
-
-    assert_eq!(result, Err(RuntimeCommandError::ScenarioFailed));
-}
-
-#[test]
-fn deterministic_xrecord_partial_frames_survive_multiple_reads() {
-    let frame = xrecord_fixture_frame(42, true, 7);
-    let mut decoder = RuntimeXRecordDecoder::default();
-
-    assert!(decoder.push(&frame[..3]).is_empty());
-    let events = decoder.push(&frame[3..]);
-
-    assert_eq!(
-        events,
-        [RuntimeXRecordEvent {
-            keycode: 42,
-            pressed: true,
-            state: 7,
-        }]
-    );
-    assert_eq!(decoder.pending_len(), 0);
 }
 
 #[test]
@@ -2834,7 +2724,7 @@ fn runtime_command_timeout_kills_and_reaps_the_child() {
 #[test]
 fn runtime_scenario_catalog_separates_deterministic_and_privileged_coverage() {
     let catalog = runtime_scenarios();
-    assert_eq!(catalog.len(), 12);
+    assert_eq!(catalog.len(), 11);
     assert!(catalog
         .iter()
         .any(|scenario| scenario.name == "wayland-wtype-success"
@@ -5710,42 +5600,6 @@ fn wayland_wtype_success_is_observable_at_runtime() {
         .expect("Wayland runtime artifact must be persisted");
 }
 
-#[derive(Debug)]
-struct DirectUinputProtocolEvidence {
-    ping_response: String,
-    after_type: String,
-    after_paste: String,
-    after_backspace: String,
-    after_replace: String,
-    clipboard_preserved: bool,
-    modifiers_released: bool,
-}
-
-fn send_direct_uinput_command(
-    socket_path: &std::path::Path,
-    command: &str,
-    timeout: Duration,
-) -> Result<String, RuntimeCommandError> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-
-    let mut stream =
-        UnixStream::connect(socket_path).map_err(|_| RuntimeCommandError::PrerequisiteMissing)?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    writeln!(stream, "{command}").map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-
-    let mut response = String::new();
-    BufReader::new(stream)
-        .read_line(&mut response)
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    Ok(response.trim().to_string())
-}
-
 fn wait_for_controlled_browser_value(
     cdp: &mut CdpConnection,
     expected: &str,
@@ -5772,196 +5626,6 @@ fn wait_for_controlled_browser_value(
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-fn run_direct_uinput_protocol_scenario(
-    timeout: Duration,
-) -> Result<DirectUinputProtocolEvidence, RuntimeCommandError> {
-    let environment = RuntimeEnvironment::detect_current();
-    if !controlled_display_available(&environment) {
-        return Err(RuntimeCommandError::PrerequisiteMissing);
-    }
-
-    let runtime_dir =
-        std::env::var_os("XDG_RUNTIME_DIR").ok_or(RuntimeCommandError::PrerequisiteMissing)?;
-    let socket_path = std::path::PathBuf::from(runtime_dir)
-        .join("vietc")
-        .join("uinput.sock");
-    if !socket_path.exists() {
-        return Err(RuntimeCommandError::PrerequisiteMissing);
-    }
-
-    let target = RuntimeTargetKind::Chromium;
-    let executable = runtime_target_executable(target, &environment)
-        .ok_or(RuntimeCommandError::PrerequisiteMissing)?;
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or(RuntimeCommandError::ScenarioFailed)?;
-    let run_id = format!("direct-uinput-{}", std::process::id());
-    let fixture = ControlledRuntimeFixture::isolated(workspace_root, &run_id)
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    fixture
-        .prepare(workspace_root)
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    prepare_target_fixture(target, &fixture).map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    let flags = runtime_target_flags(target, &fixture, executable);
-
-    let stdout = std::fs::File::create(fixture.artifact_dir.join("application.stdout.log"))
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    let stderr = std::fs::File::create(fixture.artifact_dir.join("application.stderr.log"))
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-    let mut command = std::process::Command::new(executable);
-    command
-        .args(&flags)
-        .stdin(std::process::Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr);
-    let mut child = OwnedRuntimeChild::spawn(&mut command)?;
-
-    let trace_path = fixture.artifact_dir.join("direct-uinput-trace.txt");
-    let trace = |step: &str| {
-        use std::io::Write;
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&trace_path)
-        {
-            let _ = writeln!(file, "{step}");
-        }
-    };
-
-    let scenario_result = (|| {
-        trace("cdp-connect:start");
-        let mut cdp = connect_controlled_browser_cdp(&fixture, timeout)?;
-        trace("cdp-connect:done");
-        prepare_controlled_browser_target(&mut cdp)?;
-        trace("cdp-prepare:done");
-
-        let clipboard_snapshot = "vietc-direct-uinput-clipboard".to_string();
-        clipboard_write(&environment, &clipboard_snapshot, timeout)
-            .map_err(|_| RuntimeCommandError::ClipboardSnapshotFailed)?;
-        if clipboard_read(&environment, timeout)
-            .map_err(|_| RuntimeCommandError::ClipboardSnapshotFailed)?
-            != clipboard_snapshot
-        {
-            return Err(RuntimeCommandError::ClipboardSnapshotFailed);
-        }
-
-        trace("clipboard-seed:done");
-        prepare_controlled_browser_target(&mut cdp)?;
-        std::thread::sleep(Duration::from_millis(500));
-        trace("target-refocus:done");
-        let ping_response = send_direct_uinput_command(&socket_path, "PING", timeout)?;
-        trace("ping:done");
-        if ping_response != "PONG" {
-            return Err(RuntimeCommandError::ScenarioFailed);
-        }
-
-        if send_direct_uinput_command(&socket_path, "TYPE:hello", timeout)? != "OK" {
-            return Err(RuntimeCommandError::ScenarioFailed);
-        }
-        trace("type-command:done");
-        let after_type = wait_for_controlled_browser_value(
-            &mut cdp,
-            "hello",
-            timeout,
-            &fixture.artifact_dir.join("type-timeout.txt"),
-        )?;
-        trace("type-observation:done");
-
-        if send_direct_uinput_command(&socket_path, "PASTE: tiếng Việt", timeout)? != "OK" {
-            return Err(RuntimeCommandError::ScenarioFailed);
-        }
-        trace("paste-command:done");
-        let after_paste = wait_for_controlled_browser_value(
-            &mut cdp,
-            "hello tiếng Việt",
-            timeout,
-            &fixture.artifact_dir.join("paste-timeout.txt"),
-        )?;
-        trace("paste-observation:done");
-
-        if send_direct_uinput_command(&socket_path, "BACKSPACE:1", timeout)? != "OK" {
-            return Err(RuntimeCommandError::ScenarioFailed);
-        }
-        trace("backspace-command:done");
-        let after_backspace = wait_for_controlled_browser_value(
-            &mut cdp,
-            "hello tiếng Việ",
-            timeout,
-            &fixture.artifact_dir.join("backspace-timeout.txt"),
-        )?;
-        trace("backspace-observation:done");
-
-        if send_direct_uinput_command(&socket_path, "REPLACE:9:thời", timeout)? != "OK" {
-            return Err(RuntimeCommandError::ScenarioFailed);
-        }
-        trace("replace-command:done");
-        let after_replace = wait_for_controlled_browser_value(
-            &mut cdp,
-            "hello thời",
-            timeout,
-            &fixture.artifact_dir.join("replace-timeout.txt"),
-        )?;
-        trace("replace-observation:done");
-
-        clipboard_write(&environment, &clipboard_snapshot, timeout)
-            .map_err(|_| RuntimeCommandError::ClipboardRestoreFailed)?;
-        let clipboard_preserved = clipboard_read(&environment, timeout)
-            .map_err(|_| RuntimeCommandError::ClipboardVerificationFailed)?
-            == clipboard_snapshot;
-        let modifiers_released = verify_synthesized_modifiers_released(&environment, timeout)
-            .map_err(|_| RuntimeCommandError::ModifierReleaseFailed)?;
-
-        let evidence = DirectUinputProtocolEvidence {
-            ping_response,
-            after_type,
-            after_paste,
-            after_backspace,
-            after_replace,
-            clipboard_preserved,
-            modifiers_released,
-        };
-        std::fs::write(
-            fixture.artifact_dir.join("direct-uinput-protocol.txt"),
-            format!(
-                "ping={:?}\nafter_type={:?}\nafter_paste={:?}\nafter_backspace={:?}\nafter_replace={:?}\nclipboard_preserved={}\nmodifiers_released={}\n",
-                evidence.ping_response,
-                evidence.after_type,
-                evidence.after_paste,
-                evidence.after_backspace,
-                evidence.after_replace,
-                evidence.clipboard_preserved,
-                evidence.modifiers_released,
-            ),
-        )
-        .map_err(|_| RuntimeCommandError::ScenarioFailed)?;
-
-        let _ = cdp.command("Browser.close", serde_json::json!({}));
-        Ok(evidence)
-    })();
-
-    let teardown = child.terminate_and_reap(Duration::from_secs(5));
-    match (scenario_result, teardown) {
-        (Ok(evidence), Ok(())) => Ok(evidence),
-        (Err(error), _) => Err(error),
-        (_, Err(error)) => Err(error),
-    }
-}
-
-#[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, a running vietc-uinputd, Chromium, and a controlled Wayland session"]
-fn privileged_uinput_socket_commands_are_observable_end_to_end() {
-    let evidence = run_direct_uinput_protocol_scenario(Duration::from_secs(30))
-        .expect("direct uinput protocol scenario must complete");
-
-    assert_eq!(evidence.ping_response, "PONG");
-    assert_eq!(evidence.after_type, "hello");
-    assert_eq!(evidence.after_paste, "hello tiếng Việt");
-    assert_eq!(evidence.after_backspace, "hello tiếng Việ");
-    assert_eq!(evidence.after_replace, "hello thời");
-    assert!(evidence.clipboard_preserved);
-    assert!(evidence.modifiers_released);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

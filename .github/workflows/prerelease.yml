@@ -38,7 +38,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libdbus-1-dev libwayland-dev libxkbcommon-dev libx11-dev libxtst-dev
+          sudo apt-get install --yes libdbus-1-dev libevdev-dev libwayland-dev libx11-dev libxtst-dev
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -57,7 +57,7 @@ jobs:
 
       - name: Generate candidate metadata and checksums
         run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' engine/Cargo.toml | head -1)
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           LABEL="${{ inputs.label }}"
           LABEL="${LABEL:-next}"
           SHORT_SHA=$(git rev-parse --short=8 HEAD)

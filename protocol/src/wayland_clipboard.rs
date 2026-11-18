@@ -1,21 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! Scoped, immutable native Wayland clipboard source. Success means **PayloadServed**:
-//! an armed text request was fully written and its FD closed, NOT target insertion
-//! or proof the reader consumed bytes (they may still be buffered in the pipe).
-//! A clipboard manager requesting after arming is indistinguishable from a target.
-//! Arming uses a display-sync boundary; initiation means source-event dispatch,
-//! not an unknowable timestamp in another process. Pre-boundary sends never count.
-//! Wait timeout/focus loss does not restore, republish, or withdraw the selection;
-//! retain the offer to keep serving it. Drop aborts outstanding transfers and
-//! disconnects without restoring old data. After successful cleanup, retire instead:
-//! it rejects new requests and drains accepted transfers to their existing deadlines.
-//! request_retire() starts this without joining; retain the handle until is_finished().
-//! Transport errors report Unavailable promptly, then drain accepted pipes even
-//! without retirement. Only an explicit source Cancelled event reports Replaced.
-//! Only one seat is supported. Inherited WAYLAND_SOCKET connections are rejected
-//! rather than consumed or modified. Transfer FDs must be pipes or sockets
-//! (regular files cannot guarantee nonblocking writes). Transfers expire after 5s;
-//! new requests remain serviceable. No clipboard reads or keyboard commands occur.
+//! Scoped, immutable Wayland clipboard source. Success means **PayloadServed**
+//! (armed text request fully written and closed), never pre-arm or `x-kde-passwordManagerHint`.
+//! Timeout/focus loss leaves selection intact; retire drains accepted pipes while rejecting new ones.
 
 use std::{
     io,
@@ -38,7 +24,13 @@ use wayland_protocols_wlr::data_control::v1::client::*;
 
 const TICK: Duration = Duration::from_millis(20);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
-const MIMES: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];
+const SECRET_HINT_MIME: &str = "x-kde-passwordManagerHint";
+const MIMES: [&str; 4] = [
+    "text/plain;charset=utf-8",
+    "text/plain",
+    "UTF8_STRING",
+    SECRET_HINT_MIME,
+];
 
 /// Only an explicit source cancellation proves replacement. Other loss of
 /// observability is Unavailable: callers must not infer that restoring is safe.
@@ -57,21 +49,16 @@ pub(super) struct ClipboardOffer {
 
 impl ClipboardOffer {
     pub(super) fn publish(text: &str, timeout: Duration) -> io::Result<Self> {
-        // Check before allocating state, spawning, connecting, or changing selection.
         if unsafe { libc::getuid() } == 0 {
             return Err(err(
                 io::ErrorKind::PermissionDenied,
                 "clipboard source refuses root",
             ));
         }
-        let until = deadline(timeout)?;
-        // Return ownership before waiting so a publication timeout cannot
-        // discard the caller's only clipboard snapshot or a possibly live source.
-        Self::start(text, until, connect)
+        Self::start(text, deadline(timeout)?, connect)
     }
 
-    // The connector is injected only internally; tests use a socket pair, never
-    // the environment. Root rejection remains mandatory at the public entry.
+    // Internal-only connector for socket-pair wire tests; root check stays at publish().
     fn start(
         text: &str,
         until: Instant,
@@ -269,9 +256,8 @@ fn connect() -> io::Result<Connection> {
             "inherited WAYLAND_SOCKET is unsupported",
         ));
     }
-    let display = std::path::PathBuf::from(
-        std::env::var_os("WAYLAND_DISPLAY").unwrap_or_else(|| "wayland-0".into()),
-    );
+    let display = std::env::var_os("WAYLAND_DISPLAY").filter(|v| !v.is_empty());
+    let display = std::path::PathBuf::from(display.unwrap_or_else(|| "wayland-0".into()));
     let path = if display.is_absolute() {
         display
     } else {
@@ -785,19 +771,24 @@ mod transfer {
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if s.ownership != Ownership::Owned
-                || s.stop
-                || s.retire
-                || pending.len() >= MAX_TRANSFERS
-                || !matches!(
+            if s.ownership != Ownership::Owned || s.stop || s.retire {
+                return;
+            }
+            if mime == super::SECRET_HINT_MIME {
+                if let Ok(mut t) = Transfer::new(fd, false, Instant::now()) {
+                    let _ = t.step(b"secret");
+                }
+                return;
+            }
+            if pending.len() < MAX_TRANSFERS
+                && matches!(
                     mime,
                     "text/plain;charset=utf-8" | "text/plain" | "UTF8_STRING"
                 )
             {
-                return;
-            }
-            if let Ok(t) = Transfer::new(fd, s.armed, Instant::now()) {
-                pending.push(t);
+                if let Ok(t) = Transfer::new(fd, s.armed, Instant::now()) {
+                    pending.push(t);
+                }
             }
         }
         pub fn complete(&self, transfer: Transfer) {
@@ -1025,8 +1016,13 @@ mod tests {
         let (mut reader, fd) = pipe();
         let mut pending = Vec::new();
         shared.enqueue(fd, "image/png", &mut pending);
-        assert!(pending.is_empty());
-        assert_eq!(reader.read(&mut [0; 1]).unwrap(), 0);
+        assert!(pending.is_empty() && reader.read(&mut [0; 1]).unwrap() == 0);
+        let (mut hint_reader, hint_fd) = pipe();
+        shared.enqueue(hint_fd, super::SECRET_HINT_MIME, &mut pending);
+        let mut hint_buf = Vec::new();
+        hint_reader.read_to_end(&mut hint_buf).unwrap();
+        assert_eq!(hint_buf, b"secret");
+        assert!(pending.is_empty() && !shared.state.lock().unwrap().served);
         for mime in ["UTF8_STRING", "text/plain;charset=utf-8", "text/plain"] {
             shared
                 .state

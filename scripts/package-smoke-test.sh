@@ -21,8 +21,8 @@ docker run --rm \
         export DEBIAN_FRONTEND=noninteractive
 
         apt-get update
-        apt-get install --yes ca-certificates dbus ibus libdbus-1-3 libevdev2 \
-            libwayland-client0 libx11-6 libxtst6 libxkbcommon0 systemd
+        apt-get install --yes ca-certificates dbus libdbus-1-3 libevdev2 \
+            libwayland-client0 libx11-6 libxtst6 systemd
 
         dpkg-deb --info /artifacts/vietc.deb
         dpkg-deb --contents /artifacts/vietc.deb
@@ -31,12 +31,9 @@ docker run --rm \
 
         test -x /usr/bin/vietc-daemon
         test -x /usr/bin/vietc-cli
-        test -x /usr/bin/vietc-uinputd
-        test -x /usr/bin/vietcctl
         test -x /usr/bin/vietc-tray
         test -f /usr/lib/systemd/user/vietc.service
-        test -f /usr/share/ibus/component/vietc.xml
-        test -f /lib/udev/rules.d/99-vietc.rules
+        test -f /lib/udev/rules.d/70-vietc.rules
         test -f /etc/vietc/config.toml
 
         ldd /usr/bin/vietc-daemon >/dev/null
@@ -45,12 +42,9 @@ docker run --rm \
         dpkg --remove vietc
         test ! -e /usr/bin/vietc-daemon
         test ! -e /usr/bin/vietc-cli
-        test ! -e /usr/bin/vietc-uinputd
-        test ! -e /usr/bin/vietcctl
         test ! -e /usr/bin/vietc-tray
         test ! -e /usr/lib/systemd/user/vietc.service
-        test ! -e /usr/share/ibus/component/vietc.xml
-        test ! -e /lib/udev/rules.d/99-vietc.rules
+        test ! -e /lib/udev/rules.d/70-vietc.rules
 
         dpkg --purge vietc
         test ! -e /etc/vietc/config.toml

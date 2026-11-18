@@ -284,7 +284,7 @@ fn run_once(focus: SharedFocusSnapshot) -> Result<(), RunError> {
 /// Spawn the tracker thread. Silently ends when the compositor does not offer
 /// the toplevel protocols (AT-SPI and pointer reset still apply there).
 pub fn spawn_toplevel_focus_tracker(focus: SharedFocusSnapshot) {
-    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+    if std::env::var_os("WAYLAND_DISPLAY").is_none_or(|v| v.is_empty()) {
         return;
     }
     std::thread::spawn(move || loop {

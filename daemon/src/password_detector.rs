@@ -1,204 +1,94 @@
-use std::collections::HashMap;
+// SPDX-License-Identifier: MIT
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
-use dbus::arg::{RefArg, Variant};
-use dbus::blocking::{Connection, Proxy};
-use dbus::Path;
+pub const ROLE_PASSWORD_TEXT: i32 = 62;
 
-const ROLE_PASSWORD_TEXT: i32 = 62;
-type AtspiProperties = HashMap<String, Variant<Box<dyn RefArg>>>;
-type AtspiChildren = Vec<Variant<Box<dyn RefArg>>>;
+static ATSPI_OBSERVED_FOCUS: AtomicBool = AtomicBool::new(false);
+static ATSPI_FOCUSED_IS_PASSWORD: AtomicBool = AtomicBool::new(false);
+
+fn atspi_app_cache() -> &'static Mutex<Option<String>> {
+    static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Record the focused accessible node's role and owning application name from
+/// the background AT-SPI2 event watcher (`O(1)` direct query on `(sender, path)`
+/// with zero tree traversal and zero typing-thread latency, working at any DOM depth).
+pub fn record_atspi_focus_state(is_password: bool, app_name: Option<String>) {
+    ATSPI_FOCUSED_IS_PASSWORD.store(is_password, Ordering::Release);
+    ATSPI_OBSERVED_FOCUS.store(true, Ordering::Release);
+    if let Some(name) =
+        app_name.filter(|n| !n.is_empty() && n != "gnome-shell" && n != "gnome-shell.desktop")
+    {
+        if let Ok(mut guard) = atspi_app_cache().lock() {
+            *guard = Some(name);
+        }
+    }
+}
+
+/// Clear cached AT-SPI2 focus state if the accessibility bus disconnects.
+pub fn reset_atspi_focus_state() {
+    ATSPI_OBSERVED_FOCUS.store(false, Ordering::Release);
+    ATSPI_FOCUSED_IS_PASSWORD.store(false, Ordering::Release);
+    if let Ok(mut guard) = atspi_app_cache().lock() {
+        *guard = None;
+    }
+}
 
 pub struct PasswordDetector {
     cached: Option<bool>,
-    atspi_ok: bool,
 }
 
 impl PasswordDetector {
     pub fn new() -> Self {
-        Self {
-            cached: None,
-            atspi_ok: false,
-        }
+        Self { cached: None }
     }
 
+    /// Non-blocking `O(1)` check of the event-driven AT-SPI2 password state.
     pub fn check(&mut self) -> Option<bool> {
-        let r = self.check_atspi2();
-        self.atspi_ok = r.is_some();
-        if let Some(v) = r {
-            self.cached = Some(v);
+        if !ATSPI_OBSERVED_FOCUS.load(Ordering::Acquire) {
+            return None;
         }
-        r
+        let is_pw = ATSPI_FOCUSED_IS_PASSWORD.load(Ordering::Acquire);
+        self.cached = Some(is_pw);
+        Some(is_pw)
     }
+}
 
-    /// Get the AT-SPI2 accessibility bus address via session bus
-    fn get_a11y_bus_address() -> Option<String> {
-        let conn = Connection::new_session().ok()?;
-        let proxy = conn.with_proxy("org.a11y.Bus", "/org/a11y/bus", Duration::from_secs(2));
-        let (addr,): (String,) = proxy.method_call("org.a11y.Bus", "GetAddress", ()).ok()?;
-        Some(addr)
-    }
+pub fn get_focused_window_class_atspi() -> Option<String> {
+    atspi_app_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
 
-    fn check_atspi2(&self) -> Option<bool> {
-        // AT-SPI2 runs on its own private D-Bus (accessibility bus),
-        // NOT on the session bus. We must first get the a11y bus address.
-        let addr = Self::get_a11y_bus_address()?;
-        let conn = Connection::new_address(&addr).ok()?;
-        let timeout = Duration::from_secs(2);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let proxy = conn.with_proxy(
-            "org.a11y.atspi.Registry",
-            "/org/a11y/atspi/registry",
-            timeout,
+    #[test]
+    fn event_driven_password_detector_tracks_focus_transitions_without_blocking() {
+        reset_atspi_focus_state();
+        let mut detector = PasswordDetector::new();
+        assert_eq!(detector.check(), None);
+
+        record_atspi_focus_state(true, Some("microsoft-edge".to_string()));
+        assert_eq!(detector.check(), Some(true));
+        assert_eq!(
+            get_focused_window_class_atspi().as_deref(),
+            Some("microsoft-edge")
         );
 
-        let (bus_name, props, _children): (String, AtspiProperties, AtspiChildren) = proxy
-            .method_call("org.a11y.atspi.Registry", "GetFocus", ())
-            .ok()?;
+        record_atspi_focus_state(false, Some("gnome-shell".to_string()));
+        assert_eq!(detector.check(), Some(false));
+        // gnome-shell must not overwrite the last real focused application name
+        assert_eq!(
+            get_focused_window_class_atspi().as_deref(),
+            Some("microsoft-edge")
+        );
 
-        let path_variant = props.get("path")?;
-        let path_str = path_variant.0.as_str()?;
-
-        let acc_proxy = conn.with_proxy(&bus_name, path_str, timeout);
-
-        let (role,): (i32,) = acc_proxy
-            .method_call("org.a11y.atspi.Accessible", "GetRole", ())
-            .ok()?;
-
-        Some(role == ROLE_PASSWORD_TEXT)
+        reset_atspi_focus_state();
+        assert_eq!(detector.check(), None);
     }
-}
-
-/// AT-SPI2 state bit for the focused node (AccessibleState.FOCUSED = 12).
-const ATSPI_STATE_FOCUSED: u32 = 1 << 12;
-
-/// Cache for the (expensive) focused-window walk, refreshed at most once per
-/// ~900ms so the 250ms controller poll doesn't re-walk the whole a11y tree.
-fn atspi_cache() -> &'static Mutex<Option<(String, Instant)>> {
-    static C: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(None))
-}
-
-/// Identify the focused window on Wayland-native GNOME, where GNOME Shell
-/// `Eval` is gated off and the X11/xprop fallbacks cannot see the window.
-///
-/// The classic `Registry.GetFocus` method is absent on current AT-SPI2, so we
-/// descend the desktop accessibility tree looking for the node carrying the
-/// FOCUSED state and return its owning application's name (lower-cased).
-pub fn get_focused_window_class_atspi() -> Option<String> {
-    let now = Instant::now();
-    if let Ok(guard) = atspi_cache().lock() {
-        if let Some((ref name, ref t)) = *guard {
-            if now.duration_since(*t) < Duration::from_millis(900) {
-                return Some(name.clone());
-            }
-        }
-    }
-    let name = atspi_compute();
-    // On GNOME Wayland the shell's own window ("gnome-shell" / "Main stage")
-    // carries the FOCUSED bit while client windows do not, so the walk can
-    // only ever resolve to the shell here. Treat that as "unknown" rather than
-    // misreporting the app as `gnome-shell`. On setups where AT-SPI reports
-    // real client focus this returns the actual app name.
-    let name = name.filter(|n| n != "gnome-shell" && n != "gnome-shell.desktop");
-    if let Ok(mut guard) = atspi_cache().lock() {
-        *guard = name.as_ref().map(|n| (n.clone(), now));
-    }
-    name
-}
-
-fn atspi_compute() -> Option<String> {
-    let addr = PasswordDetector::get_a11y_bus_address()?;
-    let conn = Connection::new_address(&addr).ok()?;
-    let timeout = Duration::from_millis(150);
-
-    let root = Proxy::new(
-        "org.a11y.atspi.Registry",
-        "/org/a11y/atspi/accessible/root",
-        timeout,
-        &conn,
-    );
-
-    let (children,): (Vec<(String, Path)>,) = root
-        .method_call("org.a11y.atspi.Accessible", "GetChildren", ())
-        .ok()?;
-
-    let mut budget: u32 = 300;
-    for (bus, path) in children {
-        let bus_s: &str = bus.as_str();
-        let path_s = format!("{}", path);
-        let app_root = Proxy::new(bus_s, path_s.as_str(), timeout, &conn);
-        if let Some(name) = atspi_dfs(&conn, &app_root, 0, timeout, &mut budget) {
-            return Some(name);
-        }
-        if budget == 0 {
-            break;
-        }
-    }
-    None
-}
-
-fn atspi_dfs(
-    conn: &Connection,
-    proxy: &Proxy<'_, &Connection>,
-    depth: u32,
-    timeout: Duration,
-    budget: &mut u32,
-) -> Option<String> {
-    if depth > 7 || *budget == 0 {
-        return None;
-    }
-    *budget -= 1;
-
-    let states: Vec<u32> = match proxy.method_call("org.a11y.atspi.Accessible", "GetState", ()) {
-        Ok((s,)) => s,
-        Err(_) => Vec::new(),
-    };
-    if let Some(&first) = states.first() {
-        if first & ATSPI_STATE_FOCUSED != 0 {
-            if let Ok(((bus, app_path),)) = proxy.method_call::<((String, Path),), (), _, _>(
-                "org.a11y.atspi.Accessible",
-                "GetApplication",
-                (),
-            ) {
-                let bus_s: &str = bus.as_str();
-                let path_s = format!("{}", app_path);
-                let app_proxy = Proxy::new(bus_s, path_s.as_str(), timeout, conn);
-                if let Some(name) = atspi_name(&app_proxy) {
-                    return Some(name.to_lowercase());
-                }
-            }
-        }
-    }
-
-    let children: Vec<(String, Path)> =
-        match proxy.method_call("org.a11y.atspi.Accessible", "GetChildren", ()) {
-            Ok((c,)) => c,
-            Err(_) => Vec::new(),
-        };
-    for (bus, path) in children {
-        let bus_s: &str = bus.as_str();
-        let path_s = format!("{}", path);
-        let child = Proxy::new(bus_s, path_s.as_str(), timeout, conn);
-        if let Some(name) = atspi_dfs(conn, &child, depth + 1, timeout, budget) {
-            return Some(name);
-        }
-        if *budget == 0 {
-            break;
-        }
-    }
-    None
-}
-
-fn atspi_name(proxy: &Proxy<'_, &Connection>) -> Option<String> {
-    let (variant,): (Variant<Box<dyn RefArg>>,) = proxy
-        .method_call(
-            "org.freedesktop.DBus.Properties",
-            "Get",
-            ("org.a11y.atspi.Accessible", "Name"),
-        )
-        .ok()?;
-    let name: &str = variant.0.as_str()?;
-    Some(name.to_string())
 }

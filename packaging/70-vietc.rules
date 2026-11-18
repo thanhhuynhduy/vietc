@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: MIT
+# Grant active physical desktop seat access to /dev/uinput and /dev/input/event*
+# via systemd-logind uaccess ACLs (runs before 73-seat-late.rules; no input group needed).
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", GROUP="root", MODE="0600"
+SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess", GROUP="root", MODE="0600"

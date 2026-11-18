@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 /// It tracks the raw key stream and drops a key that *immediately* repeats the
 /// previous one (`vv` -> `v`, `oo` -> `o`, `44` -> `4`) **or** the one two
 /// positions back (`khk` -> `kh`). The two-back rule exists because some faulty
-/// keyboards/IBus setups deliver each keystroke twice with a one-event lag
+/// keyboards/firmware deliver each keystroke twice with a one-event lag
 /// (e.g. `khoa` arrives as `k h k h o h o a a`), which the consecutive-only
 /// rule cannot collapse.
 ///
@@ -31,8 +31,8 @@ impl DedupState {
         Self::default()
     }
 
-    /// Feed one key identified by `key_id` (an IBus keyval, a Wayland keycode,
-    /// or any other stable `u32`). `dedupable` must be true only for printable
+    /// Feed one key identified by `key_id` (an `evdev` keycode or any other
+    /// stable `u32`). `dedupable` must be true only for printable
     /// letters/digits/space; pass `false` for any key that should break the
     /// chain. `is_space` marks a space key (used so the two-back rule never
     /// collapses a legitimate space). `two_back` enables collapsing a key equal

@@ -7,12 +7,10 @@ MAX_NEW_FILE_LINES = 1_000
 EXISTING_LIMITS = {
     "daemon/src/app_state.rs": 1_239,
     "daemon/src/evdev_loop.rs": 1_402,
-    "daemon/src/ibus_engine.rs": 1_404,
     "protocol/src/uinput_monitor/clipboard.rs": 1_229,
     "protocol/src/wayland_clipboard.rs": 1_791,
-    "uinputd/src/main.rs": 1_285,
 }
-SOURCE_ROOTS = ("cli", "daemon", "engine", "protocol", "uinputd", "vietcctl")
+SOURCE_ROOTS = ("cli", "daemon", "engine", "protocol", "ui")
 
 
 def line_count(path: Path) -> int:

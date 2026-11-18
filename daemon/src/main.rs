@@ -14,24 +14,19 @@ mod evdev_loop;
 mod event;
 mod focus;
 mod focus_tracker;
-mod im_plan;
 mod inject;
+mod key_dedup;
 mod log;
 mod password_detector;
 mod pointer_watcher;
 mod signal;
 mod stdin;
+#[cfg(test)]
+mod toplevel_tracker_stub {}
+#[cfg(test)]
+mod office_stress_tests;
 #[cfg(feature = "wayland")]
 mod toplevel_tracker;
-mod wayland_im;
-
-#[cfg(feature = "x11")]
-mod x11_capture;
-
-mod controller;
-mod ibus_control;
-mod ibus_engine;
-mod key_dedup;
 
 use daemon::Daemon;
 use device::open_keyboard_devices;
@@ -41,46 +36,10 @@ use log::log_info;
 use signal::{ensure_single_instance, install_signal_handlers};
 use stdin::run_stdin_mode;
 
-/// Pin current thread to performance cores (0-3) and boost priority.
+/// Boost nice priority without hard-pinning CPU cores across heterogeneous topologies.
 fn boost_thread_priority() {
     unsafe {
-        libc::setpriority(libc::PRIO_PROCESS, 0, -10);
-
-        #[cfg(target_os = "linux")]
-        {
-            let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
-            for i in 0..4 {
-                libc::CPU_SET(i, &mut cpuset);
-            }
-            let ret = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &cpuset);
-            if ret == 0 {
-                eprintln!("[vietc] Pinned to P-cores 0-3, nice=-10");
-            } else {
-                eprintln!("[vietc] CPU pinning failed ({}), nice=-10 still set", ret);
-            }
-        }
-    }
-}
-
-/// Set when vietc stops a running IBus, so it can be restarted on exit.
-static IBUS_STOPPED: AtomicBool = AtomicBool::new(false);
-
-/// Restart IBus if vietc stopped it, restoring the user's previous input
-/// method when vietc quits. Best-effort; failures are ignored.
-fn restart_ibus() {
-    if IBUS_STOPPED.load(Ordering::SeqCst) {
-        match std::process::Command::new("ibus-daemon").arg("-d").status() {
-            Ok(_) => log_info("[vietc] restarted IBus"),
-            Err(e) => log_info(&format!("[vietc] could not restart IBus: {}", e)),
-        }
-    }
-}
-
-/// Restarts IBus on drop (i.e. when vietc exits cleanly via signal/return).
-struct IbusRestartGuard;
-impl Drop for IbusRestartGuard {
-    fn drop(&mut self) {
-        restart_ibus();
+        let _ = libc::setpriority(libc::PRIO_PROCESS, 0, -10);
     }
 }
 
@@ -95,8 +54,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(error) => return Err(error.into()),
     };
-    // Restart IBus on clean exit if we stopped it.
-    let _ibus_guard = IbusRestartGuard;
 
     recover_display_env();
     let config_path = config::find_config_path();
@@ -106,18 +63,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     daemon.write_status();
 
-    // Aux controller mode: Bamboo (or another external IBus engine) does the
-    // Vietnamese composition; vietc only switches the active IBus engine by
-    // focused app / password field. vietc registers no IBus component.
-    if daemon.config.controller_mode {
-        log_info("[vietc] Aux controller mode enabled");
-        return controller::run_controller(daemon);
-    }
-
     let display = display::detect_display_server();
     let compositor = display::detect_compositor();
 
-    log_info(&format!("Viet+ Daemon v{}", env!("CARGO_PKG_VERSION")));
+    log_info(&format!("VietC Daemon v{}", env!("CARGO_PKG_VERSION")));
     log_info(&format!(
         "Display: {:?} ({})",
         display,
@@ -137,73 +86,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     ));
 
-    // Native IBus engine mode: covers every app (incl. native-Wayland GNOME
-    // clients that vietc's capture paths cannot reach). Takes precedence over
-    // the capture paths and must NOT stop the running ibus-daemon.
-    //
-    // On Ubuntu GNOME Wayland (Mutter), zwp_input_method_v2 is unavailable
-    // (docs/wayland-rootless.md:55), so the compositor-approved path is IBus.
-    // We auto-enable it when `auto_ibus` is true — mirroring Funput's Linux
-    // strategy: be an IBus engine instead of fighting it with evdev/X11.
-    let should_use_ibus = crate::config::should_use_ibus_engine(&daemon.config);
-    if should_use_ibus {
-        if daemon.config.ibus_engine {
-            log_info("[vietc] IBus engine mode enabled (explicit)");
-        } else {
-            log_info("[vietc] IBus engine mode auto-enabled for GNOME Wayland (Ubuntu fix)");
-            log_info("[vietc] Set auto_ibus=false in config.toml to force legacy path");
-        }
-        let method = match daemon.config.input_method.as_str() {
-            "telex" => vietc_engine::InputMethod::Telex,
-            _ => vietc_engine::InputMethod::Vni,
-        };
-        match ibus_engine::run_ibus_engine(
-            method,
-            engine_enabled.clone(),
-            false,
-            daemon.config.deduplicate_keys,
-            daemon.config.deduplicate_two_back,
-            daemon.config.deduplicate_window_ms,
-        ) {
-            Ok(()) => {
-                log_info("[vietc] IBus engine session ended");
-                return Ok(());
-            }
-            Err(e) => log_info(&format!(
-                "[vietc] IBus engine failed ({}); falling back to capture paths",
-                e
-            )),
-        }
-    }
-
-    let display_var = std::env::var("DISPLAY").unwrap_or_default();
-    let xauth_var = std::env::var("XAUTHORITY").unwrap_or_default();
-    log_info(&format!(
-        "[vietc] DISPLAY='{}'  XAUTHORITY='{}'",
-        display_var, xauth_var
-    ));
-    if display_var.is_empty() && unsafe { libc::getuid() } == 0 {
-        log_info("[vietc] WARNING: DISPLAY not set — clipboard paste won't work");
-        log_info("[vietc] WARNING: start via vietc-tray (passes DISPLAY) or use sudo -E");
-    }
-    match std::process::Command::new("xdotool")
-        .args(["getactivewindow"])
-        .output()
-    {
-        Ok(output) => {
-            if output.status.success() {
-                let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                log_info(&format!("[vietc] xdotool OK: active window = {}", id));
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                log_info(&format!("[vietc] xdotool FAILED: {}", stderr.trim()));
-            }
-        }
-        Err(e) => {
-            log_info(&format!("[vietc] xdotool NOT AVAILABLE: {}", e));
-        }
-    }
-
     boost_thread_priority();
 
     let shared_focus = Arc::new(Mutex::new(focus::FocusSnapshot::default()));
@@ -220,28 +102,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let config_path = config_path.clone();
         let status_changed = status_changed.clone();
         let engine_enabled = engine_enabled.clone();
-        let mut last_modified = std::fs::metadata(&config_path)
+        let mut watched_config_path = config_path.clone();
+        let user_config_candidate = config::user_config_path();
+        let mut last_modified = std::fs::metadata(&watched_config_path)
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::now());
 
         thread::spawn(move || {
             let mut window_check_counter = 0;
-            let status_path = config_path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(|p| p.join("status"))
-                .or_else(|| dirs::config_dir().map(|d| d.join("vietc").join("status")))
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp/vietc-status"));
-            let method_path = config_path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(|p| p.join("method"))
-                .or_else(|| dirs::config_dir().map(|d| d.join("vietc").join("method")))
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp/vietc-method"));
+            let status_path = config::user_ipc_file_path("status");
+            let method_path = config::user_ipc_file_path("method");
             let mut last_method = String::new();
             loop {
-                let identity = app_state::get_active_window_id();
-                let class = app_state::get_focused_window_class();
+                if signal::SIGNAL_EXIT.load(Ordering::SeqCst) {
+                    break;
+                }
+                let (compositor_class, authoritative_id) = {
+                    let focus = shared_focus.lock().unwrap();
+                    let auth = matches!(
+                        &focus.identity,
+                        Some(existing)
+                            if existing.starts_with("atspi:") || existing.starts_with("toplevel:")
+                    );
+                    (focus.class_from_compositor, auth)
+                };
+                let identity = if authoritative_id {
+                    None
+                } else {
+                    app_state::get_active_window_id()
+                };
+                let class = if compositor_class {
+                    None
+                } else {
+                    app_state::get_focused_window_class()
+                };
                 let mut focus = shared_focus.lock().unwrap();
                 let previous_identity = focus.identity.clone();
                 let previous_generation = focus.generation;
@@ -291,7 +185,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 window_check_counter += 1;
                 if window_check_counter >= 6 {
                     window_check_counter = 0;
-                    if let Ok(metadata) = std::fs::metadata(&config_path) {
+                    if let Some(ref user_cfg) = user_config_candidate {
+                        if *user_cfg != watched_config_path && user_cfg.exists() {
+                            watched_config_path = user_cfg.clone();
+                            last_modified = std::time::UNIX_EPOCH;
+                        }
+                    }
+                    if let Ok(metadata) = std::fs::metadata(&watched_config_path) {
                         if let Ok(modified) = metadata.modified() {
                             if modified > last_modified {
                                 last_modified = modified;
@@ -306,9 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Primary engine: hardware keyboard interception via evdev + uinput.
-    // Handles all Wayland compositors (Hyprland, Sway, GNOME, KDE, River, etc.)
-    // and X11 seamlessly. Rootless when in `input` group.
+    // Pure evdev hardware keyboard interception + uinput injection.
     match open_keyboard_devices() {
         Ok(mut devices) => {
             match run_with_evdev(
@@ -328,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => {
                     log_info(&format!(
-                        "[vietc] evdev exited with error: {} — trying fallbacks",
+                        "[vietc] evdev exited with error: {} — falling back to stdin mode",
                         e
                     ));
                 }
@@ -339,53 +237,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Fallback on Wayland: compositor input-method protocol
-    #[cfg(feature = "wayland")]
-    if display == display::DisplayServer::Wayland {
-        match wayland_im::run_wayland_im(&daemon.config, engine_enabled.clone(), display) {
-            Ok(()) => {
-                log_info("[vietc] Wayland input method session ended");
-                return Ok(());
-            }
-            Err(e) => {
-                log_info(&format!(
-                    "[vietc] Wayland IM unavailable ({}), falling back",
-                    e
-                ));
-            }
-        }
-    }
-
-    // Fallback on X11: X11 keymap-based capture
-    #[cfg(feature = "x11")]
-    if std::env::var("DISPLAY").is_ok() {
-        log_info("[vietc] Trying X11 keymap-based capture (rootless via XWayland)");
-        match x11_capture::run_with_x11_keymap(
-            &mut daemon,
-            shared_focus.clone(),
-            config_changed.clone(),
-            status_changed.clone(),
-            engine_enabled.clone(),
-            display,
-        ) {
-            Ok(()) => {
-                log_info("[vietc] X11 keymap returned, falling through to stdin mode");
-            }
-            Err(e) => {
-                log_info(&format!(
-                    "[vietc] X11 keymap exited with error: {} — falling back",
-                    e
-                ));
-            }
-        }
-    }
-
-    log_info("[vietc] Running in stdin test mode");
+    log_info("[vietc] Running in stdin mode");
     run_stdin_mode(
         &mut daemon,
         shared_focus,
         config_changed,
         status_changed,
+        pointer_activity,
         engine_enabled,
         display,
     )?;

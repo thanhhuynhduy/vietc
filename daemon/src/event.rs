@@ -5,6 +5,7 @@ pub fn is_flush_char(ch: char) -> bool {
         ' ' | '\t'
             | '\n'
             | '\r'
+            | '\u{00A0}'
             | '.'
             | ','
             | '!'
@@ -37,12 +38,24 @@ pub fn is_flush_char(ch: char) -> bool {
             | '\''
             | '|'
             | '^'
+            | '—'
+            | '–'
+            | '…'
+            | '“'
+            | '”'
+            | '‘'
+            | '’'
+            | '«'
+            | '»'
     )
 }
 
 pub fn is_vn_control_key(method: &str, ch: char) -> bool {
     match method {
-        "telex" => matches!(ch.to_ascii_lowercase(), 'f' | 's' | 'r' | 'x' | 'j' | 'w'),
+        "telex" => matches!(
+            ch.to_ascii_lowercase(),
+            'f' | 's' | 'r' | 'x' | 'j' | 'w' | 'z'
+        ),
         "vni" => matches!(
             ch,
             '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0'
@@ -210,11 +223,58 @@ pub fn key_to_char(key: evdev::KeyCode) -> Option<char> {
         evdev::KeyCode::KEY_SEMICOLON => Some(';'),
         evdev::KeyCode::KEY_APOSTROPHE => Some('\''),
         evdev::KeyCode::KEY_GRAVE => Some('`'),
-        evdev::KeyCode::KEY_SLASH => Some('/'),
+        evdev::KeyCode::KEY_SLASH | evdev::KeyCode::KEY_KPSLASH => Some('/'),
+        evdev::KeyCode::KEY_KPASTERISK => Some('*'),
+        evdev::KeyCode::KEY_KPPLUS => Some('+'),
         evdev::KeyCode::KEY_BACKSPACE => Some('\x08'),
-        evdev::KeyCode::KEY_ENTER => Some('\n'),
+        evdev::KeyCode::KEY_ENTER | evdev::KeyCode::KEY_KPENTER => Some('\n'),
+        evdev::KeyCode::KEY_KPMINUS => Some('-'),
         _ => None,
     }
+}
+
+/// Keys that move the caret, toggle Insert/Overwrite mode, invoke function/menu
+/// actions, or emit NumLock-dependent keypad actions — always reset composition.
+pub fn is_navigation_or_control_key(key: evdev::KeyCode) -> bool {
+    matches!(
+        key,
+        evdev::KeyCode::KEY_LEFT
+            | evdev::KeyCode::KEY_RIGHT
+            | evdev::KeyCode::KEY_UP
+            | evdev::KeyCode::KEY_DOWN
+            | evdev::KeyCode::KEY_HOME
+            | evdev::KeyCode::KEY_END
+            | evdev::KeyCode::KEY_PAGEUP
+            | evdev::KeyCode::KEY_PAGEDOWN
+            | evdev::KeyCode::KEY_DELETE
+            | evdev::KeyCode::KEY_INSERT
+            | evdev::KeyCode::KEY_ESC
+            | evdev::KeyCode::KEY_TAB
+            | evdev::KeyCode::KEY_MENU
+            | evdev::KeyCode::KEY_F1
+            | evdev::KeyCode::KEY_F2
+            | evdev::KeyCode::KEY_F3
+            | evdev::KeyCode::KEY_F4
+            | evdev::KeyCode::KEY_F5
+            | evdev::KeyCode::KEY_F6
+            | evdev::KeyCode::KEY_F7
+            | evdev::KeyCode::KEY_F8
+            | evdev::KeyCode::KEY_F9
+            | evdev::KeyCode::KEY_F10
+            | evdev::KeyCode::KEY_F11
+            | evdev::KeyCode::KEY_F12
+            | evdev::KeyCode::KEY_KP0
+            | evdev::KeyCode::KEY_KP1
+            | evdev::KeyCode::KEY_KP2
+            | evdev::KeyCode::KEY_KP3
+            | evdev::KeyCode::KEY_KP4
+            | evdev::KeyCode::KEY_KP5
+            | evdev::KeyCode::KEY_KP6
+            | evdev::KeyCode::KEY_KP7
+            | evdev::KeyCode::KEY_KP8
+            | evdev::KeyCode::KEY_KP9
+            | evdev::KeyCode::KEY_KPDOT
+    )
 }
 
 #[cfg(test)]

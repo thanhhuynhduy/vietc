@@ -1,7 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["engine", "protocol", "daemon", "cli", "uinputd", "vietcctl"]
-exclude = ["ui", "vk"]
+members = ["engine", "protocol", "daemon", "cli"]
+exclude = ["ui"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
 
 [workspace.dependencies]
 vietc-engine = { path = "engine" }

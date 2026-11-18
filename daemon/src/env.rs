@@ -1,111 +1,170 @@
 use std::fs;
+use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 
 use crate::log::log_info;
 
-/// Recover the user's display environment (DISPLAY / XAUTHORITY /
-/// WAYLAND_DISPLAY / XDG_RUNTIME_DIR) into the daemon's own environment.
-///
-/// vietc is normally launched by the user's session (systemd --user + tray,
-/// possibly via setcap) but can also be launched with `sudo`. In either case
-/// the daemon's environment may be missing WAYLAND_DISPLAY, which makes the
-/// clipboard paste (`wl-copy`) fall back to `xclip` — and on a pure Wayland
-/// session with no X server that silently drops all Vietnamese (Unicode)
-/// output. We recover the variables from the owning user's processes in /proc.
+/// Discover an active Wayland compositor socket (`wayland-0`..`wayland-9` or `wayland-*`)
+/// inside `runtime_dir` (ignoring `.lock` files and non-sockets).
+pub fn find_wayland_socket_in_dir(runtime_dir: &Path) -> Option<String> {
+    for idx in 0..10 {
+        let name = format!("wayland-{idx}");
+        if fs::symlink_metadata(runtime_dir.join(&name))
+            .map(|m| m.file_type().is_socket())
+            .unwrap_or(false)
+        {
+            return Some(name);
+        }
+    }
+    let mut candidates: Vec<String> = fs::read_dir(runtime_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let file_type = entry.file_type().ok()?;
+            if !file_type.is_socket() {
+                return None;
+            }
+            let name = entry.file_name().into_string().ok()?;
+            (name.starts_with("wayland-") && !name.ends_with(".lock")).then_some(name)
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+/// Recover the user's display environment (`DISPLAY` / `XAUTHORITY` /
+/// `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`) into the daemon's own environment.
 pub fn recover_display_env() {
-    // Do not return early when DISPLAY is present. Wayland sessions commonly
-    // expose XWayland's DISPLAY to the systemd user manager while omitting
-    // WAYLAND_DISPLAY. COSMIC is one such case, and treating DISPLAY as a
-    // complete session environment prevents the native Wayland path from
-    // connecting to the compositor.
+    for key in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "XAUTHORITY",
+    ] {
+        if std::env::var_os(key).is_some_and(|v| v.is_empty()) {
+            std::env::remove_var(key);
+        }
+    }
 
     let target_uid: u32 = std::env::var("SUDO_UID")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or_else(|| unsafe { libc::getuid() });
 
-    if let Ok(entries) = fs::read_dir("/proc") {
-        'outer: for entry in entries.flatten() {
-            let name_s = entry.file_name().to_string_lossy().into_owned();
-            if !name_s.chars().all(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            #[cfg(target_os = "linux")]
-            {
-                use std::os::linux::fs::MetadataExt;
-                if let Ok(meta) = entry.metadata() {
-                    if meta.st_uid() != target_uid {
-                        continue;
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        let candidate = format!("/run/user/{target_uid}");
+        if Path::new(&candidate).is_dir() {
+            std::env::set_var("XDG_RUNTIME_DIR", &candidate);
+        }
+    }
+
+    let mut found_display: Option<String> = std::env::var("DISPLAY").ok().filter(|v| !v.is_empty());
+    let mut found_xauth: Option<String> =
+        std::env::var("XAUTHORITY").ok().filter(|v| !v.is_empty());
+    let mut found_wayland: Option<String> = std::env::var("WAYLAND_DISPLAY")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let mut found_xdg: Option<String> = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|v| !v.is_empty());
+
+    if (found_display.is_none() || found_wayland.is_none()) && Path::new("/proc").is_dir() {
+        if let Ok(entries) = fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let name_s = entry.file_name().to_string_lossy().into_owned();
+                if !name_s.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::linux::fs::MetadataExt;
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.st_uid() != target_uid {
+                            continue;
+                        }
                     }
                 }
-            }
-            let environ_path = entry.path().join("environ");
-            if let Ok(content) = fs::read(&environ_path) {
-                let mut display = None;
-                let mut xauth = None;
-                let mut wayland_display = None;
-                let mut xdg_runtime_dir = None;
+                let Ok(content) = fs::read(entry.path().join("environ")) else {
+                    continue;
+                };
                 for chunk in content.split(|&b| b == 0) {
-                    if let Ok(s) = std::str::from_utf8(chunk) {
+                    let Ok(s) = std::str::from_utf8(chunk) else {
+                        continue;
+                    };
+                    if found_display.is_none() {
                         if let Some(v) = s.strip_prefix("DISPLAY=") {
                             if !v.is_empty() {
-                                display = Some(v.to_string());
+                                found_display = Some(v.to_string());
                             }
                         }
+                    }
+                    if found_xauth.is_none() {
                         if let Some(v) = s.strip_prefix("XAUTHORITY=") {
-                            xauth = Some(v.to_string());
+                            if !v.is_empty() {
+                                found_xauth = Some(v.to_string());
+                            }
                         }
+                    }
+                    if found_wayland.is_none() {
                         if let Some(v) = s.strip_prefix("WAYLAND_DISPLAY=") {
                             if !v.is_empty() {
-                                wayland_display = Some(v.to_string());
+                                found_wayland = Some(v.to_string());
                             }
                         }
+                    }
+                    if found_xdg.is_none() {
                         if let Some(v) = s.strip_prefix("XDG_RUNTIME_DIR=") {
                             if !v.is_empty() {
-                                xdg_runtime_dir = Some(v.to_string());
+                                found_xdg = Some(v.to_string());
                             }
                         }
                     }
                 }
-                if let Some(ref d) = display {
-                    std::env::set_var("DISPLAY", d);
-                    if let Some(ref x) = xauth {
-                        std::env::set_var("XAUTHORITY", x);
-                    }
-                    log_info(&format!("[vietc] Recovered DISPLAY={} from /proc", d));
-                }
-                if let Some(ref w) = wayland_display {
-                    std::env::set_var("WAYLAND_DISPLAY", w);
-                    log_info(&format!(
-                        "[vietc] Recovered WAYLAND_DISPLAY={} from /proc",
-                        w
-                    ));
-                }
-                if let Some(ref r) = xdg_runtime_dir {
-                    std::env::set_var("XDG_RUNTIME_DIR", r);
-                    log_info(&format!(
-                        "[vietc] Recovered XDG_RUNTIME_DIR={} from /proc",
-                        r
-                    ));
-                }
-                if display.is_some() || wayland_display.is_some() {
-                    break 'outer;
+                if found_display.is_some() && found_wayland.is_some() && found_xdg.is_some() {
+                    break;
                 }
             }
         }
     }
 
-    // Fall back to the standard Wayland socket name inside the user's runtime
-    // dir when WAYLAND_DISPLAY wasn't explicit but the socket exists.
-    if std::env::var("WAYLAND_DISPLAY")
-        .map(|v| v.is_empty())
-        .unwrap_or(true)
-    {
-        if let Ok(x) = std::env::var("XDG_RUNTIME_DIR") {
-            let sock = Path::new(&x).join("wayland-0");
-            if sock.exists() {
-                std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
-                log_info("[vietc] Recovered WAYLAND_DISPLAY=wayland-0 from XDG_RUNTIME_DIR");
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        if let Some(ref r) = found_xdg {
+            std::env::set_var("XDG_RUNTIME_DIR", r);
+            log_info(&format!(
+                "[vietc] Recovered XDG_RUNTIME_DIR={} from /proc",
+                r
+            ));
+        }
+    }
+    if std::env::var_os("DISPLAY").is_none() {
+        if let Some(ref d) = found_display {
+            std::env::set_var("DISPLAY", d);
+            log_info(&format!("[vietc] Recovered DISPLAY={} from /proc", d));
+        }
+    }
+    if std::env::var_os("XAUTHORITY").is_none() {
+        if let Some(ref x) = found_xauth {
+            std::env::set_var("XAUTHORITY", x);
+        }
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        if let Some(ref w) = found_wayland {
+            std::env::set_var("WAYLAND_DISPLAY", w);
+            log_info(&format!(
+                "[vietc] Recovered WAYLAND_DISPLAY={} from /proc",
+                w
+            ));
+        }
+    }
+
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        if let Ok(xdg_dir) = std::env::var("XDG_RUNTIME_DIR") {
+            if let Some(sock_name) = find_wayland_socket_in_dir(Path::new(&xdg_dir)) {
+                std::env::set_var("WAYLAND_DISPLAY", &sock_name);
+                log_info(&format!(
+                    "[vietc] Recovered WAYLAND_DISPLAY={} from XDG_RUNTIME_DIR",
+                    sock_name
+                ));
             }
         }
     }
@@ -114,10 +173,8 @@ pub fn recover_display_env() {
 }
 
 pub fn recover_dbus_env() {
-    if let Ok(d) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
-        if !d.is_empty() {
-            return;
-        }
+    if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some_and(|v| !v.is_empty()) {
+        return;
     }
     let target_uid: u32 = std::env::var("SUDO_UID")
         .ok()
@@ -151,7 +208,7 @@ pub fn recover_dbus_env() {
                             }
                         }
                         if let Some(val) = var.strip_prefix("XDG_RUNTIME_DIR=") {
-                            if !val.is_empty() {
+                            if !val.is_empty() && std::env::var_os("XDG_RUNTIME_DIR").is_none() {
                                 std::env::set_var("XDG_RUNTIME_DIR", val);
                             }
                         }
@@ -167,5 +224,24 @@ pub fn recover_dbus_env() {
             std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &addr);
             log_info("[vietc] Set DBUS_SESSION_BUS_ADDRESS from XDG_RUNTIME_DIR/bus");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_wayland_socket_in_dir;
+    use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn discovers_wayland_1_socket_and_ignores_lock_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("wayland-0"), b"not-a-socket").unwrap();
+        std::fs::write(dir.path().join("wayland-1.lock"), b"").unwrap();
+        let _listener = UnixListener::bind(dir.path().join("wayland-1")).unwrap();
+
+        assert_eq!(
+            find_wayland_socket_in_dir(dir.path()).as_deref(),
+            Some("wayland-1")
+        );
     }
 }

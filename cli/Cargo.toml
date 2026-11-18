@@ -1,9 +1,9 @@
 [package]
 name = "vietc-cli"
-version = "0.1.7"
-edition = "2021"
-description = "Viet+ CLI Test Harness"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+description = "VietC CLI Test Harness"
+license.workspace = true
 
 [dependencies]
-vietc-engine = { path = "../engine" }
+vietc-engine.workspace = true

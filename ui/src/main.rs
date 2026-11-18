@@ -7,7 +7,6 @@ mod config;
 mod tray;
 
 static DAEMON_PID: AtomicI32 = AtomicI32::new(0);
-static SUDO_MONITOR_PID: AtomicI32 = AtomicI32::new(0);
 static STOPPING: AtomicBool = AtomicBool::new(false);
 static LAUNCH_LOCK: Mutex<()> = Mutex::new(());
 
@@ -18,120 +17,37 @@ fn exe_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/usr/bin"))
 }
 
-fn find_sibling_binary(name: &str) -> String {
+fn find_daemon_binary() -> String {
+    for candidate in [
+        "/usr/bin/vietc-daemon",
+        "/usr/bin/vietc",
+        "/usr/local/bin/vietc-daemon",
+        "/usr/local/bin/vietc",
+        "/app/bin/vietc-daemon",
+    ] {
+        if std::path::Path::new(candidate).exists() {
+            return candidate.to_string();
+        }
+    }
     let dir = exe_dir();
-    // Try exact name (e.g. "vietc" outside Flatpak)
-    let sibling = dir.join(name);
-    if sibling.exists() {
-        return sibling.to_string_lossy().into_owned();
+    for candidate in [dir.join("vietc-daemon"), dir.join("vietc")] {
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
     }
-    // Try name-daemon (e.g. "vietc-daemon" inside Flatpak)
-    let daemon = dir.join(format!("{}-daemon", name));
-    if daemon.exists() {
-        return daemon.to_string_lossy().into_owned();
-    }
-    name.to_string()
+    "vietc-daemon".to_string()
 }
 
 fn is_daemon_running() -> bool {
-    // Check both "vietc" (outside Flatpak) and "vietc-daemon" (inside Flatpak)
+    let uid = unsafe { libc::getuid() }.to_string();
     let check = |name: &str| -> bool {
         std::process::Command::new("pgrep")
-            .arg("-x")
-            .arg(name)
+            .args(["-u", &uid, "-x", name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
     };
     check("vietc") || check("vietc-daemon")
-}
-
-fn is_flatpak() -> bool {
-    std::env::var("FLATPAK_ID").is_ok() || std::path::Path::new("/app/bin").exists()
-}
-
-fn needs_root() -> bool {
-    if is_flatpak() {
-        // Inside Flatpak the sandbox already has device access; sudo won't work.
-        return false;
-    }
-    // Check if we can access /dev/uinput directly (user in input group or has ACL)
-    let uinput = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/uinput");
-    if uinput.is_ok() {
-        return false; // Can grab + inject without root
-    }
-    let cfg = config::Config::load();
-    cfg.grab
-}
-
-/// Show a password prompt using available desktop tools.
-/// Returns the password, or empty string if cancelled.
-fn prompt_password() -> String {
-    let title = "Viet+";
-    let msg = "Viet+ needs root privileges to capture keyboard input.\nPlease enter your password:";
-
-    // Try zenity (GNOME)
-    if let Ok(output) = std::process::Command::new("zenity")
-        .args(["--password", "--title", title, "--text", msg])
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if output.status.success() {
-            let pw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !pw.is_empty() {
-                return pw;
-            }
-        }
-    }
-
-    // Try kdialog (KDE)
-    if let Ok(output) = std::process::Command::new("kdialog")
-        .args(["--password", msg])
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if output.status.success() {
-            let pw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !pw.is_empty() {
-                return pw;
-            }
-        }
-    }
-
-    // Try ssh-askpass (X11 fallback)
-    if let Ok(output) = std::process::Command::new("ssh-askpass")
-        .arg(msg)
-        .stderr(std::process::Stdio::null())
-        .output()
-    {
-        if output.status.success() {
-            let pw = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !pw.is_empty() {
-                return pw;
-            }
-        }
-    }
-
-    // Last resort: terminal prompt
-    eprintln!("{}", msg);
-    if let Ok(child) = std::process::Command::new("sh")
-        .arg("-c")
-        .arg("read -s -p 'Password: ' pw && echo \"$pw\"")
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Ok(output) = child.wait_with_output() {
-            if output.status.success() {
-                return String::from_utf8_lossy(&output.stdout).trim().to_string();
-            }
-        }
-    }
-
-    String::new()
 }
 
 fn reap_in_background(
@@ -141,21 +57,13 @@ fn reap_in_background(
     std::thread::spawn(move || on_exit(child.wait()))
 }
 
-fn supervise_daemon(child: std::process::Child, fallback: Option<String>) {
-    // Track sudo's monitor, which relays signals to its privileged command.
+fn supervise_daemon(child: std::process::Child) {
     let pid = child.id() as i32;
     DAEMON_PID.store(pid, Ordering::SeqCst);
-    if fallback.is_some() {
-        SUDO_MONITOR_PID.store(pid, Ordering::SeqCst);
-    }
     reap_in_background(child, move |result| {
         let _ = DAEMON_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
-        let _ = SUDO_MONITOR_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
         if !result.is_ok_and(|status| status.success()) {
-            eprintln!("[vietc-tray] Daemon exited unsuccessfully");
-            if let Some(binary) = fallback {
-                launch_unprivileged(&binary);
-            }
+            eprintln!("[vietc-tray] Supervised daemon exited unsuccessfully");
         }
     });
 }
@@ -164,118 +72,50 @@ fn launch_unprivileged(binary: &str) {
     let _launch = LAUNCH_LOCK.lock().unwrap();
     if !STOPPING.load(Ordering::SeqCst) {
         match std::process::Command::new(binary).spawn() {
-            Ok(child) => supervise_daemon(child, None),
+            Ok(child) => supervise_daemon(child),
             Err(error) => eprintln!("[vietc-tray] Could not start daemon: {error}"),
         }
     }
 }
 
+fn try_start_systemd_user_service() -> bool {
+    let ok = std::process::Command::new("systemctl")
+        .args(["--user", "start", "vietc.service"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if ok {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        return is_daemon_running();
+    }
+    false
+}
+
 fn start_daemon() {
-    let daemon_bin = find_sibling_binary("vietc");
-
-    if needs_root() && !is_daemon_running() {
-        let password = prompt_password();
-        if password.is_empty() {
-            eprintln!("[vietc-tray] No password provided, starting daemon without root");
-            launch_unprivileged(&daemon_bin);
-        } else {
-            // Start daemon with sudo, explicitly passing display/auth environment variables
-            let display = std::env::var("DISPLAY").unwrap_or_default();
-            let xauthority = std::env::var("XAUTHORITY").unwrap_or_default();
-            let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
-
-            let mut args = vec!["-S".to_string()];
-            if !display.is_empty() {
-                args.push(format!("DISPLAY={}", display));
-            }
-            if !xauthority.is_empty() {
-                args.push(format!("XAUTHORITY={}", xauthority));
-            }
-            if !wayland_display.is_empty() {
-                args.push(format!("WAYLAND_DISPLAY={}", wayland_display));
-            }
-            args.push(daemon_bin.clone());
-
-            let mut child = match std::process::Command::new("sudo")
-                .args(&args)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("[vietc-tray] Failed to start daemon with sudo: {}", e);
-                    eprintln!(
-                        "[vietc-tray] Try: sudo setcap cap_sys_admin+ep $(which vietc-daemon)"
-                    );
-                    eprintln!("[vietc-tray] Or start manually: sudo vietc-daemon &");
-                    launch_unprivileged(&daemon_bin);
-                    return;
-                }
-            };
-
-            if let Some(mut stdin) = child.stdin.take() {
-                use std::io::Write;
-                let _ = stdin.write_all(format!("{}\n", password).as_bytes());
-            }
-            // No persistent "first launch" flag: starting sudo grants no
-            // device permissions to future unprivileged daemon instances.
-            supervise_daemon(child, Some(daemon_bin));
-        }
+    if is_daemon_running() {
         return;
     }
-
-    if !is_daemon_running() {
-        eprintln!("[vietc-tray] Starting daemon: {}", daemon_bin);
-        launch_unprivileged(&daemon_bin);
+    // Prefer systemd user service (`vietc.service`) so closing the optional tray
+    // icon never interrupts typing, and Wayland/AT-SPI/uaccess stay in user session.
+    if try_start_systemd_user_service() {
+        eprintln!("[vietc-tray] Attached to systemd user service vietc.service");
+        return;
     }
-}
-
-fn process_tree(root: i32) -> Vec<i32> {
-    let mut processes = vec![root];
-    let mut index = 0;
-    while index < processes.len() && processes.len() < 256 {
-        let pid = processes[index];
-        if let Ok(children) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
-            for child in children
-                .split_whitespace()
-                .filter_map(|pid| pid.parse::<i32>().ok())
-            {
-                if child > 0 && !processes.contains(&child) {
-                    processes.push(child);
-                }
-            }
-        }
-        index += 1;
-    }
-    processes.reverse(); // Terminate commands before their signal relays.
-    processes
-}
-
-fn privileged_kill_command(targets: &[i32]) -> std::process::Command {
-    let mut command = std::process::Command::new("sudo");
-    command.args(["-n", "/bin/kill", "-KILL", "--"]);
-    command.args(targets.iter().filter(|pid| **pid > 0).map(i32::to_string));
-    command
+    let daemon_bin = find_daemon_binary();
+    eprintln!("[vietc-tray] Starting unprivileged daemon: {}", daemon_bin);
+    launch_unprivileged(&daemon_bin);
 }
 
 pub fn stop_daemon() {
     STOPPING.store(true, Ordering::SeqCst);
     let _launch = LAUNCH_LOCK.lock().unwrap();
     let pid = DAEMON_PID.load(Ordering::SeqCst);
+    // Only stop a daemon directly spawned by this tray process (`DAEMON_PID > 0`).
+    // Never `pkill` a `vietc.service` instance managed by systemd.
     if pid > 0 {
-        eprintln!("[vietc-tray] Stopping daemon (PID {})", pid);
-        let privileged = SUDO_MONITOR_PID.load(Ordering::SeqCst) == pid;
-        let targets = if privileged {
-            process_tree(pid)
-        } else {
-            Vec::new()
-        };
+        eprintln!("[vietc-tray] Stopping tray-spawned daemon (PID {})", pid);
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
-        // Wait up to 2s for graceful exit
         for _ in 0..20 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             if unsafe { libc::kill(pid, 0) } != 0 {
@@ -283,38 +123,27 @@ pub fn stop_daemon() {
                 return;
             }
         }
-        // SIGKILL cannot be forwarded by sudo. Escalate against the entire
-        // captured command tree with cached authorization, never just the relay.
-        if privileged {
-            if !privileged_kill_command(&targets)
-                .status()
-                .is_ok_and(|status| status.success())
-            {
-                eprintln!("[vietc-tray] Could not terminate privileged daemon; administrator cleanup is required");
-            }
-        } else {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
         }
-        return;
-    }
-
-    // Fallback: pkill both possible names
-    eprintln!("[vietc-tray] Stopping daemon via pkill");
-    for name in &["vietc-daemon", "vietc"] {
-        let _ = std::process::Command::new("pkill")
-            .arg("-x")
-            .arg(name)
-            .status();
     }
 }
 
 fn ensure_single_instance(name: &str) {
     let uid = unsafe { libc::getuid() };
-    let path = format!("/tmp/{}-{}.lock", name, uid);
+    let path = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty() && std::path::Path::new(dir).is_dir())
+        .map(|dir| format!("{}/{}.lock", dir, name))
+        .unwrap_or_else(|| format!("/tmp/{}-{}.lock", name, uid));
     let path_c = std::ffi::CString::new(path).unwrap();
-    let fd = unsafe { libc::open(path_c.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o600) };
+    let fd = unsafe {
+        libc::open(
+            path_c.as_ptr(),
+            libc::O_CREAT | libc::O_RDWR | libc::O_NOFOLLOW,
+            0o600,
+        )
+    };
     if fd < 0 {
         eprintln!("[{}] Failed to open lock file", name);
         std::process::exit(1);
@@ -327,18 +156,14 @@ fn ensure_single_instance(name: &str) {
 }
 
 fn main() {
-    // Ensure single instance to avoid duplicate tray icons
+    unsafe {
+        let _ = libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
     ensure_single_instance("vietc-tray");
 
     eprintln!("[vietc-tray] Starting");
-
-    // Start daemon (with password prompt if first launch)
     start_daemon();
-
-    // Run the tray
     tray::run();
-
-    // Tray exited normally — stop the daemon
     stop_daemon();
 }
 
@@ -347,17 +172,11 @@ mod startup_tests {
     use super::*;
 
     #[test]
-    fn privileged_escalation_includes_command_and_monitor_without_a_shell() {
-        let command = privileged_kill_command(&[4322, 4321]);
-        let arguments: Vec<_> = command
-            .get_args()
-            .map(|arg| arg.to_str().unwrap())
-            .collect();
-        assert_eq!(
-            arguments,
-            ["-n", "/bin/kill", "-KILL", "--", "4322", "4321"]
-        );
-        assert_eq!(command.get_program(), "sudo");
+    fn stop_daemon_is_noop_when_managed_by_systemd_service() {
+        DAEMON_PID.store(0, Ordering::SeqCst);
+        stop_daemon();
+        assert_eq!(DAEMON_PID.load(Ordering::SeqCst), 0);
+        STOPPING.store(false, Ordering::SeqCst);
     }
 
     #[test]

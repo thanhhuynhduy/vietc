@@ -49,7 +49,7 @@ restart_and_check() {
     echo "service: $(systemctl --user is-active "$SERVICE")"
     echo "--- startup log since $mark ---"
     awk -v m="[$mark" '$0 >= m' "$LOG" 2>/dev/null \
-        | grep -E 'Using uinput|Grabbed keyboard|Event loop started|not available|failed|error|IBus engine' \
+        | grep -E 'Using uinput|Grabbed keyboard|Event loop started|not available|failed|error' \
         | tail -n 12 || true
     echo "expected: 'Using uinput injection', 'Grabbed keyboard device', 'Event loop started'"
 }

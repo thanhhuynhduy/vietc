@@ -304,3 +304,81 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
         Err("No keyboard device found".into())
     }
 }
+
+fn scan_keyboard_dir(
+    dir_path: &str,
+    match_name: fn(&str) -> bool,
+    existing_paths: &std::collections::HashSet<String>,
+    existing_phys: &mut std::collections::HashSet<String>,
+    added_paths: &mut std::collections::HashSet<String>,
+    out: &mut Vec<(evdev::Device, String)>,
+) {
+    let dir = std::path::Path::new(dir_path);
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !match_name(&name) {
+            continue;
+        }
+        let Ok(real_path) = fs::canonicalize(entry.path()) else {
+            continue;
+        };
+        let p = real_path.to_string_lossy().to_string();
+        if existing_paths.contains(&p) || !added_paths.insert(p) {
+            continue;
+        }
+        let phys_opt = get_device_phys_id(&real_path);
+        if phys_opt
+            .as_ref()
+            .is_some_and(|id| existing_phys.contains(id))
+        {
+            continue;
+        }
+        if let Ok(device) = evdev::Device::open(&real_path) {
+            let dev_name = device.name().unwrap_or("unknown").to_string();
+            if is_valid_keyboard(&device) {
+                if let Some(pid) = phys_opt {
+                    existing_phys.insert(pid);
+                }
+                out.push((device, format!("{} ({})", real_path.display(), dev_name)));
+            }
+        }
+    }
+}
+
+/// Discover keyboard devices present in `/dev/input` that are not already known.
+/// Used for hotplug so newly connected keyboards (USB/wireless/virtual) are attached dynamically.
+pub fn discover_new_keyboards(
+    existing_paths: &std::collections::HashSet<String>,
+    existing_phys: &mut std::collections::HashSet<String>,
+) -> Vec<(evdev::Device, String)> {
+    let mut out = Vec::new();
+    let mut added_paths = std::collections::HashSet::new();
+    scan_keyboard_dir(
+        "/dev/input/by-path",
+        |n| n.ends_with("-event-kbd"),
+        existing_paths,
+        existing_phys,
+        &mut added_paths,
+        &mut out,
+    );
+    scan_keyboard_dir(
+        "/dev/input/by-id",
+        |n| n.ends_with("-event-kbd"),
+        existing_paths,
+        existing_phys,
+        &mut added_paths,
+        &mut out,
+    );
+    scan_keyboard_dir(
+        "/dev/input",
+        |n| n.starts_with("event"),
+        existing_paths,
+        existing_phys,
+        &mut added_paths,
+        &mut out,
+    );
+    out
+}

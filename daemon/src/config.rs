@@ -32,51 +32,20 @@ pub struct Config {
     #[serde(default)]
     pub macros: HashMap<String, String>,
 
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub grab: bool,
 
     #[serde(default = "default_false")]
     pub debug: bool,
 
-    /// Run vietc as a native IBus engine (compositor-approved input method that
-    /// covers X11/XWayland *and* native-Wayland GNOME apps). Requires an
-    /// ibus-daemon to be available/running on the session bus.
-    #[serde(default = "default_false")]
-    pub ibus_engine: bool,
-
-    /// Aux controller mode: Bamboo (or any external IBus engine) performs the
-    /// Vietnamese composition, and vietc only switches the active IBus engine
-    /// per focused app and password field (app-aware on/off + password
-    /// detection). vietc registers no IBus component in this mode.
-    #[serde(default = "default_false")]
-    pub controller_mode: bool,
-
-    /// Workaround for a stuck/auto-repeating keyboard that emits every keystroke
-    /// twice. When enabled, a keystroke that repeats the previous one within
-    /// `deduplicate_window_ms` is dropped before it reaches the engine. Safe for
-    /// Vietnamese typing because the language has no words with consecutive
-    /// identical letters (digraphs use distinct letters).
     #[serde(default = "default_false")]
     pub deduplicate_keys: bool,
 
-    /// When `deduplicate_keys` is on, also drop a key equal to the one two
-    /// positions back (e.g. an IBus double-delivery that arrives as
-    /// `k h k h o h o a a`). This collapses replayed input but also legitimate
-    /// `a-b-a` words ("dad", "tat", "mom", "book", "kayak"), so it is opt-in on
-    /// top of `deduplicate_keys`.
     #[serde(default = "default_false")]
     pub deduplicate_two_back: bool,
 
     #[serde(default = "default_dedup_window_ms")]
     pub deduplicate_window_ms: u64,
-
-    /// Auto-enable IBus engine on Ubuntu GNOME Wayland where zwp_input_method_v2
-    /// is unavailable (Mutter). When true (default), vietc will prefer the IBus
-    /// path on GNOME Wayland even if `ibus_engine` is not explicitly set. This
-    /// mirrors Funput's strategy on Ubuntu: be an IBus engine, don't fight it.
-    /// Set to `false` to force the legacy X11/evdev path.
-    #[serde(default = "default_true")]
-    pub auto_ibus: bool,
 }
 
 fn default_dedup_window_ms() -> u64 {
@@ -130,10 +99,10 @@ pub struct AppStateConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    #[serde(default)]
+    #[serde(default = "default_english_apps")]
     pub english_apps: Vec<String>,
 
-    #[serde(default)]
+    #[serde(default = "default_vietnamese_apps")]
     pub vietnamese_apps: Vec<String>,
 
     #[serde(default = "default_bypass_apps")]
@@ -149,7 +118,7 @@ pub struct AppStateConfig {
 impl Default for AutoRestoreConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             trigger_keys: default_restore_keys(),
         }
     }
@@ -169,7 +138,7 @@ impl Default for AppStateConfig {
 }
 
 fn default_input_method() -> String {
-    "vni".into()
+    "telex".into()
 }
 fn default_toggle_key() -> String {
     "space".into()
@@ -178,7 +147,7 @@ fn default_toggle_method_key() -> String {
     "space".into()
 }
 fn default_start_enabled() -> bool {
-    false
+    true
 }
 fn default_true() -> bool {
     true
@@ -195,7 +164,6 @@ fn default_title_keywords() -> Vec<String> {
         "passphrase".into(),
         "secret".into(),
         "mật khẩu".into(),
-        "mk".into(),
         "sudo".into(),
     ]
 }
@@ -231,14 +199,9 @@ fn default_bypass_apps() -> Vec<String> {
         "steam".into(),
         "dota".into(),
         "csgo".into(),
+        "cs2".into(),
         "minecraft".into(),
         "factorio".into(),
-        // Remote desktop clients and VM viewers forward raw keycodes to
-        // another machine. Unicode is injected by pasting from the *local*
-        // clipboard, but Ctrl+V is executed on the *remote* side against its
-        // own clipboard (synced late or not at all), so the typed word gets
-        // replaced by whatever the remote clipboard held. Keys must reach
-        // these apps untouched; the remote machine's own IME composes text.
         "rustdesk".into(),
         "remmina".into(),
         "anydesk".into(),
@@ -289,6 +252,10 @@ fn default_terminal_apps() -> Vec<String> {
         "cool-retro-term".into(),
         "cosmicterm".into(),
         "cosmic-term".into(),
+        "ghostty".into(),
+        "rio".into(),
+        "warp".into(),
+        "tabby".into(),
     ]
 }
 
@@ -310,21 +277,22 @@ fn default_vietnamese_apps() -> Vec<String> {
     ]
 }
 
+fn candidate_config_paths() -> [Option<PathBuf>; 3] {
+    [
+        dirs().map(|d| d.join("vietc").join("config.toml")),
+        Some(PathBuf::from("/etc/vietc/config.toml")),
+        std::env::current_exe().ok().and_then(|exe| {
+            exe.parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .map(|p| p.join("etc").join("vietc").join("config.toml"))
+        }),
+    ]
+}
+
 impl Config {
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let paths = [
-            dirs().map(|d| d.join("vietc").join("config.toml")),
-            Some(PathBuf::from("vietc.toml")),
-            // AppImage bundled config: <exe dir>/../../etc/vietc/config.toml
-            std::env::current_exe().ok().and_then(|exe| {
-                exe.parent()
-                    .and_then(|p| p.parent())
-                    .and_then(|p| p.parent())
-                    .map(|p| p.join("etc").join("vietc").join("config.toml"))
-            }),
-        ];
-
-        for path in paths.into_iter().flatten() {
+        for path in candidate_config_paths().into_iter().flatten() {
             if path.exists() {
                 let content = fs::read_to_string(&path)?;
                 let config: Config = toml::from_str(&content)?;
@@ -367,14 +335,11 @@ impl Default for Config {
             password_detection: PasswordDetectionConfig::default(),
             app_state: AppStateConfig::default(),
             macros,
-            grab: true, // default to evdev grab; installer adds the user to the input group
+            grab: true,
             debug: false,
-            ibus_engine: false,
-            controller_mode: false,
             deduplicate_keys: true,
             deduplicate_two_back: false,
             deduplicate_window_ms: default_dedup_window_ms(),
-            auto_ibus: true,
         }
     }
 }
@@ -382,109 +347,42 @@ impl Default for Config {
 fn dirs() -> Option<PathBuf> {
     std::env::var("XDG_CONFIG_HOME")
         .ok()
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var("HOME")
                 .ok()
+                .filter(|v| !v.is_empty())
                 .map(|h| PathBuf::from(h).join(".config"))
         })
+        .or_else(dirs::config_dir)
+}
+
+pub fn user_config_path() -> Option<PathBuf> {
+    dirs().map(|d| d.join("vietc").join("config.toml"))
+}
+
+pub fn user_ipc_file_path(name: &str) -> PathBuf {
+    if let Some(base) = dirs() {
+        return base.join("vietc").join(name);
+    }
+    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
+        if !rt.is_empty() && std::path::Path::new(&rt).is_dir() {
+            return PathBuf::from(rt).join("vietc").join(name);
+        }
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/tmp/vietc-{}-{}", name, uid))
 }
 
 pub fn find_config_path() -> PathBuf {
-    let paths = [
-        dirs().map(|d| d.join("vietc").join("config.toml")),
-        Some(PathBuf::from("vietc.toml")),
-        std::env::current_exe().ok().and_then(|exe| {
-            exe.parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-                .map(|p| p.join("etc").join("vietc").join("config.toml"))
-        }),
-    ];
-
-    for path in paths.into_iter().flatten() {
+    for path in candidate_config_paths().into_iter().flatten() {
         if path.exists() {
             return path;
         }
     }
 
-    // Default to user config path
-    dirs()
-        .map(|d| d.join("vietc").join("config.toml"))
-        .unwrap_or_else(|| PathBuf::from("vietc.toml"))
-}
-
-/// Heuristic: should vietc prefer the native IBus engine on this session?
-/// This is the Ubuntu/GNOME Wayland fix: Mutter does NOT expose
-/// `zwp_input_method_v2`, so the Wayland IM path can never work. The
-/// compositor-approved replacement is IBus (which GNOME already runs).
-/// We mirror Funput's Linux strategy: on GNOME Wayland, be an IBus engine.
-pub fn should_use_ibus_engine(config: &Config) -> bool {
-    if config.controller_mode {
-        return false;
-    }
-    if config.ibus_engine {
-        return true;
-    }
-    if !config.auto_ibus {
-        return false;
-    }
-    // Respect explicit env override for testing / debugging.
-    if let Ok(v) = std::env::var("VIETC_FORCE_IBUS") {
-        match v.to_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => return true,
-            "0" | "false" | "no" | "off" => return false,
-            _ => {}
-        }
-    }
-    is_gnome_wayland_session() || is_ubuntu_wayland_session()
-}
-
-fn is_gnome_wayland_session() -> bool {
-    // Check WAYLAND_DISPLAY + GNOME markers (Ubuntu default)
-    let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
-        || std::env::var("XDG_SESSION_TYPE")
-            .map(|v| v.to_lowercase().contains("wayland"))
-            .unwrap_or(false);
-    if !is_wayland {
-        return false;
-    }
-    if std::env::var("XDG_CURRENT_DESKTOP")
-        .map(|v| v.to_lowercase().contains("gnome"))
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    // Fallback: gnome-shell running implies GNOME session
-    if std::process::Command::new("pgrep")
-        .args(["-x", "gnome-shell"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    false
-}
-
-fn is_ubuntu_wayland_session() -> bool {
-    let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
-        || std::env::var("XDG_SESSION_TYPE")
-            .map(|v| v.to_lowercase().contains("wayland"))
-            .unwrap_or(false);
-    if !is_wayland {
-        return false;
-    }
-    if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
-        let lower = content.to_lowercase();
-        if lower.contains("id=ubuntu")
-            || lower.contains("id=debian")
-            || lower.contains("id=linuxmint")
-        {
-            return true;
-        }
-    }
-    false
+    user_config_path().unwrap_or_else(|| PathBuf::from("/etc/vietc/config.toml"))
 }
 
 #[cfg(test)]
@@ -514,7 +412,7 @@ vs = "với"
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.input_method, "vni");
         assert_eq!(config.toggle_key, "shift");
-        assert!(!config.start_enabled); // explicitly set to false in test toml
+        assert!(!config.start_enabled);
         assert!(!config.auto_restore.enabled);
         assert!(config.app_state.enabled);
         assert_eq!(config.app_state.english_apps, vec!["code", "vim"]);
@@ -531,13 +429,18 @@ vs = "với"
     fn parse_empty_config_uses_defaults() {
         let toml = "";
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.input_method, "vni");
+        assert_eq!(config.input_method, "telex");
         assert_eq!(config.toggle_key, "space");
-        assert!(!config.start_enabled); // default is false (EN typing first)
-        assert!(!config.auto_restore.enabled);
+        assert!(config.start_enabled);
+        assert!(config.auto_restore.enabled);
+        assert!(config.grab);
         assert!(config.app_state.enabled);
         assert!(!config.app_state.english_apps.is_empty());
         assert!(!config.app_state.vietnamese_apps.is_empty());
+        assert!(!config
+            .password_detection
+            .title_keywords
+            .contains(&"mk".to_string()));
     }
 
     #[test]
@@ -547,8 +450,8 @@ input_method = "vni"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.input_method, "vni");
-        assert_eq!(config.toggle_key, "space"); // default
-        assert!(!config.start_enabled); // default is false (EN typing first)
+        assert_eq!(config.toggle_key, "space");
+        assert!(config.start_enabled);
     }
 
     #[test]
@@ -676,7 +579,6 @@ enabled = false
 input_method = "telex"
 unknown_field = "value"
 "#;
-        // serde's default deny_unknown_fields is not set, so this should work
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.input_method, "telex");
     }

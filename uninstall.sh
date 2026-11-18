@@ -152,10 +152,11 @@ if [ -n "$USER_HOME" ]; then
     rm -f "$USER_HOME/.config/systemd/user/vietc.service" "$USER_HOME/.config/systemd/user/vietc-tray.service"
 fi
 
-# Remove udev rules
+# Remove udev rules and kernel module load drop-in
 rm -f /etc/udev/rules.d/70-vietc.rules /etc/udev/rules.d/99-vietc.rules /etc/udev/rules.d/99-uinput.rules
+rm -f /etc/modules-load.d/vietc.conf /etc/default/vietc
 
-# Remove IBus component
+# Remove legacy component XML if present from older versions
 rm -f /usr/share/ibus/component/vietc.xml
 
 # Remove system desktop autostart & icons
@@ -172,8 +173,11 @@ if [ -n "$USER_HOME" ]; then
     rm -f "$USER_HOME/.local/share/icons/hicolor/*/apps/vietc*.svg"
 fi
 
-# Clean up status and socket files
+# Clean up status, lock, and socket files
 rm -f /tmp/vietc* /tmp/vietc-status*
+if [ -n "$U_UID" ]; then
+    rm -f "/run/user/$U_UID/vietc-daemon.lock"
+fi
 
 # Revoke legacy world and named-user access before restoring distro policy.
 clear_device_acls /dev/uinput /dev/input/event*

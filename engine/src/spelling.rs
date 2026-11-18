@@ -46,14 +46,30 @@ fn vietnamese_dict() -> &'static HashSet<String> {
     })
 }
 
+fn is_common_vietnamese_shorthand(lower: &str) -> bool {
+    matches!(lower, "đc" | "đk" | "đh" | "đt" | "đn" | "đv" | "đb" | "đm")
+}
+
+fn is_supplemental_vietnamese_syllable(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "quơn4" | "hôp1" | "khuy3" | "khuyu3" | "gio4" | "ưi"
+    )
+}
+
 /// Check if a word is present in the bundled Vietnamese syllable dictionary
-/// (matched regardless of old/new tone placement style).
+/// (matched regardless of old/new tone placement style) or common Vietnamese shorthand.
 pub fn is_in_vietnamese_dictionary(word: &str) -> bool {
-    vietnamese_dict().contains(&without_tone_position(word))
+    let lower = word.to_lowercase();
+    if is_common_vietnamese_shorthand(&lower) {
+        return true;
+    }
+    let normalized = without_tone_position(&lower);
+    vietnamese_dict().contains(&normalized) || is_supplemental_vietnamese_syllable(&normalized)
 }
 
 const FIRST_CONSONANT_SEQS: &[&str] = &[
-    "b d đ g gh m n nh p ph r s t tr v z",
+    "b d đ g gh m n nh p ph r s t tr v",
     "c h k kh qu th",
     "ch gi l ng ngh x",
     "đ l",
@@ -452,16 +468,31 @@ pub fn is_valid_vietnamese_syllable(word: &str) -> bool {
         return false;
     }
 
+    if is_common_vietnamese_shorthand(&lowercase_word) {
+        return true;
+    }
+
     // Clean tones from the word to validate spelling structure
     let cleaned_word: String = lowercase_word.chars().map(strip_tone).collect();
 
     let (fc, vo, lc) = partition(&cleaned_word);
 
-    // If there is no vowel, it must be a valid standalone consonant (like "d", "đ", etc.)
-    // but typically a full syllable must have a vowel. Let's allow empty vowel only if it's
-    // a valid first consonant of length 1 or 2 (e.g. for initials/abbreviations).
     if vo.is_empty() {
         return !fc.is_empty() && !lookup(FIRST_CONSONANT_SEQS, &fc).is_empty();
+    }
+
+    // Strict Vietnamese orthographic distribution for velar consonants:
+    // - 'k', 'gh', 'ngh' ONLY precede front vowels (e, ê, i, y)
+    // - 'c' NEVER precedes front vowels (e, ê, i, y)
+    // - 'g' (excluding 'gi' and 'gh') NEVER precedes 'e' or 'ê'
+    if let Some(first_vo) = vo.chars().next() {
+        let is_front_vowel = matches!(first_vo, 'e' | 'ê' | 'i' | 'y');
+        match fc.as_str() {
+            "k" | "gh" | "ngh" if !is_front_vowel => return false,
+            "c" if is_front_vowel => return false,
+            "g" if matches!(first_vo, 'e' | 'ê') => return false,
+            _ => {}
+        }
     }
 
     let fc_indices = if !fc.is_empty() {

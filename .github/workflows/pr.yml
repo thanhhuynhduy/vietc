@@ -35,53 +35,29 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libdbus-1-dev libwayland-dev libxkbcommon-dev libx11-dev libxtst-dev
+          sudo apt-get install --yes libdbus-1-dev libevdev-dev libwayland-dev libx11-dev libxtst-dev
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path ui/Cargo.toml --all -- --check
 
-      - name: Enforce Rust source-size limits
-        run: python3 scripts/check_source_size.py
+      - name: Enforce Rust source-size and installer security checks
+        run: |
+          python3 scripts/check_source_size.py
+          python3 scripts/test_installer.py
+          python3 scripts/test_build_targets.py
+          bash -n install.sh uninstall.sh packaging/release.sh packaging/build-tarball.sh packaging/deb/build-deb.sh
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY cargo clippy --workspace --all-targets --all-features -- -D warnings
+          env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY cargo clippy --manifest-path ui/Cargo.toml --all-targets -- -D warnings
 
-      - name: Run workspace tests
-        run: cargo test --workspace --all-features
-
-  web-quality:
-    name: Web typecheck, tests, and build
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: web
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run typecheck
-        run: npm run typecheck
-
-      - name: Run tests
-        run: npm run test:ci
-
-      - name: Run installer security regression tests
-        run: python3 ../scripts/test_installer.py
-
-      - name: Build production bundle
-        run: npm run build
+      - name: Run headless workspace and UI tests
+        run: |
+          env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY cargo test --workspace --all-features
+          env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY cargo test --manifest-path ui/Cargo.toml

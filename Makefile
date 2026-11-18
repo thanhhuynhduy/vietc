@@ -1,16 +1,12 @@
-.PHONY: build build-x11 build-wayland build-all build-ui test test-ci-smoke test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli test-package run run-x11 run-wayland clean install install-x11 install-wayland install-ui install-config deb tarball aur ppa arch-repo push-arch release release-ppa fmt lint tree
+.PHONY: build build-x11 build-ui build-dev test test-ci-smoke test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli test-package run run-x11 run-release clean install install-x11 install-ui install-config deb tarball release fmt lint tree
 
-# Master release build
+# Build .deb + tarball release artifacts
 release:
 	bash packaging/release.sh
 
-# Master release build and upload to Launchpad PPA
-release-ppa:
-	bash packaging/release.sh --upload-ppa
-
 # Build .deb package
 deb:
-	VERSION=$$(grep '^version' engine/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/') && \
+	VERSION=$$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1) && \
 	bash packaging/deb/build-deb.sh "$$VERSION"
 
 # Build generic Linux tarball
@@ -23,75 +19,42 @@ test-package: deb
 	test -n "$$PACKAGE" && \
 	bash scripts/package-smoke-test.sh "$$PACKAGE"
 
-# Update AUR PKGBUILD & .SRCINFO
-aur:
-	bash packaging/aur/update-aur.sh
-
-# Build Debian source package for Launchpad PPA (both Noble 24.04 + Jammy 22.04)
-ppa:
-	bash packaging/ppa/build-source-package.sh noble
-	bash packaging/ppa/build-source-package.sh jammy
-	@echo "PPA source packages ready in /tmp/vietc_ppa_build_*/ (shared orig /tmp/vietc_\$$(grep '^version' engine/Cargo.toml | head -1 | sed 's/.*\"\(.*\)\"/\1/').orig.tar.gz)"
-
-ppa-noble:
-	bash packaging/ppa/build-source-package.sh noble
-
-ppa-jammy:
-	bash packaging/ppa/build-source-package.sh jammy
-
-# Build Arch Linux Pacman repository locally
-arch-repo:
-	bash packaging/arch-repo/build-repo.sh
-
-# Push Arch Linux Pacman repository directly to GitHub Pages
-push-arch:
-	bash packaging/arch-repo/push-to-gh-pages.sh
-
-# Build core crates
+# Build core crates (default features include x11)
 build:
 	cargo build --release
 
-# Build with X11 support
+# Build explicitly with X11 support
 build-x11:
 	cargo build --release --features x11
 
-# Build with Wayland IM protocol
-build-wayland:
-	cargo build --release --features wayland
-
-# Build with all backends
-build-all:
-	cargo build --release --features "x11,wayland"
-
 # Build tray icon UI (requires libdbus-1-dev)
 build-ui:
-	cd ui && cargo build --release
-
-# Build virtual-keyboard test tool (requires libwayland/libx11 dev for winit)
-build-vk:
-	cd vk && cargo build --release
+	cargo build --release --manifest-path ui/Cargo.toml
 
 # Build debug
 build-dev:
 	cargo build
 
-# Run all tests
-test:
-	cargo test
-
+# Run all workspace tests headlessly
 CARGO_FLAGS ?= --locked
 HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY
 
+test:
+	$(HEADLESS) cargo test --workspace
+	$(HEADLESS) cargo test --manifest-path ui/Cargo.toml
+
 # Explicit targets keep live device/desktop tests out, even when run as root.
 test-ci-smoke:
+	python3 scripts/check_source_size.py
 	python3 scripts/test_installer.py
 	python3 scripts/test_build_targets.py
-	bash -n install.sh uninstall.sh
+	bash -n install.sh uninstall.sh packaging/release.sh packaging/build-tarball.sh packaging/deb/build-deb.sh
 	$(HEADLESS) cargo test --workspace --lib --bins $(CARGO_FLAGS)
 	$(HEADLESS) VIETC_PROPERTY_PROFILE=smoke cargo test -p vietc-engine --tests $(CARGO_FLAGS)
 	$(HEADLESS) cargo test -p vietc-daemon --test deterministic_ci --test typing_corpus $(CARGO_FLAGS) -- --test-threads=1
 	$(HEADLESS) cargo test -p vietc-daemon --test daemon_suite runtime::deterministic_ $(CARGO_FLAGS) -- --test-threads=1
 	$(HEADLESS) cargo test --workspace --doc $(CARGO_FLAGS)
+	$(HEADLESS) cargo test --manifest-path ui/Cargo.toml $(CARGO_FLAGS)
 
 # Opt-in controlled runtime targets; requires a disposable GUI session and target dependencies
 test-runtime-targets:
@@ -103,55 +66,38 @@ test-runtime-matrix:
 
 # Opt-in exhaustive deterministic property budget
 test-properties-exhaustive:
-	env -u DISPLAY -u WAYLAND_DISPLAY VIETC_PROPERTY_PROFILE=exhaustive cargo test -p vietc-engine --test state_machine_properties -- --nocapture
+	$(HEADLESS) VIETC_PROPERTY_PROFILE=exhaustive cargo test -p vietc-engine --test state_machine_properties -- --nocapture
 
 # Run the interactive CLI test harness
 test-cli:
 	cargo run --bin vietc-cli
 
-# Run the daemon (needs root for evdev/uinput)
+# Run the daemon
 run: build-dev
-	sudo cargo run --bin vietc
+	cargo run --bin vietc
 
 # Run daemon with X11 support
 run-x11: build-dev
-	cargo build --features x11
-	sudo cargo run --bin vietc --features x11
-
-# Run daemon with Wayland IM protocol
-run-wayland: build-dev
-	cargo build --features wayland
-	sudo cargo run --bin vietc --features wayland
+	cargo run --bin vietc --features x11
 
 # Run daemon in release mode
 run-release: build
-	sudo target/release/vietc
+	target/release/vietc
 
 # Install to /usr/local/bin
 install: build
-	sudo cp target/release/vietc /usr/local/bin/vietc
+	sudo install -m 755 target/release/vietc /usr/local/bin/vietc
 	@echo "Installed vietc to /usr/local/bin/"
 
 # Install with X11 support
 install-x11: build-x11
-	sudo cp target/release/vietc /usr/local/bin/vietc
+	sudo install -m 755 target/release/vietc /usr/local/bin/vietc
 	@echo "Installed vietc (with X11) to /usr/local/bin/"
-
-# Install with Wayland IM protocol
-install-wayland: build-wayland
-	sudo cp target/release/vietc /usr/local/bin/vietc
-	@echo "Installed vietc (with Wayland IM) to /usr/local/bin/"
 
 # Install tray icon UI
 install-ui: build-ui
-	sudo cp ui/target/release/vietc-tray /usr/local/bin/vietc-tray
+	sudo install -m 755 ui/target/release/vietc-tray /usr/local/bin/vietc-tray
 	@echo "Installed vietc-tray to /usr/local/bin/"
-
-# Install virtual-keyboard test tool
-install-vk: build-vk
-	sudo cp vk/target/release/vietc-vk /usr/local/bin/vietc-vk
-	sudo setcap cap_dac_override+ep /usr/local/bin/vietc-vk
-	@echo "Installed vietc-vk to /usr/local/bin/"
 
 # Install config to user dir
 install-config:
@@ -162,20 +108,17 @@ install-config:
 # Clean build artifacts
 clean:
 	cargo clean
-	@if [ -d ui ]; then (cd ui && cargo clean); fi
-	@if [ -d vk ]; then (cd vk && cargo clean); fi
+	@if [ -d ui ]; then cargo clean --manifest-path ui/Cargo.toml; fi
 
 # Format code
 fmt:
-	cargo fmt
-	cd ui && cargo fmt
-	cd vk && cargo fmt
+	cargo fmt --all
+	cargo fmt --manifest-path ui/Cargo.toml --all
 
 # Lint
 lint:
-	cargo clippy -- -D warnings
-	cd ui && cargo clippy -- -D warnings
-	cd vk && cargo clippy -- -D warnings
+	$(HEADLESS) cargo clippy --workspace --all-targets --all-features -- -D warnings
+	$(HEADLESS) cargo clippy --manifest-path ui/Cargo.toml --all-targets -- -D warnings
 
 # Show project structure
 tree:

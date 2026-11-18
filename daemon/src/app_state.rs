@@ -474,8 +474,6 @@ fn get_gnome_focused_wm_class() -> Option<String> {
 
 /// Execute JavaScript in GNOME Shell and return (success, output)
 fn gnome_shell_eval(js: &str) -> Option<(bool, String)> {
-    // Use gdbus as a subprocess running as the original user.
-    // Direct D-Bus from a root process gets rejected by GNOME Shell.
     let output = run_as_user("gdbus")
         .args([
             "call",
@@ -494,23 +492,15 @@ fn gnome_shell_eval(js: &str) -> Option<(bool, String)> {
         return None;
     }
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Output format: (true, 'result_string')  or  (false, 'error_message')
-    if let Some(rest) = stdout.strip_prefix("(true, ") {
-        let result = rest.trim_end_matches(')');
-        // Remove surrounding quotes: "'value'" -> "value"
-        let result = result.trim_matches('\'');
-        Some((true, result.to_string()))
-    } else if let Some(rest) = stdout.strip_prefix("(false, ") {
-        let error = rest.trim_end_matches(')');
-        let error = error.trim_matches('\'');
-        Some((false, error.to_string()))
-    } else {
+    let rest = stdout.strip_prefix("(true, ")?;
+    let result = rest.trim_end_matches(')').trim_matches('\'');
+    if result.is_empty() {
         None
+    } else {
+        Some((true, result.to_string()))
     }
 }
 
-/// Build a Command that runs as the original user (not root).
-/// Sets display environment variables for the user's session.
 fn run_as_user(program: &str) -> std::process::Command {
     let is_root = unsafe { libc::getuid() == 0 };
     if is_root {
@@ -518,24 +508,23 @@ fn run_as_user(program: &str) -> std::process::Command {
             if let Ok(uid) = uid_str.parse::<u32>() {
                 use std::os::unix::process::CommandExt;
                 let mut cmd = std::process::Command::new(program);
-                cmd.uid(uid).gid(u32::MAX);
-                if let Ok(v) = std::env::var("HOME") {
-                    cmd.env("HOME", &v);
+                cmd.uid(uid);
+                if let Ok(gid) = std::env::var("SUDO_GID")
+                    .and_then(|g| g.parse::<u32>().map_err(|_| std::env::VarError::NotPresent))
+                {
+                    cmd.gid(gid);
                 }
-                if let Ok(v) = std::env::var("DISPLAY") {
-                    cmd.env("DISPLAY", v);
-                }
-                if let Ok(v) = std::env::var("WAYLAND_DISPLAY") {
-                    cmd.env("WAYLAND_DISPLAY", v);
-                }
-                if let Ok(v) = std::env::var("XDG_RUNTIME_DIR") {
-                    cmd.env("XDG_RUNTIME_DIR", v);
-                }
-                if let Ok(v) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
-                    cmd.env("DBUS_SESSION_BUS_ADDRESS", v);
-                }
-                if let Ok(v) = std::env::var("XAUTHORITY") {
-                    cmd.env("XAUTHORITY", v);
+                for key in [
+                    "HOME",
+                    "DISPLAY",
+                    "WAYLAND_DISPLAY",
+                    "XDG_RUNTIME_DIR",
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "XAUTHORITY",
+                ] {
+                    if let Ok(v) = std::env::var(key) {
+                        cmd.env(key, v);
+                    }
                 }
                 return cmd;
             }
@@ -858,15 +847,13 @@ impl AppStateManager {
             return false;
         }
 
-        // Layer 1: AT-SPI2 (most accurate, works in terminals and dialogs)
-        if self.check_atspi2 {
-            if let Some(is_password) = self.password_detector.check() {
-                self.is_password_field = is_password;
-                if is_password {
-                    log_password_detection("AT-SPI2", &self.current_app);
-                }
-                return is_password;
-            }
+        // Layer 1: AT-SPI2 (event-driven O(1) role check across any web/native DOM depth).
+        // When AT-SPI2 reports `false` (e.g. a terminal widget whose role is ROLE_TERMINAL),
+        // fall through to Layers 2-4 so `pinentry`, `polkit`, and `sudo`/`passwd` are caught.
+        if self.check_atspi2 && self.password_detector.check() == Some(true) {
+            self.is_password_field = true;
+            log_password_detection("AT-SPI2", &self.current_app);
+            return true;
         }
 
         // Layer 2: Window class match (for known password dialogs)
@@ -1052,48 +1039,34 @@ fn get_ancestor_pids(pid: u32) -> Vec<u32> {
 /// so that running `sudo vietc-daemon` from the same terminal doesn't cause
 /// a false positive.
 fn is_sudo_process(pid: u32) -> bool {
-    // Build the daemon's ancestor PID chain to exclude self from detection
     let daemon_pid = unsafe { libc::getpid() as u32 };
     let daemon_ancestors = get_ancestor_pids(daemon_pid);
-
-    if let Ok(output) = Command::new("pstree")
-        .args(["-p", &pid.to_string()])
-        .output()
-    {
-        let tree = String::from_utf8_lossy(&output.stdout);
-        for target in &["sudo(", "passwd(", "pkexec("] {
-            let mut start = 0;
-            while let Some(pos) = tree[start..].find(target) {
-                let abs_pos = start + pos;
-                let after = &tree[abs_pos + target.len()..];
-                let found_pid = after.split(')').next().and_then(|s| s.parse::<u32>().ok());
-                // Skip if this PID is the daemon's own ancestor (e.g. `sudo vietc-daemon`)
-                if let Some(p) = found_pid {
-                    if target == &"sudo(" && daemon_ancestors.contains(&p) {
-                        start = abs_pos + 1;
-                        continue;
-                    }
+    let mut queue = vec![pid];
+    let mut index = 0;
+    while index < queue.len() && queue.len() < 128 {
+        let cur = queue[index];
+        index += 1;
+        if cur != pid && !daemon_ancestors.contains(&cur) {
+            if let Ok(comm) = std::fs::read_to_string(format!("/proc/{cur}/comm")) {
+                if matches!(
+                    comm.trim(),
+                    "sudo" | "passwd" | "pkexec" | "su" | "doas" | "ssh" | "gpg" | "cryptsetup"
+                ) {
+                    return true;
                 }
-                return true;
             }
         }
-        return false;
-    }
-
-    // Fallback if pstree is not installed: check children directly
-    if let Ok(output) = Command::new("ps")
-        .args(["--ppid", &pid.to_string(), "-o", "comm="])
-        .output()
-    {
-        let output = String::from_utf8_lossy(&output.stdout);
-        for line in output.lines() {
-            let comm = line.trim();
-            if comm == "sudo" || comm == "passwd" || comm == "pkexec" {
-                return true;
+        if let Ok(children) = std::fs::read_to_string(format!("/proc/{cur}/task/{cur}/children")) {
+            for child in children
+                .split_whitespace()
+                .filter_map(|s| s.parse::<u32>().ok())
+            {
+                if child > 0 && !queue.contains(&child) {
+                    queue.push(child);
+                }
             }
         }
     }
-
     false
 }
 

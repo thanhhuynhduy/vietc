@@ -9,6 +9,7 @@ extern "C" fn sigexit_handler(_signo: i32) {
 pub fn install_signal_handlers() {
     use std::mem;
     unsafe {
+        let _ = libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         let mut act: libc::sigaction = mem::zeroed();
         libc::sigemptyset(&mut act.sa_mask);
         act.sa_flags = 0;
@@ -20,6 +21,7 @@ pub fn install_signal_handlers() {
 
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 
@@ -66,6 +68,8 @@ fn acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError>
         .read(true)
         .write(true)
         .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .map_err(InstanceLockError::Open)?;
 
@@ -90,7 +94,11 @@ fn acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError>
 
 pub fn ensure_single_instance(name: &str) -> Result<InstanceLock, InstanceLockError> {
     let uid = unsafe { libc::getuid() };
-    let path = PathBuf::from(format!("/tmp/{}-{}.lock", name, uid));
+    let path = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty() && Path::new(dir).is_dir())
+        .map(|dir| PathBuf::from(dir).join(format!("{}.lock", name)))
+        .unwrap_or_else(|| PathBuf::from(format!("/tmp/{}-{}.lock", name, uid)));
     acquire_instance_lock(&path)
 }
 

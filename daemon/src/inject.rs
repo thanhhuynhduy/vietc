@@ -148,11 +148,6 @@ pub fn create_injector(
         }
     }
 
-    if vietc_protocol::uinput_client::UinputClient::is_available() {
-        log_info("[vietc] Using uinputd socket injection");
-        return Ok(Box::new(vietc_protocol::uinput_client::UinputClient));
-    }
-
     #[cfg(feature = "x11")]
     if std::env::var("DISPLAY").is_ok() {
         // On Wayland-with-XWayland, XTEST injection is rootless (like ibus-x11).
@@ -308,8 +303,6 @@ mod tests {
     enum DeliveryMode {
         Grabbed,
         Forwarded,
-        WaylandPreedit,
-        IbusPreedit,
         X11,
         Clipboard,
     }
@@ -329,8 +322,6 @@ mod tests {
         match mode {
             DeliveryMode::Grabbed
             | DeliveryMode::Forwarded
-            | DeliveryMode::WaylandPreedit
-            | DeliveryMode::IbusPreedit
             | DeliveryMode::X11
             | DeliveryMode::Clipboard => visible,
         }
@@ -341,8 +332,6 @@ mod tests {
         for mode in [
             DeliveryMode::Grabbed,
             DeliveryMode::Forwarded,
-            DeliveryMode::WaylandPreedit,
-            DeliveryMode::IbusPreedit,
             DeliveryMode::X11,
             DeliveryMode::Clipboard,
         ] {

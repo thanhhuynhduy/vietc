@@ -282,13 +282,13 @@ fn telex_tone_uw_sac() {
 #[test]
 fn telex_oa_tone() {
     let mut e = Engine::new(InputMethod::Telex);
-    assert_eq!(get_display(&process_input(&mut e, "oas")), "oá");
+    assert_eq!(get_display(&process_input(&mut e, "oas")), "óa");
 }
 
 #[test]
 fn telex_uy_tone() {
     let mut e = Engine::new(InputMethod::Telex);
-    assert_eq!(get_display(&process_input(&mut e, "uys")), "uý");
+    assert_eq!(get_display(&process_input(&mut e, "uys")), "úy");
 }
 
 // ================================================================
@@ -627,14 +627,14 @@ fn vni_nguyen_dang_khoa() {
 fn telex_full_vietnamese_sentence() {
     let mut e = Engine::new(InputMethod::Telex);
     let events = process_input(&mut e, "Coongj hoaf xax hooij chur nghiax Vieetj Nam");
-    assert_eq!(get_display(&events), "Cộng hoà xã hội chủ nghĩa Việt Nam");
+    assert_eq!(get_display(&events), "Cộng hòa xã hội chủ nghĩa Việt Nam");
 }
 
 #[test]
 fn vni_full_vietnamese_sentence() {
     let mut e = Engine::new(InputMethod::Vni);
     let events = process_input(&mut e, "Co6ng5 hoa2 xa4 ho6i5 chu3 nghia4 Vie6t5 Nam");
-    assert_eq!(get_display(&events), "Cộng hoà xã hội chủ nghĩa Việt Nam");
+    assert_eq!(get_display(&events), "Cộng hòa xã hội chủ nghĩa Việt Nam");
 }
 
 #[test]

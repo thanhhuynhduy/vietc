@@ -103,14 +103,14 @@ fn vni_macro_expansion_deletes_shorthand_before_inserting_expansion() {
 
 #[test]
 fn vni_tone_retargeting_does_not_create_double_tone_vowels() {
-    // A04: VNI "ho1a2" must move the tone to the new vowel ("hoà") rather than producing two tones ("hóà")
+    // A04: VNI "ho1a2" must move the tone cleanly ("hòa" in Old-Style) rather than producing two tones ("hóà")
     let mut engine = Engine::new(InputMethod::Vni);
     let mut screen = String::new();
     for key in "ho1a2".chars() {
         type_key(&mut engine, &mut screen, key);
     }
-    assert_eq!(screen, "hoà");
-    assert_eq!(engine.buffer(), "hoà");
+    assert_eq!(screen, "hòa");
+    assert_eq!(engine.buffer(), "hòa");
     assert!(!vietc_engine::spelling::is_valid_vietnamese_syllable("hóà"));
 }
 
@@ -264,4 +264,87 @@ fn parenthesized_and_digit_prefixed_telex_words_compose_and_backspace_cleanly() 
     assert_eq!(screen3, "9như");
     type_key(&mut engine3, &mut screen3, '\x08');
     assert_eq!(screen3, "9nhu");
+}
+
+#[test]
+fn gboard_old_style_tone_coda_repositioning_and_free_order_regressions() {
+    for (method, input, expected) in [
+        // Old-style open diphthongs vs closed diphthongs with final consonants
+        (InputMethod::Telex, "hoaf", "hòa"),
+        (InputMethod::Telex, "hofa", "hòa"),
+        (InputMethod::Telex, "hofan", "hoàn"),
+        (InputMethod::Telex, "tosan", "toán"),
+        (InputMethod::Telex, "hosang", "hoáng"),
+        (InputMethod::Telex, "hufynh", "huỳnh"),
+        (InputMethod::Telex, "tusy", "túy"),
+        (InputMethod::Telex, "tusyt", "tuýt"),
+        (InputMethod::Telex, "thuyr", "thủy"),
+        (InputMethod::Telex, "khore", "khỏe"),
+        (InputMethod::Telex, "hofe", "hòe"),
+        (InputMethod::Telex, "xofe", "xòe"),
+        // Free-order glides and -ươu triphthong
+        (InputMethod::Telex, "gifa", "già"),
+        (InputMethod::Telex, "gifan", "giàn"),
+        (InputMethod::Telex, "qusa", "quá"),
+        (InputMethod::Telex, "qusan", "quán"),
+        (InputMethod::Telex, "huouw", "hươu"),
+        (InputMethod::Telex, "ruouwj", "rượu"),
+        (InputMethod::Telex, "buouws", "bướu"),
+        // Telex 'z' & VNI '0' tone removal + shape overrides
+        (InputMethod::Telex, "toansz", "toan"),
+        (InputMethod::Telex, "size", "size"),
+        (InputMethod::Telex, "aaw", "ă"),
+        (InputMethod::Telex, "oow", "ơ"),
+        (InputMethod::Vni, "toan10", "toan"),
+        (InputMethod::Vni, "100", "100"),
+        (InputMethod::Vni, "quo7", "quơ"),
+        (InputMethod::Vni, "quo72", "quờ"),
+        (InputMethod::Vni, "dan9", "đan"),
+        (InputMethod::Vni, "a68", "ă"),
+        (InputMethod::Vni, "o67", "ơ"),
+        // Screen/buffer sync on non-adjacent repeated VNI keys
+        (InputMethod::Vni, "a1n1", "án"),
+        (InputMethod::Vni, "tie6n6", "tien6"),
+    ] {
+        let mut engine = Engine::new(method);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            type_key(&mut engine, &mut screen, ch);
+            assert_eq!(
+                screen,
+                engine.buffer(),
+                "screen/buffer desync on method={method:?} input={input}"
+            );
+        }
+        assert_eq!(screen, expected, "method={method:?} input={input}");
+    }
+}
+
+#[test]
+fn gboard_backspace_after_space_undoes_auto_restore_and_locks_vietnamese() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    let mut screen = String::new();
+    for ch in "test".chars() {
+        type_key(&mut engine, &mut screen, ch);
+    }
+    assert_eq!(screen, "tét");
+
+    // Pressing Space auto-restores standalone "test" -> "test "
+    if let Some(EngineEvent::Replace(rep)) = engine.process_key(' ') {
+        for _ in 0..rep.delete_before_cursor {
+            screen.pop();
+        }
+        screen.push_str(&rep.insert);
+    }
+    screen.push(' ');
+    assert_eq!(screen, "test ");
+
+    // Pressing Backspace immediately reverts "test " -> "tét"!
+    type_key(&mut engine, &mut screen, '\x08');
+    assert_eq!(screen, "tét");
+
+    // Pressing Space again respects the user's explicit override and commits "tét "!
+    assert_eq!(engine.process_key(' '), None);
+    screen.push(' ');
+    assert_eq!(screen, "tét ");
 }

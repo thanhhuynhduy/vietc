@@ -57,17 +57,17 @@ jobs:
       - name: Check licenses, sources, and duplicate dependencies
         run: cargo deny check
 
-      - name: Generate CycloneDX SBOM
+      - name: Generate CycloneDX SBOM per crate
         run: |
           mkdir -p dist
-          cargo cyclonedx --format json --override-filename vietc.cdx
-          find . -maxdepth 3 -type f -name 'vietc.cdx.json' -exec cp {} dist/ \;
-          test -s dist/vietc.cdx.json
+          cargo cyclonedx --format json
+          find . -maxdepth 3 -type f -name '*.cdx.json' -exec mv -f {} dist/ \;
+          test -n "$(find dist -maxdepth 1 -type f -name '*.cdx.json' -print -quit)"
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4
         with:
           name: vietc-sbom-${{ github.sha }}
-          path: dist/vietc.cdx.json
+          path: dist/*.cdx.json
           if-no-files-found: error
           retention-days: 90

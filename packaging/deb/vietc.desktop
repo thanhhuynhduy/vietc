@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=Viet+
+Name=VietC
 GenericName=Vietnamese Input Method
-Comment=Vietnamese Input Method for Linux — Zero underline, native Wayland/X11
-Exec=vietc-tray
+Comment=Pure evdev/uinput Vietnamese Input Method for Linux
+Exec=/usr/bin/vietc-tray
 Icon=vietc
 Terminal=false
-Categories=Utility;TextTools;X-GNOME-Utilities;
-Keywords=vietnamese;input;ime;keyboard;viet;gõ tiếng việt;
-StartupNotify=true
+Categories=Utility;TextTools;
+Keywords=vietnamese;input;ime;keyboard;evdev;telex;vni;gõ tiếng việt;
+StartupNotify=false

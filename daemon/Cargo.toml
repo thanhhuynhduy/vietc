@@ -1,9 +1,9 @@
 [package]
 name = "vietc-daemon"
-version = "0.1.24"
-edition = "2021"
-description = "Viet+ background daemon"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+description = "VietC pure evdev background daemon"
+license.workspace = true
 
 [[bin]]
 name = "vietc"
@@ -12,11 +12,11 @@ path = "src/main.rs"
 [features]
 default = ["x11", "wayland"]
 x11 = ["vietc-protocol/x11"]
-wayland = ["vietc-protocol/wayland-protocol", "dep:wayland-client", "dep:wayland-protocols-misc", "dep:xkbcommon", "dep:cosmic-protocols", "dep:wayland-protocols"]
+wayland = ["vietc-protocol/wayland-protocol", "dep:wayland-client", "dep:cosmic-protocols", "dep:wayland-protocols"]
 
 [dependencies]
-vietc-engine = { path = "../engine" }
-vietc-protocol = { path = "../protocol" }
+vietc-engine.workspace = true
+vietc-protocol.workspace = true
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -25,8 +25,6 @@ libc = "0.2"
 dirs = "7.0.0"
 dbus = "0.9"
 wayland-client = { version = "0.31", optional = true }
-wayland-protocols-misc = { version = "0.3", optional = true, features = ["client"] }
-xkbcommon = { version = "0.9", optional = true }
 cosmic-protocols = { version = "0.2", default-features = false, features = ["client"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
 tracing = "0.1"

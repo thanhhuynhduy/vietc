@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fs;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -8,12 +7,14 @@ static CAPS_SHIFT_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 const CAPS_SHIFT_TRACE_LIMIT: usize = 96;
 
 use crate::daemon::Daemon;
+use crate::device::discover_new_keyboards;
 use crate::display;
 #[cfg(feature = "x11")]
 use crate::display::DisplayServer;
 use crate::event::{
     is_caps_lock_on, is_flush_char, is_modifier_held_shift, is_modifier_pressed,
-    is_toggle_combination_state, is_toggle_key, is_vn_control_key, key_to_char_with_case,
+    is_navigation_or_control_key, is_toggle_combination_state, is_toggle_key, is_vn_control_key,
+    key_to_char_with_case,
 };
 use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
@@ -28,10 +29,18 @@ pub struct EvdevSharedState {
     pub pointer_activity: Arc<std::sync::atomic::AtomicU64>,
 }
 
+fn clear_omnibox_shield(
+    injector: &dyn vietc_protocol::inject::KeyInjector,
+    shared_focus: &SharedFocusSnapshot,
+) {
+    crate::focus::clear_omnibox_inline_selection(shared_focus);
+    injector.set_omnibox_inline_selection(false);
+}
+
 /// Apply the focused app's class to per-app state (enabled/bypass/method) and
-/// to the injector (terminal paste mode). Must run before any per-app decision
-/// for a key so the first key typed in a newly focused window already obeys
-/// that window's rules.
+/// to the injector (terminal paste & bypass mode). Must run before any per-app
+/// decision for a key so the first key typed in a newly focused window already
+/// obeys that window's rules.
 fn sync_app_class(
     daemon: &mut Daemon,
     injector: &dyn vietc_protocol::inject::KeyInjector,
@@ -39,6 +48,7 @@ fn sync_app_class(
     last_window_class: &mut String,
 ) {
     if !daemon.config.app_state.enabled {
+        injector.set_bypass_mode(false);
         return;
     }
     let class = shared_focus
@@ -54,27 +64,11 @@ fn sync_app_class(
     injector.set_active_window(&class);
     daemon.check_app_change_with(class);
     injector.set_terminal_app(daemon.app_state.is_terminal_app());
-    if daemon.is_current_app_bypassed() {
+    let bypassed = daemon.is_current_app_bypassed();
+    injector.set_bypass_mode(bypassed);
+    if bypassed {
         daemon.reset_composition_state();
     }
-}
-
-fn is_navigation_or_control_key(key: evdev::KeyCode) -> bool {
-    matches!(
-        key,
-        evdev::KeyCode::KEY_LEFT
-            | evdev::KeyCode::KEY_RIGHT
-            | evdev::KeyCode::KEY_UP
-            | evdev::KeyCode::KEY_DOWN
-            | evdev::KeyCode::KEY_HOME
-            | evdev::KeyCode::KEY_END
-            | evdev::KeyCode::KEY_PAGEUP
-            | evdev::KeyCode::KEY_PAGEDOWN
-            | evdev::KeyCode::KEY_DELETE
-            | evdev::KeyCode::KEY_INSERT
-            | evdev::KeyCode::KEY_ESC
-            | evdev::KeyCode::KEY_TAB
-    )
 }
 
 fn finish_forwarded_stroke(
@@ -148,6 +142,9 @@ fn execute_with_shift_released(
     focus_generation: u64,
     key_state: &evdev::AttributeSet<evdev::KeyCode>,
 ) -> crate::commands::TransactionOutcome {
+    if injector.uses_virtual_keyboard() {
+        return execute_commands(injector, commands, visible_revision, focus_generation);
+    }
     use vietc_protocol::inject::InjectResult;
     let shifts = [
         evdev::KeyCode::KEY_LEFTSHIFT,
@@ -180,21 +177,35 @@ fn execute_with_shift_released(
 
 struct KeyboardState {
     keys: evdev::AttributeSet<evdev::KeyCode>,
-    caps_lock: bool,
     grabbed: bool,
     consumed_keys: HashSet<u16>,
     forwarded_keys: HashSet<u16>,
 }
 
 impl KeyboardState {
-    fn new(caps_lock: bool, grabbed: bool) -> Self {
+    fn new(_caps_lock: bool, grabbed: bool) -> Self {
         Self {
             keys: evdev::AttributeSet::new(),
-            caps_lock,
             grabbed,
             consumed_keys: HashSet::new(),
             forwarded_keys: HashSet::new(),
         }
+    }
+}
+
+fn release_disconnected_device_keys(
+    injector: &dyn vietc_protocol::KeyInjector,
+    state: &KeyboardState,
+) {
+    let mut held: HashSet<u16> = state.forwarded_keys.iter().copied().collect();
+    for key in state.keys.iter() {
+        let code = key.code();
+        if !state.consumed_keys.contains(&code) {
+            held.insert(code);
+        }
+    }
+    for code in held {
+        injector.send_key_event(code, 0);
     }
 }
 
@@ -218,6 +229,8 @@ pub fn run_with_evdev(
         .clone();
     injector.bind_focus_generation(focus_generation_signal);
 
+    let mut global_caps_lock = devices.iter().any(|(device, _)| is_caps_lock_on(device));
+    injector.set_caps_lock(global_caps_lock);
     let mut device_states: Vec<KeyboardState> = devices
         .iter()
         .map(|(device, _)| KeyboardState::new(is_caps_lock_on(device), false))
@@ -337,6 +350,7 @@ pub fn run_with_evdev(
             daemon.reload_config();
             config_changed.store(false, Ordering::SeqCst);
             debug_logging = daemon.config.debug;
+            injector.set_bypass_mode(daemon.is_current_app_bypassed());
         }
 
         if poll_ret == 0 {
@@ -350,6 +364,10 @@ pub fn run_with_evdev(
                     log_info(&format!("[vietc] Hotplug grabbed keyboard: {}", name));
                 }
                 let caps = is_caps_lock_on(&dev);
+                if caps != global_caps_lock {
+                    global_caps_lock = caps;
+                    injector.set_caps_lock(global_caps_lock);
+                }
                 log_info(&format!("[vietc] Hotplug connected keyboard: {}", name));
                 devices.push((dev, name.clone()));
                 device_states.push(KeyboardState::new(caps, grabbed));
@@ -390,7 +408,6 @@ pub fn run_with_evdev(
             };
 
             let grabbed = device_states[i].grabbed;
-            let mut caps = device_states[i].caps_lock;
             let mut key_state = std::mem::take(&mut device_states[i].keys);
             let mut consumed_keys = std::mem::take(&mut device_states[i].consumed_keys);
             let mut forwarded_keys = std::mem::take(&mut device_states[i].forwarded_keys);
@@ -402,9 +419,9 @@ pub fn run_with_evdev(
                 let value = event.value();
                 let key = evdev::KeyCode(keycode);
 
-                // Update modifier and lock state before translating this event.
-                update_keyboard_state(&mut key_state, &mut caps, key, value);
-                injector.set_caps_lock(caps);
+                // Update modifier and shared lock state before translating this event.
+                update_keyboard_state(&mut key_state, &mut global_caps_lock, key, value);
+                injector.set_caps_lock(global_caps_lock);
                 // Complete a stroke already forwarded during uncertainty before
                 // focus recovery, policy, dedup or normal Backspace handling.
                 if finish_forwarded_stroke(&*injector, keycode, value, &mut forwarded_keys) {
@@ -419,6 +436,7 @@ pub fn run_with_evdev(
                     if pointer_now != last_pointer_activity {
                         last_pointer_activity = pointer_now;
                         daemon.reset_composition_state();
+                        clear_omnibox_shield(&*injector, &shared_focus);
                     }
                 }
 
@@ -438,7 +456,7 @@ pub fn run_with_evdev(
                         };
                         log_info(&format!(
                             "[vietc] keyboard-state trace={trace_index} device={i} key={key:?} action={action} value={value} caps_led={} left_shift={} right_shift={}",
-                            caps,
+                            global_caps_lock,
                             key_state.contains(evdev::KeyCode::KEY_LEFTSHIFT),
                             key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT),
                         ));
@@ -451,6 +469,7 @@ pub fn run_with_evdev(
 
                 // Completely bypass all IME processing for remote desktops, VM viewers and games
                 if daemon.is_current_app_bypassed() {
+                    injector.set_bypass_mode(true);
                     if grabbed {
                         injector.send_key_event(keycode, value);
                     }
@@ -461,7 +480,13 @@ pub fn run_with_evdev(
                     && is_toggle_key(key, &daemon.config.toggle_key)
                     && is_toggle_combination_state(&key_state, &daemon.config.toggle_key)
                 {
+                    if key == evdev::KeyCode::KEY_CAPSLOCK {
+                        // Consumed toggle chord must not flip the desktop CapsLock state.
+                        global_caps_lock = !global_caps_lock;
+                        injector.set_caps_lock(global_caps_lock);
+                    }
                     consumed_keys.insert(keycode);
+                    clear_omnibox_shield(&*injector, &shared_focus);
                     daemon.toggle_method();
                     continue;
                 }
@@ -547,6 +572,7 @@ pub fn run_with_evdev(
                             injector.set_active_window(&class);
                             daemon.check_app_change_with(class);
                             injector.set_terminal_app(daemon.app_state.is_terminal_app());
+                            injector.set_bypass_mode(daemon.is_current_app_bypassed());
                         }
 
                         if daemon.config.password_detection.enabled {
@@ -581,6 +607,7 @@ pub fn run_with_evdev(
                                 daemon.check_app_change_with(class);
                             }
                             injector.set_terminal_app(daemon.app_state.is_terminal_app());
+                            injector.set_bypass_mode(daemon.is_current_app_bypassed());
                         }
                     }
 
@@ -620,6 +647,7 @@ pub fn run_with_evdev(
                     &mut forwarded_keys,
                 ) {
                     daemon.reset_composition_state();
+                    clear_omnibox_shield(&*injector, &shared_focus);
                     continue;
                 }
 
@@ -629,20 +657,22 @@ pub fn run_with_evdev(
                     }
                     if is_modifier_pressed(&key_state) {
                         daemon.reset_composition_state();
+                        clear_omnibox_shield(&*injector, &shared_focus);
                         continue;
                     }
                     if !daemon.engine.is_enabled() {
                         continue;
                     }
-                    if let Some(ch) =
-                        key_to_char_with_case(key, is_modifier_held_shift(&key_state), caps)
-                    {
+                    if let Some(ch) = key_to_char_with_case(
+                        key,
+                        is_modifier_held_shift(&key_state),
+                        global_caps_lock,
+                    ) {
                         let commands = daemon.process_forwarded_key(ch);
-                        if !commands.is_empty() {
+                        if debug_logging && !commands.is_empty() {
                             log_info(&format!(
-                                "[vietc] non-grabbed inject: ch='{}' cmds={:?}",
-                                ch.escape_default(),
-                                commands
+                                "[vietc] non-grabbed inject: count={}",
+                                commands.len()
                             ));
                         }
                         let outcome = execute_commands(
@@ -656,6 +686,7 @@ pub fn run_with_evdev(
                         }
                     } else if is_navigation_or_control_key(key) {
                         daemon.reset_composition_state();
+                        clear_omnibox_shield(&*injector, &shared_focus);
                     }
                 } else {
                     if is_modifier_pressed(&key_state) {
@@ -671,6 +702,7 @@ pub fn run_with_evdev(
                             )
                         {
                             daemon.reset_composition_state();
+                            clear_omnibox_shield(&*injector, &shared_focus);
                         }
                         injector.send_key_event(keycode, value);
                         continue;
@@ -678,12 +710,16 @@ pub fn run_with_evdev(
 
                     // Engine disabled in grabbed mode: forward keys directly
                     if !daemon.engine.is_enabled() {
+                        if value == 1 {
+                            clear_omnibox_shield(&*injector, &shared_focus);
+                        }
                         injector.send_key_event(keycode, value);
                         continue;
                     }
 
                     if key == evdev::KeyCode::KEY_BACKSPACE {
                         if value == 1 || value == 2 {
+                            clear_omnibox_shield(&*injector, &shared_focus);
                             let commands = daemon.process_key('\x08');
                             if commands.is_empty() {
                                 injector.send_key_event(14, 1);
@@ -715,7 +751,7 @@ pub fn run_with_evdev(
                                 key_to_char_with_case(
                                     key,
                                     is_modifier_held_shift(&key_state),
-                                    caps
+                                    global_caps_lock
                                 )
                                 .map(|c| c.escape_default().to_string())
                                 .unwrap_or_default(),
@@ -726,9 +762,11 @@ pub fn run_with_evdev(
                         if consumed_keys.contains(&keycode) {
                             consumed_keys.remove(&keycode);
                         }
-                        if let Some(ch) =
-                            key_to_char_with_case(key, is_modifier_held_shift(&key_state), caps)
-                        {
+                        if let Some(ch) = key_to_char_with_case(
+                            key,
+                            is_modifier_held_shift(&key_state),
+                            global_caps_lock,
+                        ) {
                             let buf_before = daemon.engine.buffer().chars().count();
                             let commands = daemon.process_key(ch);
                             if !commands.is_empty() {
@@ -741,6 +779,9 @@ pub fn run_with_evdev(
                                 }
                                 consumed_keys.insert(keycode);
 
+                                if crate::focus::take_omnibox_inline_selection(&shared_focus) {
+                                    injector.set_omnibox_inline_selection(true);
+                                }
                                 let outcome = execute_with_shift_released(
                                     &*injector,
                                     &commands,
@@ -753,6 +794,7 @@ pub fn run_with_evdev(
                                 }
 
                                 if is_flush_char(ch) && daemon.engine.is_enabled() {
+                                    clear_omnibox_shield(&*injector, &shared_focus);
                                     injector.send_key_event(keycode, 1);
                                     injector.send_key_event(keycode, 0);
                                 }
@@ -774,18 +816,26 @@ pub fn run_with_evdev(
                                         ch.escape_default(),
                                     ));
                                 }
+                                // Any forwarded printable key overwrites prior inline autocomplete
+                                // unless the browser emits a fresh TextSelectionChanged for it.
+                                clear_omnibox_shield(&*injector, &shared_focus);
                                 injector.send_key_event(keycode, 1);
                             }
                         } else {
                             if is_navigation_or_control_key(key) {
                                 daemon.reset_composition_state();
                             }
+                            clear_omnibox_shield(&*injector, &shared_focus);
                             injector.send_key_event(keycode, 1);
                         }
                     } else if value == 2 {
                         if consumed_keys.contains(&keycode) {
                             continue;
                         }
+                        if !daemon.engine.buffer().is_empty() {
+                            daemon.reset_composition_state();
+                        }
+                        clear_omnibox_shield(&*injector, &shared_focus);
                         injector.send_key_event(keycode, 2);
                     } else if value == 0 {
                         if consumed_keys.remove(&keycode) {
@@ -798,31 +848,24 @@ pub fn run_with_evdev(
 
             // Save updated key and lock state back.
             device_states[i].keys = key_state;
-            device_states[i].caps_lock = caps;
             device_states[i].consumed_keys = consumed_keys;
             device_states[i].forwarded_keys = forwarded_keys;
         }
 
-        // Remove any devices that errored out (e.g. a uinput virtual keyboard
-        // like vietc-vk was closed) so we don't crash the whole daemon.
+        // Remove any devices that errored out (e.g. a uinput/Bluetooth/USB keyboard
+        // disconnected mid-chord) and release all held keys so modifiers never stick.
         if !dead.is_empty() {
             dead.sort_unstable();
             dead.dedup();
+            daemon.reset_composition_state();
+            clear_omnibox_shield(&*injector, &shared_focus);
             for &d in dead.iter().rev() {
                 let name = devices[d].1.clone();
                 devices.remove(d);
-                for code in &device_states[d].forwarded_keys {
-                    injector.send_key_event(*code, 0);
-                }
+                release_disconnected_device_keys(&*injector, &device_states[d]);
                 device_states.remove(d);
                 let path = dev_path_of(&name);
                 known_paths.remove(&path);
-                // Rebuild phys set from remaining paths — virtual uinput
-                // devices disappear from sysfs on close, so recomputing phys_id
-                // for the dead path would return None and leave a stale entry
-                // that blocks the next virtual keyboard with the same input
-                // number (e.g. re-used /dev/input/event31 → same
-                // sysfs:/sys/devices/virtual/input/input31).
                 known_phys_ids.clear();
                 for p in known_paths.iter() {
                     if let Some(pid) = crate::device::get_device_phys_id(std::path::Path::new(p)) {
@@ -1250,7 +1293,7 @@ mod grabbed_event_stream_tests {
     fn grabbed_stream_composes_telex_without_duplicate_prefixes() {
         assert_eq!(simulate_grabbed_telex(&physical_stream("hieenj")), "hiện");
         assert_eq!(simulate_grabbed_telex(&physical_stream("dd")), "đ");
-        assert_eq!(simulate_grabbed_telex(&physical_stream("hoaf")), "hoà");
+        assert_eq!(simulate_grabbed_telex(&physical_stream("hoaf")), "hòa");
     }
 
     #[test]
@@ -1279,124 +1322,33 @@ mod grabbed_event_stream_tests {
 
         assert_eq!(simulate_grabbed_telex(&events), "đ");
     }
-}
-
-/// Discover keyboard devices present in /dev/input that are not already known.
-/// Used for hotplug so newly connected keyboards (USB/wireless/virtual) are attached dynamically.
-fn discover_new_keyboards(
-    existing_paths: &HashSet<String>,
-    existing_phys: &mut HashSet<String>,
-) -> Vec<(evdev::Device, String)> {
-    let mut out = Vec::new();
-    let mut added_paths = HashSet::new();
-
-    // 1. Scan /dev/input/by-path/*-event-kbd
-    let by_path = std::path::Path::new("/dev/input/by-path");
-    if by_path.exists() {
-        if let Ok(rd) = fs::read_dir(by_path) {
-            for entry in rd.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with("-event-kbd") {
-                    if let Ok(real_path) = fs::canonicalize(entry.path()) {
-                        let p = real_path.to_string_lossy().to_string();
-                        if existing_paths.contains(&p) || !added_paths.insert(p.clone()) {
-                            continue;
-                        }
-                        let phys_opt = crate::device::get_device_phys_id(&real_path);
-                        if let Some(phys_id) = &phys_opt {
-                            if existing_phys.contains(phys_id) {
-                                continue;
-                            }
-                        }
-                        if let Ok(device) = evdev::Device::open(&real_path) {
-                            let dev_name = device.name().unwrap_or("unknown").to_string();
-                            if crate::device::is_valid_keyboard(&device) {
-                                if let Some(pid) = phys_opt {
-                                    existing_phys.insert(pid);
-                                }
-                                out.push((
-                                    device,
-                                    format!("{} ({})", real_path.display(), dev_name),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    #[test]
+    fn disconnect_cleanup_releases_all_unconsumed_held_and_forwarded_keys() {
+        let injector = UncertainInjector::default();
+        let mut state = KeyboardState::new(false, true);
+        state.keys.insert(evdev::KeyCode::KEY_LEFTCTRL);
+        state.keys.insert(evdev::KeyCode::KEY_LEFTSHIFT);
+        state.keys.insert(evdev::KeyCode::KEY_D);
+        state.consumed_keys.insert(evdev::KeyCode::KEY_D.code());
+        state.forwarded_keys.insert(evdev::KeyCode::KEY_C.code());
+        release_disconnected_device_keys(&injector, &state);
+        let mut released: Vec<u16> = injector
+            .events
+            .borrow()
+            .iter()
+            .map(|&(c, v)| {
+                assert_eq!(v, 0);
+                c
+            })
+            .collect();
+        released.sort_unstable();
+        assert_eq!(
+            released,
+            vec![
+                evdev::KeyCode::KEY_LEFTCTRL.code(),
+                evdev::KeyCode::KEY_LEFTSHIFT.code(),
+                evdev::KeyCode::KEY_C.code(),
+            ]
+        );
     }
-
-    // 2. Scan /dev/input/by-id/*-event-kbd
-    let by_id = std::path::Path::new("/dev/input/by-id");
-    if by_id.exists() {
-        if let Ok(rd) = fs::read_dir(by_id) {
-            for entry in rd.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with("-event-kbd") {
-                    if let Ok(real_path) = fs::canonicalize(entry.path()) {
-                        let p = real_path.to_string_lossy().to_string();
-                        if existing_paths.contains(&p) || !added_paths.insert(p.clone()) {
-                            continue;
-                        }
-                        let phys_opt = crate::device::get_device_phys_id(&real_path);
-                        if let Some(phys_id) = &phys_opt {
-                            if existing_phys.contains(phys_id) {
-                                continue;
-                            }
-                        }
-                        if let Ok(device) = evdev::Device::open(&real_path) {
-                            let dev_name = device.name().unwrap_or("unknown").to_string();
-                            if crate::device::is_valid_keyboard(&device) {
-                                if let Some(pid) = phys_opt {
-                                    existing_phys.insert(pid);
-                                }
-                                out.push((
-                                    device,
-                                    format!("{} ({})", real_path.display(), dev_name),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Scan /dev/input/event* for Bluetooth & direct devices without by-path/by-id symlinks
-    let dir = std::path::Path::new("/dev/input");
-    if dir.exists() {
-        if let Ok(rd) = fs::read_dir(dir) {
-            for entry in rd.flatten() {
-                let name_str = entry.file_name().to_string_lossy().to_string();
-                if name_str.starts_with("event") {
-                    if let Ok(real_path) = fs::canonicalize(entry.path()) {
-                        let p = real_path.to_string_lossy().to_string();
-                        if existing_paths.contains(&p) || !added_paths.insert(p.clone()) {
-                            continue;
-                        }
-                        let phys_opt = crate::device::get_device_phys_id(&real_path);
-                        if let Some(phys_id) = &phys_opt {
-                            if existing_phys.contains(phys_id) {
-                                continue;
-                            }
-                        }
-                        if let Ok(device) = evdev::Device::open(&real_path) {
-                            let dev_name = device.name().unwrap_or("unknown").to_string();
-                            if crate::device::is_valid_keyboard(&device) {
-                                if let Some(pid) = phys_opt {
-                                    existing_phys.insert(pid);
-                                }
-                                out.push((
-                                    device,
-                                    format!("{} ({})", real_path.display(), dev_name),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    out
 }

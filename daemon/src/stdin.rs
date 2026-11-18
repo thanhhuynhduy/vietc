@@ -15,6 +15,7 @@ pub fn run_stdin_mode(
     shared_focus: SharedFocusSnapshot,
     config_changed: Arc<std::sync::atomic::AtomicBool>,
     status_changed: Arc<std::sync::atomic::AtomicBool>,
+    pointer_activity: Arc<std::sync::atomic::AtomicU64>,
     _engine_enabled: Arc<std::sync::atomic::AtomicBool>,
     display: display::DisplayServer,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -23,9 +24,7 @@ pub fn run_stdin_mode(
     if !io::stdin().is_terminal() {
         log_info("[vietc] Warning: No keyboard device and no terminal.");
         log_info("[vietc] Retrying keyboard access every 5 seconds...");
-        log_info("[vietc] Ensure you are in the 'input' group:");
-        log_info("      sudo usermod -aG input $USER");
-        log_info("  Then log out and back in.");
+        log_info("[vietc] Ensure active-seat uaccess rules are installed (sudo ./install.sh).");
 
         loop {
             if SIGNAL_EXIT.load(Ordering::SeqCst) {
@@ -55,7 +54,7 @@ pub fn run_stdin_mode(
                         focus: shared_focus,
                         config_changed,
                         status_changed,
-                        pointer_activity: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                        pointer_activity,
                     },
                     display,
                 );

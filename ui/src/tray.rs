@@ -6,18 +6,49 @@ fn is_flatpak() -> bool {
     std::path::Path::new("/app/bin/vietc-daemon").exists()
 }
 
-fn write_status(state: &str) {
+fn ipc_file_path(name: &str) -> std::path::PathBuf {
     if let Some(config_dir) = dirs::config_dir() {
-        let dir = config_dir.join("vietc");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("status"), state);
+        return config_dir.join("vietc").join(name);
+    }
+    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
+        if !rt.is_empty() && std::path::Path::new(&rt).is_dir() {
+            return std::path::PathBuf::from(rt).join("vietc").join(name);
+        }
+    }
+    let uid = unsafe { libc::getuid() };
+    std::path::PathBuf::from(format!("/tmp/vietc-{}-{}", name, uid))
+}
+
+fn write_ipc_file(name: &str, value: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let path = ipc_file_path(name);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && parent != std::path::Path::new("/tmp") {
+            let _ = std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent);
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+    {
+        let _ = f.write_all(value.as_bytes());
     }
 }
 
+fn write_status(state: &str) {
+    write_ipc_file("status", state);
+}
+
 fn read_method(fallback: &str) -> String {
-    let path = dirs::config_dir()
-        .map(|d| d.join("vietc").join("method"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/vietc-method"));
+    let path = ipc_file_path("method");
     if let Ok(content) = std::fs::read_to_string(&path) {
         let trimmed = content.trim();
         if trimmed == "vni" || trimmed == "telex" {
@@ -36,18 +67,11 @@ fn read_method(fallback: &str) -> String {
 }
 
 fn write_method(method: &str) {
-    if let Some(config_dir) = dirs::config_dir() {
-        let dir = config_dir.join("vietc");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("method"), method);
-    }
+    write_ipc_file("method", method);
 }
 
 fn read_status(fallback: &str) -> String {
-    let path = dirs::config_dir()
-        .map(|d| d.join("vietc").join("status"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/vietc-status"));
-
+    let path = ipc_file_path("status");
     if let Ok(content) = std::fs::read_to_string(&path) {
         let trimmed = content.trim();
         if trimmed == "vn" || trimmed == "en" {
@@ -66,7 +90,6 @@ fn read_status(fallback: &str) -> String {
 }
 
 fn ensure_icons() {
-    // SVG content for Viet+ icons
     let svg_vn = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <rect x="8" y="8" width="112" height="112" rx="24" fill="#e02424"/>
   <text x="64" y="96" text-anchor="middle" fill="#ffffff" font-size="48" font-weight="bold" font-family="system-ui, sans-serif">VN</text>
@@ -99,136 +122,10 @@ fn ensure_icons() {
     }
 }
 
-fn show_notification(title: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .args([title, body])
-        .status();
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-struct Release {
-    tag_name: String,
-    html_url: String,
-    assets: Vec<Asset>,
-}
-
 struct VietTray {
     mode: String,
     im: String,
     autostart: bool,
-    update_available: Option<Release>,
-    updating: bool,
-    handle: std::sync::Arc<std::sync::Mutex<Option<ksni::Handle<Self>>>>,
-}
-
-impl VietTray {
-    fn check_for_updates(&self, handle: &ksni::Handle<Self>, verbose: bool) {
-        let handle = handle.clone();
-        std::thread::spawn(move || {
-            if verbose {
-                show_notification(
-                    "Checking for updates...",
-                    "Contacting git.khoavo.myds.me...",
-                );
-            }
-            let output = std::process::Command::new("curl")
-                .args([
-                    "-s",
-                    "https://git.khoavo.myds.me/api/v1/repos/vndangkhoa/vietc/releases",
-                ])
-                .output();
-
-            match output {
-                Ok(out) if out.status.success() => {
-                    if let Ok(releases) = serde_json::from_slice::<Vec<Release>>(&out.stdout) {
-                        if let Some(latest) = releases.first() {
-                            let latest_ver = latest.tag_name.trim_start_matches('v');
-                            let curr_ver = env!("CARGO_PKG_VERSION");
-                            if latest_ver != curr_ver {
-                                show_notification(
-                                    "Viet+ Update Available",
-                                    &format!("Version {} is available! Select 'Update to {}' in the tray menu.", latest.tag_name, latest.tag_name)
-                                );
-                                let rel = latest.clone();
-                                let _ = handle.update(move |t| {
-                                    t.update_available = Some(rel);
-                                });
-                                return;
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-            if verbose {
-                show_notification("Viet+ is Up-to-Date", "You are running the latest version.");
-            }
-        });
-    }
-
-    fn trigger_update(&self, handle: &ksni::Handle<Self>, release: Release) {
-        let handle = handle.clone();
-        let _ = handle.update(|t| t.updating = true);
-        std::thread::spawn(move || {
-            show_notification(
-                "Downloading update...",
-                &format!("Updating Viet+ to {}...", release.tag_name),
-            );
-            let appimage_asset = release
-                .assets
-                .iter()
-                .find(|a| a.name.ends_with(".AppImage"));
-            if let Some(asset) = appimage_asset {
-                if let Ok(appimage_path) = std::env::var("APPIMAGE") {
-                    let temp_path = format!("{}.tmp-update", appimage_path);
-                    let status = std::process::Command::new("curl")
-                        .args(["-L", "-o", &temp_path, &asset.browser_download_url])
-                        .status();
-                    match status {
-                        Ok(s) if s.success() => {
-                            use std::os::unix::fs::PermissionsExt;
-                            if let Ok(_) = std::fs::set_permissions(
-                                &temp_path,
-                                std::fs::Permissions::from_mode(0o755),
-                            ) {
-                                if let Ok(_) = std::fs::rename(&temp_path, &appimage_path) {
-                                    show_notification(
-                                        "Update Succeeded",
-                                        "Viet+ has been updated! Please restart the application.",
-                                    );
-                                    let _ = handle.update(|t| {
-                                        t.updating = false;
-                                        t.update_available = None;
-                                    });
-                                    return;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    let _ = std::fs::remove_file(&temp_path);
-                    show_notification("Update Failed", "Could not overwrite the AppImage file.");
-                } else {
-                    let _ = std::process::Command::new("xdg-open")
-                        .arg(&release.html_url)
-                        .status();
-                    show_notification(
-                        "Opening Releases Page",
-                        "Please download the update manually.",
-                    );
-                }
-            } else {
-                show_notification("Update Failed", "No AppImage asset found in this release.");
-            }
-            let _ = handle.update(|t| t.updating = false);
-        });
-    }
 }
 
 impl Tray for VietTray {
@@ -236,7 +133,7 @@ impl Tray for VietTray {
         "io.github.vietc.Tray".into()
     }
     fn title(&self) -> String {
-        "Viet+".into()
+        "VietC".into()
     }
 
     fn icon_name(&self) -> String {
@@ -259,14 +156,12 @@ impl Tray for VietTray {
     }
 
     fn icon_theme_path(&self) -> String {
-        // Use XDG user theme path for icons (works in both native and Flatpak)
         if let Some(home) = dirs::home_dir() {
             let user_path = home.join(".local/share/icons");
             if user_path.exists() {
                 return user_path.to_string_lossy().into_owned();
             }
         }
-        // Flatpak: icons are in /app/share/icons
         let flatpak_path = std::path::Path::new("/app/share/icons");
         if flatpak_path.exists() {
             return "/app/share/icons".into();
@@ -309,15 +204,17 @@ impl Tray for VietTray {
             2_usize
         };
 
-        let mut items = vec![
+        vec![
             CheckmarkItem {
                 label: "Start with System".into(),
                 checked: self.autostart,
                 activate: Box::new(|this: &mut VietTray| {
                     if this.autostart {
                         config::uninstall_autostart();
+                        this.autostart = false;
                     } else {
                         config::install_autostart();
+                        this.autostart = true;
                     }
                 }),
                 ..Default::default()
@@ -388,66 +285,23 @@ impl Tray for VietTray {
                 ..Default::default()
             }
             .into(),
-        ];
-
-        items.push(MenuItem::Separator);
-        if let Some(ref release) = self.update_available {
-            let label = if self.updating {
-                "Updating...".into()
-            } else {
-                format!("Update to {}", release.tag_name)
-            };
-            items.push(
-                StandardItem {
-                    label,
-                    activate: Box::new(|this: &mut VietTray| {
-                        if !this.updating {
-                            if let Some(ref rel) = this.update_available.clone() {
-                                let handle = this.handle.lock().unwrap().clone().unwrap();
-                                this.trigger_update(&handle, rel.clone());
-                            }
-                        }
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-            );
-        } else {
-            items.push(
-                StandardItem {
-                    label: if self.updating {
-                        "Updating...".into()
-                    } else {
-                        "Check for Updates".into()
-                    },
-                    activate: Box::new(|this: &mut VietTray| {
-                        if !this.updating {
-                            let handle = this.handle.lock().unwrap().clone().unwrap();
-                            this.check_for_updates(&handle, true);
-                        }
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-            );
-        }
-
-        items.push(MenuItem::Separator);
-        items.push(
+            MenuItem::Separator,
             StandardItem {
-                label: "About: Viet+".into(),
+                label: "About: VietC".into(),
                 activate: Box::new(|_| {
-                    let _ = std::process::Command::new("xdg-open")
+                    if let Ok(mut child) = std::process::Command::new("xdg-open")
                         .arg("https://github.com/thanhhuynhduy/vietc")
-                        .status();
+                        .spawn()
+                    {
+                        std::thread::spawn(move || {
+                            let _ = child.wait();
+                        });
+                    }
                 }),
                 ..Default::default()
             }
             .into(),
-        );
-
-        items.push(MenuItem::Separator);
-        items.push(
+            MenuItem::Separator,
             StandardItem {
                 label: "Quit".into(),
                 activate: Box::new(|_| {
@@ -457,40 +311,27 @@ impl Tray for VietTray {
                 ..Default::default()
             }
             .into(),
-        );
-
-        items
+        ]
     }
 }
 
 pub fn run() {
     ensure_icons();
 
-    // Ensure autostart is installed by default
-    if !config::is_autostart_installed() {
-        config::install_autostart();
-    }
-
     let initial_mode = read_status("");
     let initial_im = read_method("");
     let initial_autostart = config::is_autostart_installed();
 
-    let handle_holder = std::sync::Arc::new(std::sync::Mutex::new(None));
     let tray = VietTray {
         mode: initial_mode.clone(),
         im: initial_im.clone(),
         autostart: initial_autostart,
-        update_available: None,
-        updating: false,
-        handle: handle_holder.clone(),
     };
 
     let service = ksni::TrayService::new(tray);
     let handle = service.handle();
-    *handle_holder.lock().unwrap() = Some(handle.clone());
     service.spawn();
 
-    // Event-driven watcher on config directory via Linux inotify + fallback poll
     std::thread::spawn(move || {
         let dir = dirs::config_dir()
             .map(|d| d.join("vietc"))
@@ -521,7 +362,6 @@ pub fn run() {
         let mut buffer = [0u8; 4096];
 
         loop {
-            // Wait for file modification event with 500ms fallback timeout
             if inotify_fd >= 0 && wd >= 0 {
                 let mut pfd = libc::pollfd {
                     fd: inotify_fd,
@@ -569,7 +409,7 @@ pub fn run() {
                 last_mode = mode.clone();
                 last_im = im.clone();
                 last_autostart = autostart;
-                let _ = handle.update(move |t| {
+                handle.update(move |t| {
                     t.mode = mode;
                     t.im = im;
                     t.autostart = autostart;

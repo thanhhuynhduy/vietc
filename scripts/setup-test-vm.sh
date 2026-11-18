@@ -30,7 +30,7 @@ echo -e "${YELLOW}[3/5] Cloning and building...${NC}"
 if [ ! -d vietc ]; then
   git clone https://github.com/thanhhuynhduy/vietc.git
 fi
-cd vietc && git checkout staging && cargo build --release
+cd vietc && cargo build --release
 
 # 4. Install
 echo -e "${YELLOW}[4/5] Installing...${NC}"
@@ -39,26 +39,25 @@ sudo ./install.sh
 # 5. Done
 echo -e "${YELLOW}[5/5] Setup complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  Reboot to apply group + udev changes  ${NC}"
-echo -e "${GREEN}  Then: vietc-tray &                     ${NC}"
-echo -e "${GREEN}  Or:   sudo vietc-daemon                ${NC}"
+echo -e "${GREEN}  Re-login to apply uaccess ACLs        ${NC}"
+echo -e "${GREEN}  Optional tray: vietc-tray &           ${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Quick test:"
 echo "  cargo run --bin vietc-cli"
 echo ""
-echo "Deterministic Phase 6 integration harness:"
-echo "  cargo test -p vietc-daemon --test daemon_suite -- --test-threads=1"
+echo "Deterministic integration harness:"
+echo "  env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p vietc-daemon --test daemon_suite runtime::deterministic_ -- --test-threads=1"
 echo ""
-echo "Privileged runtime verification (run inside the target desktop session):"
-echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test runtime \\"
-echo "    privileged_runtime_matrix_records_exact_ready_and_skip_evidence \\"
+echo "Privileged runtime verification (run inside a disposable target desktop session):"
+echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "    runtime::privileged_runtime_matrix_records_exact_ready_and_skip_evidence \\"
 echo "    -- --ignored --nocapture --test-threads=1"
-echo "  VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test runtime \\"
-echo "    privileged_runtime_targets_execute_controlled_scenarios \\"
+echo "  VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "    runtime::privileged_runtime_targets_execute_controlled_scenarios \\"
 echo "    -- --ignored --nocapture --test-threads=1"
-echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test runtime \\"
-echo "    wayland_wtype_success_is_observable_at_runtime \\"
+echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "    runtime::wayland_wtype_success_is_observable_at_runtime \\"
 echo "    -- --ignored --nocapture --test-threads=1"
 echo ""
 echo "Run the privileged matrix separately in X11, COSMIC Wayland, GNOME Wayland, and KDE Wayland."

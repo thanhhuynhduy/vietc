@@ -19,11 +19,20 @@ use key_injection::{
 };
 use replacement_transaction::ClipboardBurstState;
 
+#[cfg(feature = "wayland-protocol")]
+struct WaylandVkSlot {
+    vk: Option<crate::wayland_vk::WaylandVirtualKeyboard>,
+    disabled: bool,
+    last_attempt: Option<std::time::Instant>,
+}
+
 /// Readiness/transfer wait budget, not proof that an application inserted text.
-/// Native Wayland waits for a source transfer; the legacy X11 clipboard path
-/// still uses a best-effort stability delay.
+/// Native Wayland prefers persistent `zwp_virtual_keyboard_v1`, falling back to
+/// data-control clipboard offers; X11 uses best-effort selection stability.
 pub struct UinputInjector {
     file: File,
+    #[cfg(feature = "wayland-protocol")]
+    wayland_vk: Mutex<WaylandVkSlot>,
     #[cfg(feature = "wayland-protocol")]
     wayland_paste: Mutex<Option<RetainedWaylandPaste>>,
     #[cfg(feature = "wayland-protocol")]
@@ -35,11 +44,34 @@ pub struct UinputInjector {
     restorer: ClipboardRestorer,
     caps_lock: std::sync::atomic::AtomicBool,
     terminal_app: std::sync::atomic::AtomicBool,
+    bypass_mode: std::sync::atomic::AtomicBool,
+    uinput_mod_mask: std::sync::atomic::AtomicU8,
+    uinput_shift_mask: std::sync::atomic::AtomicU8,
+    omnibox_inline_selection: std::sync::atomic::AtomicBool,
+}
+
+fn system_modifier_bit(keycode: u16) -> Option<u8> {
+    match keycode {
+        29 => Some(1 << 0),  // KEY_LEFTCTRL
+        97 => Some(1 << 1),  // KEY_RIGHTCTRL
+        56 => Some(1 << 2),  // KEY_LEFTALT
+        100 => Some(1 << 3), // KEY_RIGHTALT
+        125 => Some(1 << 4), // KEY_LEFTMETA
+        126 => Some(1 << 5), // KEY_RIGHTMETA
+        _ => None,
+    }
+}
+
+fn shift_bit(keycode: u16) -> Option<u8> {
+    match keycode {
+        42 => Some(1 << 0), // KEY_LEFTSHIFT
+        54 => Some(1 << 1), // KEY_RIGHTSHIFT
+        _ => None,
+    }
 }
 
 impl UinputInjector {
     pub fn new(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        // Ensure uinput kernel module is loaded before trying to open the device
         let _ = std::process::Command::new("modprobe")
             .args(["uinput"])
             .output();
@@ -50,20 +82,14 @@ impl UinputInjector {
 
         let fd = file.as_raw_fd();
 
-        // Enable EV_KEY
         ioctl(fd, UI_SET_EVBIT, EV_KEY as u64)
             .map_err(|e| format!("UI_SET_EVBIT failed: {}", e))?;
 
-        // Enable all keyboard keycodes we'll need (0-255).
-        // KEY_MAX (0x1ff) includes mouse button codes (BTN_LEFT=272 etc.)
-        // which would make X11 treat this device as a pointer and conflict
-        // with the real mouse.
         for code in 0..=KEYBOARD_KEY_MAX {
             ioctl(fd, UI_SET_KEYBIT, code as u64)
                 .map_err(|e| format!("UI_SET_KEYBIT {} failed: {}", code, e))?;
         }
 
-        // Create uinput device
         let mut usetup: uinput_setup = unsafe { std::mem::zeroed() };
         let name_bytes = name.as_bytes();
         let copy_len = name_bytes.len().min(UINPUT_MAX_NAME_SIZE - 1);
@@ -81,8 +107,30 @@ impl UinputInjector {
 
         ioctl(fd, UI_DEV_CREATE, 0).map_err(|e| format!("UI_DEV_CREATE failed: {}", e))?;
 
-        // Small delay for device to be ready
         std::thread::sleep(std::time::Duration::from_millis(10));
+
+        #[cfg(feature = "wayland-protocol")]
+        let vk_slot = {
+            let disabled = std::env::var_os("VIETC_DISABLE_WAYLAND_VK").is_some();
+            let vk = if disabled {
+                None
+            } else {
+                match crate::wayland_vk::WaylandVirtualKeyboard::connect() {
+                    Ok(vk) => {
+                        eprintln!(
+                            "[vietc] Wayland zwp_virtual_keyboard_v1 active (zero-clipboard direct Unicode mode)"
+                        );
+                        Some(vk)
+                    }
+                    Err(_) => None,
+                }
+            };
+            WaylandVkSlot {
+                vk,
+                disabled,
+                last_attempt: Some(std::time::Instant::now()),
+            }
+        };
 
         let clip = Arc::new(ClipState {
             inner: Mutex::new(ClipInner {
@@ -100,6 +148,8 @@ impl UinputInjector {
         Ok(Self {
             file,
             #[cfg(feature = "wayland-protocol")]
+            wayland_vk: Mutex::new(vk_slot),
+            #[cfg(feature = "wayland-protocol")]
             wayland_paste: Mutex::new(None),
             #[cfg(feature = "wayland-protocol")]
             retired_wayland_offers: Mutex::new(Vec::new()),
@@ -110,12 +160,103 @@ impl UinputInjector {
             restorer,
             caps_lock: std::sync::atomic::AtomicBool::new(false),
             terminal_app: std::sync::atomic::AtomicBool::new(false),
+            bypass_mode: std::sync::atomic::AtomicBool::new(false),
+            uinput_mod_mask: std::sync::atomic::AtomicU8::new(0),
+            uinput_shift_mask: std::sync::atomic::AtomicU8::new(0),
+            omnibox_inline_selection: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    #[cfg(feature = "wayland-protocol")]
+    fn with_wayland_vk<R>(
+        &self,
+        op: impl FnOnce(&crate::wayland_vk::WaylandVirtualKeyboard) -> R,
+    ) -> Option<R> {
+        let mut slot = self
+            .wayland_vk
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.disabled {
+            return None;
+        }
+        if slot.vk.as_ref().is_some_and(|vk| !vk.is_healthy()) {
+            slot.vk = None;
+        }
+        if slot.vk.is_none() {
+            let now = std::time::Instant::now();
+            let can_retry = slot
+                .last_attempt
+                .is_none_or(|prev| now.duration_since(prev) >= Duration::from_secs(3));
+            if can_retry {
+                slot.last_attempt = Some(now);
+                if let Ok(vk) = crate::wayland_vk::WaylandVirtualKeyboard::connect() {
+                    vk.set_caps_lock(self.caps_lock.load(Ordering::Relaxed));
+                    eprintln!("[vietc] Wayland zwp_virtual_keyboard_v1 connected");
+                    slot.vk = Some(vk);
+                }
+            }
+        }
+        slot.vk.as_ref().map(op)
+    }
+
+    #[cfg(feature = "wayland-protocol")]
+    fn transfer_vk_shift_to_uinput(&self) {
+        let (left_shift, right_shift) = self
+            .with_wayland_vk(|vk| vk.handoff_shift_to_uinput())
+            .unwrap_or((false, false));
+        if left_shift || right_shift {
+            let mut bits = 0u8;
+            if left_shift {
+                bits |= 1 << 0;
+            }
+            if right_shift {
+                bits |= 1 << 1;
+            }
+            self.uinput_shift_mask.fetch_or(bits, Ordering::AcqRel);
+            let _ = serialize_transaction(&self.transaction_lock, || {
+                if left_shift {
+                    self.send_uinput_event_unlocked(EV_KEY, 42, 1)?;
+                }
+                if right_shift {
+                    self.send_uinput_event_unlocked(EV_KEY, 54, 1)?;
+                }
+                self.send_uinput_event_unlocked(0, 0, 0)
+            });
+        }
+    }
+
+    #[cfg(feature = "wayland-protocol")]
+    fn transfer_uinput_shift_to_vk(&self) {
+        let bits = self.uinput_shift_mask.swap(0, Ordering::AcqRel);
+        if bits == 0 {
+            return;
+        }
+        let left = (bits & (1 << 0)) != 0;
+        let right = (bits & (1 << 1)) != 0;
+        let _ = serialize_transaction(&self.transaction_lock, || {
+            if left {
+                self.send_uinput_event_unlocked(EV_KEY, 42, 0)?;
+            }
+            if right {
+                self.send_uinput_event_unlocked(EV_KEY, 54, 0)?;
+            }
+            self.send_uinput_event_unlocked(0, 0, 0)
+        });
+        let _ = self.with_wayland_vk(|vk| vk.adopt_shift_from_uinput(left, right));
     }
 }
 
 impl KeyInjector for UinputInjector {
     fn send_backspace(&self) -> InjectResult {
+        #[cfg(feature = "wayland-protocol")]
+        if !self.bypass_mode.load(Ordering::Relaxed)
+            && self.uinput_mod_mask.load(Ordering::Relaxed) == 0
+            && self
+                .with_wayland_vk(|vk| vk.replace_text(1, 0, "").is_ok())
+                .unwrap_or(false)
+        {
+            return InjectResult::Success;
+        }
         if self.send_backspaces(1).is_ok() {
             InjectResult::Success
         } else {
@@ -124,11 +265,58 @@ impl KeyInjector for UinputInjector {
     }
 
     fn send_key_event(&self, keycode: u16, value: i32) -> InjectResult {
+        let bypassed = self.bypass_mode.load(Ordering::Acquire);
+
+        if let Some(bit) = system_modifier_bit(keycode) {
+            if value == 0 {
+                let prev = self.uinput_mod_mask.fetch_and(!bit, Ordering::AcqRel);
+                let now_zero = (prev & !bit) == 0;
+                #[cfg(feature = "wayland-protocol")]
+                if prev != 0 && now_zero && !bypassed {
+                    let result = serialize_transaction(&self.transaction_lock, || {
+                        self.send_uinput_event_unlocked(EV_KEY, keycode, 0)?;
+                        self.send_uinput_event_unlocked(0, 0, 0)
+                    });
+                    self.transfer_uinput_shift_to_vk();
+                    return if matches!(result, Ok(Ok(()))) {
+                        InjectResult::Success
+                    } else {
+                        InjectResult::Failed
+                    };
+                }
+            } else {
+                let prev = self.uinput_mod_mask.fetch_or(bit, Ordering::AcqRel);
+                #[cfg(feature = "wayland-protocol")]
+                if prev == 0 && value == 1 {
+                    self.transfer_vk_shift_to_uinput();
+                }
+            }
+        } else if !bypassed {
+            #[cfg(feature = "wayland-protocol")]
+            {
+                let mods_active = self.uinput_mod_mask.load(Ordering::Acquire) != 0;
+                if self
+                    .with_wayland_vk(|vk| vk.send_key_event(keycode, value, mods_active))
+                    .unwrap_or(false)
+                {
+                    return InjectResult::Success;
+                }
+            }
+        }
+
+        if let Some(sbit) = shift_bit(keycode) {
+            if value == 0 {
+                self.uinput_shift_mask.fetch_and(!sbit, Ordering::AcqRel);
+            } else if value == 1 {
+                self.uinput_shift_mask.fetch_or(sbit, Ordering::AcqRel);
+            }
+        }
+
         let result = serialize_transaction(&self.transaction_lock, || {
             self.send_uinput_event_unlocked(EV_KEY, keycode, value)?;
             self.send_uinput_event_unlocked(0, 0, 0)
         });
-        if value == 0 {
+        if value == 0 && !bypassed {
             std::thread::sleep(Duration::from_millis(2));
         }
         if matches!(result, Ok(Ok(()))) {
@@ -139,12 +327,25 @@ impl KeyInjector for UinputInjector {
     }
 
     fn send_char(&self, ch: char) -> InjectResult {
+        #[cfg(feature = "wayland-protocol")]
+        {
+            let mut buf = [0u8; 4];
+            let s = ch.encode_utf8(&mut buf);
+            if crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(s)
+                && self
+                    .with_wayland_vk(|vk| vk.replace_text(0, 0, s).is_ok())
+                    .unwrap_or(false)
+            {
+                return InjectResult::Success;
+            }
+        }
+
         let caps_active = self.caps_lock.load(Ordering::Relaxed);
         if let Some(keycode) = char_to_linux_keycode(ch) {
             let needs_shift = if ch.is_ascii_alphabetic() {
                 ch.is_uppercase() ^ caps_active
             } else {
-                "!@#$%^&*()_+{}|:\"<>?".contains(ch)
+                "~!@#$%^&*()_+{}|:\"<>?".contains(ch)
             };
             return if self.send_key_stroke(keycode, needs_shift).is_ok() {
                 InjectResult::Success
@@ -152,7 +353,6 @@ impl KeyInjector for UinputInjector {
                 InjectResult::Failed
             };
         }
-        // Vietnamese Unicode char: map to base ASCII and send via uinput
         let ascii = strip_vn_diacritic(ch);
         if let Some(keycode) = char_to_linux_keycode(ascii) {
             let needs_shift = if ascii.is_ascii_alphabetic() {
@@ -170,7 +370,15 @@ impl KeyInjector for UinputInjector {
     }
 
     fn send_string(&self, s: &str) -> InjectResult {
-        // ASCII characters: inject directly via uinput keycodes
+        #[cfg(feature = "wayland-protocol")]
+        if crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(s)
+            && self
+                .with_wayland_vk(|vk| vk.replace_text(0, 0, s).is_ok())
+                .unwrap_or(false)
+        {
+            return InjectResult::Success;
+        }
+
         let is_ascii = s.chars().all(|c| char_to_linux_keycode(c).is_some());
 
         if is_ascii {
@@ -184,7 +392,6 @@ impl KeyInjector for UinputInjector {
             return InjectResult::Success;
         }
 
-        // Fallback: clipboard copy + paste
         if self.paste_via_clipboard(s, 0, self.current_focus_generation()) {
             InjectResult::Success
         } else {
@@ -210,12 +417,12 @@ impl KeyInjector for UinputInjector {
     }
 
     fn cancel_pending_replacement(&self, focus_generation: u64, reason: &str) -> InjectResult {
+        self.omnibox_inline_selection
+            .store(false, Ordering::Release);
         #[cfg(feature = "wayland-protocol")]
         {
             let mut uncertain = self.uncertain_focus.lock().unwrap();
             if uncertain.is_some_and(|previous| previous != focus_generation) {
-                // A new target starts with an empty composition. Do not infer
-                // recovery merely from a clipboard worker or connection dying.
                 *uncertain = None;
             }
         }
@@ -248,15 +455,7 @@ impl KeyInjector for UinputInjector {
         InjectResult::Success
     }
 
-    /// Record that Unicode text was pasted via clipboard (for future delete/backspace support)
-    fn update_pasted_text(&self, text: &str) -> InjectResult {
-        // Text tracking happens through OutputCommand pipeline in daemon
-        // This is called after clipboard paste to inform engine of pasted content
-        eprintln!(
-            "[vietc] update_pasted_text: recorded '{}' (len={})",
-            text.escape_default(),
-            text.len()
-        );
+    fn update_pasted_text(&self, _text: &str) -> InjectResult {
         InjectResult::Success
     }
 
@@ -268,11 +467,39 @@ impl KeyInjector for UinputInjector {
 
     fn set_caps_lock(&self, enabled: bool) -> InjectResult {
         self.caps_lock.store(enabled, Ordering::Relaxed);
+        #[cfg(feature = "wayland-protocol")]
+        {
+            let _ = self.with_wayland_vk(|vk| vk.set_caps_lock(enabled));
+        }
         InjectResult::Success
     }
 
     fn set_terminal_app(&self, is_terminal: bool) -> InjectResult {
         self.terminal_app.store(is_terminal, Ordering::Relaxed);
+        InjectResult::Success
+    }
+
+    fn set_bypass_mode(&self, bypass: bool) -> InjectResult {
+        let was_bypass = self.bypass_mode.swap(bypass, Ordering::AcqRel);
+        #[cfg(feature = "wayland-protocol")]
+        if bypass && !was_bypass {
+            self.transfer_vk_shift_to_uinput();
+        } else if !bypass && was_bypass && self.uinput_mod_mask.load(Ordering::Acquire) == 0 {
+            self.transfer_uinput_shift_to_vk();
+        }
+        InjectResult::Success
+    }
+
+    fn uses_virtual_keyboard(&self) -> bool {
+        #[cfg(feature = "wayland-protocol")]
+        return self.with_wayland_vk(|vk| vk.is_healthy()).unwrap_or(false);
+        #[cfg(not(feature = "wayland-protocol"))]
+        false
+    }
+
+    fn set_omnibox_inline_selection(&self, active: bool) -> InjectResult {
+        self.omnibox_inline_selection
+            .store(active, Ordering::Release);
         InjectResult::Success
     }
 }
@@ -287,22 +514,37 @@ impl UinputInjector {
             .map_or(0, |generation| generation.load(Ordering::Acquire))
     }
 
-    /// Send backspaces and replacement text through one uinput device.
-    /// ASCII is injected directly. Unicode is copied to the clipboard and
-    /// pasted with Ctrl+V through the same device, avoiding mixed-channel
-    /// editing transactions.
     fn inject_replacement_atomic(
         &self,
         backspaces: usize,
         text: &str,
         focus_generation: u64,
     ) -> InjectResult {
+        let extra_deletes =
+            usize::from(self.omnibox_inline_selection.swap(false, Ordering::AcqRel));
+
+        #[cfg(feature = "wayland-protocol")]
+        if crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(text)
+            && self
+                .with_wayland_vk(|vk| vk.replace_text(backspaces, extra_deletes, text).is_ok())
+                .unwrap_or(false)
+        {
+            return InjectResult::Success;
+        }
+
         #[cfg(feature = "wayland-protocol")]
         if self.wayland_paste_is_uncertain() {
-            // The editor may still be processing the previous paste. Do not
-            // follow it with another delete or publish a different payload.
             return InjectResult::Failed;
         }
+
+        if extra_deletes > 0 {
+            for _ in 0..extra_deletes {
+                if self.send_key_stroke(111, false).is_err() {
+                    return InjectResult::Failed;
+                }
+            }
+        }
+
         if text.is_empty() {
             if backspaces == 0 || self.send_backspaces(backspaces).is_ok() {
                 return InjectResult::Success;
@@ -310,7 +552,6 @@ impl UinputInjector {
             return InjectResult::Failed;
         }
 
-        // Fast path: pure ASCII (including newline) via uinput batch — single channel
         if text
             .chars()
             .all(|c| char_to_linux_keycode(c).is_some() || c == '\n')
@@ -334,11 +575,6 @@ impl UinputInjector {
             return InjectResult::Success;
         }
 
-        // Keep delete and insert on the same uinput channel. Mixing uinput
-        // Backspace with Wayland virtual-keyboard text can crash Microsoft Edge
-        // with SIGILL even for a minimal replacement such as `Da` -> `Dạ`.
-        // Prepare and verify the clipboard BEFORE sending Backspaces so a
-        // clipboard failure never deletes the user's already-typed characters.
         if self.paste_via_clipboard(text, backspaces, focus_generation) {
             InjectResult::Success
         } else {

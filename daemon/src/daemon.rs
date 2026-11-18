@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use vietc_engine::{Engine, EngineEvent, EventStore, InputEvent, InputMethod};
+use vietc_engine::{Engine, EngineEvent, EventStore, InputMethod};
 
 use crate::app_state::AppStateManager;
 use crate::commands::OutputCommand;
@@ -12,18 +12,23 @@ use crate::event::is_flush_char;
 use crate::log::log_info;
 
 fn show_osd(summary: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
+    if let Ok(mut child) = std::process::Command::new("notify-send")
         .args([
             "-t",
             "1000",
             "-h",
             "string:x-canonical-private-synchronous:vietc-osd",
             "-a",
-            "Viet+",
+            "VietC",
             summary,
             body,
         ])
-        .spawn();
+        .spawn()
+    {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 pub struct Daemon {
@@ -34,11 +39,6 @@ pub struct Daemon {
     pub app_state: AppStateManager,
     pub engine_enabled: Arc<AtomicBool>,
     pub grab_enabled: bool,
-    /// When true (X11 keymap / non-grabbed capture), the original keystrokes are
-    /// NOT suppressed, so the app displays the raw typed text. Screen accounting
-    /// must therefore use the raw on-screen length for backspaces. When false
-    /// (grabbed evdev or XRecord), the app only shows the engine output.
-    pub keymap_mode: bool,
     pub event_store: EventStore,
     pub screen_output: String,
     pub visible_revision: u64,
@@ -89,7 +89,6 @@ impl Daemon {
             config_modified,
             app_state,
             engine_enabled,
-            keymap_mode: false,
             event_store: EventStore::new(),
             screen_output: String::new(),
             visible_revision: 0,
@@ -97,45 +96,45 @@ impl Daemon {
     }
 
     fn status_file_path(&self) -> PathBuf {
-        if let Some(parent) = self.config_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                return parent.join("status");
-            }
-        }
-        dirs::config_dir()
-            .map(|d| d.join("vietc").join("status"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/vietc-status"))
+        crate::config::user_ipc_file_path("status")
     }
 
     fn method_file_path(&self) -> PathBuf {
-        if let Some(parent) = self.config_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                return parent.join("method");
+        crate::config::user_ipc_file_path("method")
+    }
+
+    fn write_ipc_file(path: &std::path::Path, content: &str) {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() && parent != std::path::Path::new("/tmp") {
+                let _ = std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(parent);
             }
         }
-        dirs::config_dir()
-            .map(|d| d.join("vietc").join("method"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/vietc-method"))
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+        {
+            let _ = f.write_all(content.as_bytes());
+        }
     }
 
     pub fn write_status(&self) {
-        let status_path = self.status_file_path();
-        if let Some(parent) = status_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
         let enabled = self.engine.is_enabled();
         self.engine_enabled.store(enabled, Ordering::SeqCst);
         let status_str = if enabled { "vn" } else { "en" };
-        let _ = std::fs::write(status_path, status_str);
+        Self::write_ipc_file(&self.status_file_path(), status_str);
     }
 
     pub fn write_method_status(&self) {
-        let method_path = self.method_file_path();
-        if let Some(parent) = method_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let method = &self.config.input_method;
-        let _ = std::fs::write(method_path, method);
+        Self::write_ipc_file(&self.method_file_path(), &self.config.input_method);
     }
 
     pub fn toggle_method(&mut self) {
@@ -156,15 +155,13 @@ impl Daemon {
         self.app_state.set_global_enabled(new_enabled);
         self.app_state.set_global_method(new_method);
         self.app_state.clear_overrides();
-        let effective = self.app_state.effective_method();
-        let engine_method = match effective {
+        let effective = self.app_state.effective_method().to_string();
+        let engine_method = match effective.as_str() {
             "vni" => InputMethod::Vni,
             _ => InputMethod::Telex,
         };
         self.engine.set_method(engine_method);
-        if new_enabled {
-            self.engine.reset();
-        }
+        self.reset_composition_state();
         self.write_status();
         self.write_method_status();
         let label = if !new_enabled {
@@ -213,6 +210,14 @@ impl Daemon {
     }
 
     pub fn reload_config(&mut self) -> bool {
+        // Promote ~/.config/vietc/config.toml if the user created/saved it after
+        // the daemon initially booted from /etc/vietc/config.toml (.deb install).
+        if let Some(user_cfg) = crate::config::user_config_path() {
+            if user_cfg != self.config_path && user_cfg.exists() {
+                self.config_path = user_cfg;
+                self.config_modified = std::time::UNIX_EPOCH;
+            }
+        }
         let modified = fs::metadata(&self.config_path)
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::now());
@@ -276,7 +281,7 @@ impl Daemon {
                     commands.push(OutputCommand::Type(text));
                 }
                 EngineEvent::AutoRestore(word) => {
-                    let len = word.len();
+                    let len = word.chars().count();
                     commands.push(OutputCommand::Backspace(len));
                     commands.push(OutputCommand::Type(word));
                 }
@@ -346,163 +351,6 @@ impl Daemon {
         self.app_state.is_current_app_bypassed()
     }
 
-    /// On-screen content of the current word region before we inject, for a
-    /// freshly *forwarded* character `ch`.
-    /// - keymap mode: the last injected/corrected text plus the char just
-    ///   forwarded (originals are not suppressed, so `ch` is already on screen).
-    /// - grabbed mode: only the previously injected output (`ch` was grabbed).
-    fn keymap_screen_string(&self, ch: char) -> String {
-        if self.keymap_mode {
-            let mut s = self.screen_output.clone();
-            s.push(ch);
-            s
-        } else {
-            self.screen_output.clone()
-        }
-    }
-
-    pub fn replay_and_inject(&mut self, ch: char) -> Vec<OutputCommand> {
-        let mut commands = Vec::new();
-        let method = match self.config.input_method.as_str() {
-            "vni" => InputMethod::Vni,
-            _ => InputMethod::Telex,
-        };
-
-        if is_flush_char(ch) {
-            self.event_store.push(InputEvent::Flush(ch));
-            let to_commit = self.word_to_commit();
-            let screen_now = self.keymap_screen_string(ch);
-            let corrected = !self.screen_output.is_empty() && to_commit != self.screen_output;
-            if corrected {
-                let target = if self.keymap_mode {
-                    format!("{}{}", to_commit, ch)
-                } else {
-                    to_commit
-                };
-                let diff = vietc_engine::telex::replacement_diff(&screen_now, &target);
-                if diff.delete_before_cursor > 0 {
-                    commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
-                }
-                if !diff.insert.is_empty() {
-                    commands.push(OutputCommand::Type(diff.insert));
-                }
-            }
-            // Re-type the flush char only when it was not already forwarded
-            // (grabbed mode).
-            if !self.keymap_mode {
-                commands.push(OutputCommand::Type(ch.to_string()));
-            }
-            self.event_store.clear();
-            self.screen_output.clear();
-            return commands;
-        }
-
-        self.event_store.push(InputEvent::KeyTyped(ch));
-
-        let (new_output, did_flush) =
-            Engine::replay_events(method, &self.config.macros, &self.event_store);
-
-        if did_flush {
-            let to_commit = self.word_to_commit();
-            let screen_now = self.keymap_screen_string(ch);
-            let corrected = !self.screen_output.is_empty() && to_commit != self.screen_output;
-            if corrected {
-                let diff = vietc_engine::telex::replacement_diff(&screen_now, &to_commit);
-                if diff.delete_before_cursor > 0 {
-                    commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
-                }
-                if !diff.insert.is_empty() {
-                    commands.push(OutputCommand::Type(diff.insert));
-                }
-            }
-            self.event_store.clear();
-            self.screen_output.clear();
-            return commands;
-        }
-
-        let screen_now = self.keymap_screen_string(ch);
-        if new_output != screen_now {
-            let diff = vietc_engine::telex::replacement_diff(&screen_now, &new_output);
-            if diff.delete_before_cursor > 0 {
-                commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
-            }
-            if !diff.insert.is_empty() {
-                commands.push(OutputCommand::Type(diff.insert));
-            }
-        }
-        // The injected result (or the unchanged text) is what the app now
-        // shows, so track that — never the raw keystrokes.
-        self.screen_output = new_output;
-
-        commands
-    }
-
-    pub fn replay_backspace(&mut self) -> Vec<OutputCommand> {
-        let mut commands = Vec::new();
-        let method = match self.config.input_method.as_str() {
-            "vni" => InputMethod::Vni,
-            _ => InputMethod::Telex,
-        };
-
-        if self.event_store.is_empty() {
-            // In keymap mode the original keystroke was already forwarded and the
-            // app deleted the character on its own, so there is nothing to fix.
-            if self.keymap_mode {
-                return commands;
-            }
-            commands.push(OutputCommand::Backspace(1));
-            return commands;
-        }
-
-        self.event_store.push(InputEvent::Backspace);
-
-        match self.event_store.pop() {
-            Some(InputEvent::Backspace) => {
-                self.event_store.pop();
-            }
-            Some(_) => {}
-            None => {}
-        }
-
-        let (new_output, _) = if self.event_store.is_empty() {
-            (String::new(), false)
-        } else {
-            Engine::replay_events(method, &self.config.macros, &self.event_store)
-        };
-
-        // In keymap mode the user's backspace already removed one *displayed*
-        // character; compute the minimal suffix diff from the remaining screen text.
-        let screen_after_bs: String = if self.keymap_mode {
-            let len = self.screen_output.chars().count();
-            self.screen_output
-                .chars()
-                .take(len.saturating_sub(1))
-                .collect()
-        } else {
-            self.screen_output.clone()
-        };
-        let diff = vietc_engine::telex::replacement_diff(&screen_after_bs, &new_output);
-        if diff.delete_before_cursor > 0 {
-            commands.push(OutputCommand::Backspace(diff.delete_before_cursor));
-        }
-        if !diff.insert.is_empty() {
-            commands.push(OutputCommand::Type(diff.insert));
-        }
-        self.screen_output = new_output;
-
-        commands
-    }
-
-    pub fn word_to_commit(&self) -> String {
-        if self.config.auto_restore.enabled {
-            let raw = self.event_store.raw_keystrokes();
-            if Engine::should_restore_word(&self.screen_output, &raw) {
-                return raw;
-            }
-        }
-        self.screen_output.clone()
-    }
-
     pub fn replay_reset(&mut self) {
         self.event_store.clear();
         self.screen_output.clear();
@@ -534,6 +382,7 @@ impl Daemon {
             _ => InputMethod::Telex,
         };
         self.engine.set_method(engine_method);
+        self.reset_composition_state();
     }
 }
 
@@ -543,10 +392,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use vietc_engine::InputEvent;
 
-    /// Model the keymap capture screen: X forwards every keystroke to the app,
-    /// and the daemon only *injects* corrections. `BS` represents a real
-    /// backspace key that X also forwards (removing one displayed char).
     const BS: char = '\x08';
 
     fn apply(screen: &mut String, cmds: &[OutputCommand]) {
@@ -568,29 +415,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    fn simulate(seq: &str) -> String {
-        let mut d = Daemon::new(
-            Config::default(),
-            PathBuf::from("/tmp/vietc_test_config.toml"),
-            Arc::new(AtomicBool::new(true)),
-        );
-        d.keymap_mode = true;
-        d.engine.set_enabled(true);
-        let mut screen = String::new();
-        for ch in seq.chars() {
-            if ch == BS {
-                screen.pop(); // X forwards the backspace, removing one char
-                let cmds = d.replay_backspace();
-                apply(&mut screen, &cmds);
-            } else {
-                screen.push(ch); // X forwards the raw keystroke
-                let cmds = d.replay_and_inject(ch);
-                apply(&mut screen, &cmds);
-            }
-        }
-        screen
     }
 
     #[test]
@@ -617,74 +441,6 @@ mod tests {
             assert_eq!(screen, format!("X {}", daemon.engine.buffer()));
         }
         assert_eq!(screen, "X ");
-    }
-
-    #[test]
-    fn keymap_simple_word() {
-        assert_eq!(simulate("to6 "), "tô ");
-        assert_eq!(simulate("tie6ng1 "), "tiếng ");
-        assert_eq!(simulate("d9u7o7ng2 "), "đường ");
-        assert_eq!(simulate("hello "), "hello ");
-    }
-
-    #[test]
-    fn keymap_does_not_delete_previous_char() {
-        // The originally reported bug: typing vietnamese removed the char before.
-        assert_eq!(simulate("to6"), "tô");
-        assert_eq!(simulate("tie6ng1"), "tiếng");
-    }
-
-    #[test]
-    fn keymap_backspace_restores_raw() {
-        assert_eq!(simulate(&format!("to6{BS}")), "to");
-        assert_eq!(simulate(&format!("to6{BS}i")), "toi");
-        // Backspacing the tone '1' reverts "tiếng" to "tiêng".
-        assert_eq!(simulate(&format!("tie6ng1{BS}")), "tiêng");
-    }
-
-    #[test]
-    fn keymap_multiple_words_no_bleed() {
-        assert_eq!(simulate("to6 tie6ng1 "), "tô tiếng ");
-        assert_eq!(simulate("tie6ng1 to6 "), "tiếng tô ");
-    }
-
-    #[test]
-    fn slow_english_project_restores_before_space_is_committed() {
-        assert_eq!(simulate("project "), "project ");
-    }
-
-    #[test]
-    fn repeated_tone_trigger_cancels_tone_and_keeps_one_literal_trigger() {
-        let config = Config {
-            input_method: "telex".to_string(),
-            ..Config::default()
-        };
-        let mut daemon = Daemon::new(
-            config,
-            PathBuf::from("/tmp/vietc_repeated_tone_test.toml"),
-            Arc::new(AtomicBool::new(true)),
-        );
-        daemon.keymap_mode = true;
-        daemon.engine.set_enabled(true);
-
-        let mut screen = String::new();
-        for ch in "tesst".chars() {
-            screen.push(ch);
-            let commands = daemon.replay_and_inject(ch);
-            apply(&mut screen, &commands);
-        }
-
-        assert_eq!(screen, "test");
-
-        daemon.replay_reset();
-        screen.clear();
-        for ch in "projject".chars() {
-            screen.push(ch);
-            let commands = daemon.replay_and_inject(ch);
-            apply(&mut screen, &commands);
-        }
-
-        assert_eq!(screen, "project");
     }
 
     #[test]
@@ -737,7 +493,7 @@ mod tests {
         for ch in "hoor".chars() {
             daemon.process_key(ch);
         }
-        assert_eq!(daemon.engine.buffer(), "hoor");
+        assert_eq!(daemon.engine.buffer(), "hổ");
 
         daemon.event_store.push(InputEvent::KeyTyped('r'));
         daemon.screen_output = "hổ".to_string();
@@ -836,43 +592,5 @@ mod tests {
         assert!(daemon.event_store.is_empty());
         assert!(daemon.screen_output.is_empty());
         assert_eq!(daemon.visible_revision, 0);
-    }
-
-    #[test]
-    fn replay_and_inject_only_replaces_changed_suffix_preserving_common_prefix() {
-        let config = Config {
-            input_method: "telex".into(),
-            ..Default::default()
-        };
-        let mut daemon = Daemon::new(
-            config,
-            PathBuf::from("/tmp/vietc_suffix_diff_test.toml"),
-            Arc::new(AtomicBool::new(true)),
-        );
-        daemon.keymap_mode = true;
-        daemon.engine.set_enabled(true);
-
-        let mut screen = String::new();
-        for ch in "nghie".chars() {
-            screen.push(ch);
-            let cmds = daemon.replay_and_inject(ch);
-            apply(&mut screen, &cmds);
-        }
-        assert_eq!(screen, "nghie");
-
-        // Typing second 'e' turns "nghie" + 'e' ("nghiee") into "nghiê".
-        // Common prefix "nghi" (4 chars) must NOT be deleted — only "ee" (2 chars)
-        // is deleted and replaced with "ê".
-        screen.push('e');
-        let cmds = daemon.replay_and_inject('e');
-        assert_eq!(
-            cmds,
-            vec![
-                OutputCommand::Backspace(2),
-                OutputCommand::Type("ê".to_string())
-            ]
-        );
-        apply(&mut screen, &cmds);
-        assert_eq!(screen, "nghiê");
     }
 }

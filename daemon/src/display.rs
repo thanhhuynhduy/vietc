@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,32 +11,26 @@ pub enum DisplayServer {
 
 /// Detect whether we're running on Wayland or X11
 pub fn detect_display_server() -> DisplayServer {
-    // Check WAYLAND_DISPLAY first
-    if std::env::var("WAYLAND_DISPLAY").is_ok() {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()) {
         return DisplayServer::Wayland;
     }
 
-    // Check XDG_SESSION_TYPE
     if let Ok(session_type) = std::env::var("XDG_SESSION_TYPE") {
         if session_type.contains("wayland") {
             return DisplayServer::Wayland;
         }
     }
 
-    // Check if XDG_RUNTIME_DIR has wayland sockets
     if let Ok(xdg_runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        let wayland_sock = std::path::Path::new(&xdg_runtime).join("wayland-0");
-        if wayland_sock.exists() {
+        if crate::env::find_wayland_socket_in_dir(Path::new(&xdg_runtime)).is_some() {
             return DisplayServer::Wayland;
         }
     }
 
-    // Check DISPLAY variable
-    if std::env::var("DISPLAY").is_ok() {
+    if std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty()) {
         return DisplayServer::X11;
     }
 
-    // Try to detect via loginctl
     if let Ok(output) = Command::new("loginctl")
         .args(["show-session", &get_session_id(), "-p", "Type"])
         .output()
@@ -58,7 +53,6 @@ fn get_session_id() -> String {
 
 /// Check if a specific compositor is running
 pub fn detect_compositor() -> Option<String> {
-    // Check common Wayland compositor env vars
     let compositor_vars = [
         ("HYPRLAND_INSTANCE_SIGNATURE", "Hyprland"),
         ("SWAYSOCK", "Sway"),
@@ -67,34 +61,30 @@ pub fn detect_compositor() -> Option<String> {
     ];
 
     for (var, name) in &compositor_vars {
-        if std::env::var(var).is_ok() {
-            return Some(name.to_string());
+        if std::env::var_os(var).is_some_and(|v| !v.is_empty()) {
+            return Some((*name).to_string());
         }
     }
 
-    // Check via process name
-    if let Ok(output) = Command::new("pgrep").arg("-x").arg("hyprland").output() {
-        if output.status.success() {
-            return Some("Hyprland".into());
+    for (proc_name, label) in [
+        ("cosmic-comp", "COSMIC"),
+        ("hyprland", "Hyprland"),
+        ("sway", "Sway"),
+        ("gnome-shell", "GNOME (Mutter)"),
+    ] {
+        if let Ok(output) = Command::new("pgrep").arg("-x").arg(proc_name).output() {
+            if output.status.success() {
+                return Some(label.into());
+            }
         }
     }
 
-    if let Ok(output) = Command::new("pgrep").arg("-x").arg("sway").output() {
-        if output.status.success() {
-            return Some("Sway".into());
-        }
-    }
-
-    // Check for GNOME/Mutter (Ubuntu default)
-    if let Ok(output) = Command::new("pgrep").arg("-x").arg("gnome-shell").output() {
-        if output.status.success() {
-            return Some("GNOME (Mutter)".into());
-        }
-    }
-
-    // Check XDG_CURRENT_DESKTOP for GNOME
     if let Ok(desktop) = std::env::var("XDG_CURRENT_DESKTOP") {
-        if desktop.to_lowercase().contains("gnome") {
+        let lower = desktop.to_lowercase();
+        if lower.contains("cosmic") {
+            return Some("COSMIC".into());
+        }
+        if lower.contains("gnome") {
             return Some("GNOME".into());
         }
     }
