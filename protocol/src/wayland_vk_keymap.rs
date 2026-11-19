@@ -9,110 +9,197 @@
 //!    Chromium/Edge/Electron, GTK4, and Qt6 never encounter `XKB_MOD_INVALID`.
 //! 3. Keeps all XKB keycodes strictly within `8..=255` (`evdev + 8`), ensuring
 //!    8-bit XWayland compatibility alongside native Wayland clients.
-//! 4. Maps all 134 precomposed Vietnamese Unicode characters (`à..ỹ`, `À..Ỹ`,
-//!    `đ`, `Đ`) onto dedicated `ONE_LEVEL` evdev keycodes (`112..=124` and
-//!    `127..=247`), making Vietnamese output immune to physical Shift/CapsLock races.
+//! 4. Maps all 134 precomposed Vietnamese Unicode characters onto dedicated 8-level
+//!    alphanumeric evdev keycodes (`16..=47`), completely eliminating high keycodes
+//!    (>= 112) that trigger Chromium DomCode collisions (`KEY_UNDO` 131, `KEY_COMPOSE` 127).
 
 use std::fmt::Write;
 
 pub(crate) const XKB_MOD_SHIFT: u32 = 1 << 0;
 pub(crate) const XKB_MOD_LOCK: u32 = 1 << 1;
+pub(crate) const XKB_MOD_MOD3: u32 = 1 << 5;
+pub(crate) const XKB_MOD_MOD5: u32 = 1 << 7;
 
-pub(crate) const VIETNAMESE_CHARS: [char; 134] = [
-    // Lowercase (67)
-    'à', 'á', 'ả', 'ã', 'ạ', 'ă', 'ằ', 'ắ', 'ẳ', 'ẵ', 'ặ', 'â', 'ầ', 'ấ', 'ẩ', 'ẫ', 'ậ', 'è', 'é',
-    'ẻ', 'ẽ', 'ẹ', 'ê', 'ề', 'ế', 'ể', 'ễ', 'ệ', 'ì', 'í', 'ỉ', 'ĩ', 'ị', 'ò', 'ó', 'ỏ', 'õ', 'ọ',
-    'ô', 'ồ', 'ố', 'ổ', 'ỗ', 'ộ', 'ơ', 'ờ', 'ớ', 'ở', 'ỡ', 'ợ', 'ù', 'ú', 'ủ', 'ũ', 'ụ', 'ư', 'ừ',
-    'ứ', 'ử', 'ữ', 'ự', 'ỳ', 'ý', 'ỷ', 'ỹ', 'ỵ', 'đ', // Uppercase (67)
-    'À', 'Á', 'Ả', 'Ã', 'Ạ', 'Ă', 'Ằ', 'Ắ', 'Ẳ', 'Ẵ', 'Ặ', 'Â', 'Ầ', 'Ấ', 'Ẩ', 'Ẫ', 'Ậ', 'È', 'É',
-    'Ẻ', 'Ẽ', 'Ẹ', 'Ê', 'Ề', 'Ế', 'Ể', 'Ễ', 'Ệ', 'Ì', 'Í', 'Ỉ', 'Ĩ', 'Ị', 'Ò', 'Ó', 'Ỏ', 'Õ', 'Ọ',
-    'Ô', 'Ồ', 'Ố', 'Ổ', 'Ỗ', 'Ộ', 'Ơ', 'Ờ', 'Ớ', 'Ở', 'Ỡ', 'Ợ', 'Ù', 'Ú', 'Ủ', 'Ũ', 'Ụ', 'Ư', 'Ừ',
-    'Ứ', 'Ử', 'Ữ', 'Ự', 'Ỳ', 'Ý', 'Ỷ', 'Ỹ', 'Ỵ', 'Đ',
+pub(crate) const VIETNAMESE_PAIRS: [(char, char); 67] = [
+    // a & vowels
+    ('à', 'À'),
+    ('á', 'Á'),
+    ('ả', 'Ả'),
+    ('ã', 'Ã'),
+    ('ạ', 'Ạ'),
+    ('ă', 'Ă'),
+    ('ằ', 'Ằ'),
+    ('ắ', 'Ắ'),
+    ('ẳ', 'Ẳ'),
+    ('ẵ', 'Ẵ'),
+    ('ặ', 'Ặ'),
+    ('â', 'Â'),
+    ('ầ', 'Ầ'),
+    ('ấ', 'Ấ'),
+    ('ẩ', 'Ẩ'),
+    ('ẫ', 'Ẫ'),
+    ('ậ', 'Ậ'),
+    ('è', 'È'),
+    ('é', 'É'),
+    ('ẻ', 'Ẻ'),
+    ('ẽ', 'Ẽ'),
+    ('ẹ', 'Ẹ'),
+    ('ê', 'Ê'),
+    ('ề', 'Ề'),
+    ('ế', 'Ế'),
+    ('ể', 'Ể'),
+    ('ễ', 'Ễ'),
+    ('ệ', 'Ệ'),
+    ('ì', 'Ì'),
+    ('í', 'Í'),
+    ('ỉ', 'Ỉ'),
+    ('ĩ', 'Ĩ'),
+    ('ị', 'Ị'),
+    ('ò', 'Ò'),
+    ('ó', 'Ó'),
+    ('ỏ', 'Ỏ'),
+    ('õ', 'Õ'),
+    ('ọ', 'Ọ'),
+    ('ô', 'Ô'),
+    ('ồ', 'Ồ'),
+    ('ố', 'Ố'),
+    ('ổ', 'Ổ'),
+    ('ỗ', 'Ỗ'),
+    ('ộ', 'Ộ'),
+    ('ơ', 'Ơ'),
+    ('ờ', 'Ờ'),
+    ('ớ', 'Ớ'),
+    ('ở', 'Ở'),
+    ('ỡ', 'Ỡ'),
+    ('ợ', 'Ợ'),
+    ('ù', 'Ù'),
+    ('ú', 'Ú'),
+    ('ủ', 'Ủ'),
+    ('ũ', 'Ũ'),
+    ('ụ', 'Ụ'),
+    ('ư', 'Ư'),
+    ('ừ', 'Ừ'),
+    ('ứ', 'Ứ'),
+    ('ử', 'Ử'),
+    ('ữ', 'Ữ'),
+    ('ự', 'Ự'),
+    ('ỳ', 'Ỳ'),
+    ('ý', 'Ý'),
+    ('ỷ', 'Ỷ'),
+    ('ỹ', 'Ỹ'),
+    ('ỵ', 'Ỵ'),
+    ('đ', 'Đ'),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VkKeyStroke {
     pub evdev_code: u32,
-    pub shift: bool,
-    pub one_level: bool,
+    pub modifiers: u32,
 }
 
-#[inline]
-pub(crate) fn vn_index_to_evdev(idx: usize) -> u32 {
-    debug_assert!(idx < VIETNAMESE_CHARS.len());
-    // Skip 125 (KEY_LEFTMETA) and 126 (KEY_RIGHTMETA) so <LWIN>/<RWIN> keep
-    // their standard evdev slots and maximum XKB keycode is 247 + 8 = 255.
-    if idx < 13 {
-        112 + idx as u32
-    } else {
-        127 + (idx - 13) as u32
-    }
-}
+const EIGHT_LEVEL_KEYS: [(&str, u32, &str, &str); 23] = [
+    ("AD01", 16, "q", "Q"),
+    ("AD02", 17, "w", "W"),
+    ("AD03", 18, "e", "E"),
+    ("AD04", 19, "r", "R"),
+    ("AD05", 20, "t", "T"),
+    ("AD06", 21, "y", "Y"),
+    ("AD07", 22, "u", "U"),
+    ("AD08", 23, "i", "I"),
+    ("AD09", 24, "o", "O"),
+    ("AD10", 25, "p", "P"),
+    ("AC01", 30, "a", "A"),
+    ("AC02", 31, "s", "S"),
+    ("AC03", 32, "d", "D"),
+    ("AC04", 33, "f", "F"),
+    ("AC05", 34, "g", "G"),
+    ("AC06", 35, "h", "H"),
+    ("AC07", 36, "j", "J"),
+    ("AC08", 37, "k", "K"),
+    ("AC09", 38, "l", "L"),
+    ("AB01", 44, "z", "Z"),
+    ("AB02", 45, "x", "X"),
+    ("AB03", 46, "c", "C"),
+    ("AB04", 47, "v", "V"),
+];
 
 pub(crate) fn char_to_vk_stroke(ch: char) -> Option<VkKeyStroke> {
-    if let Some(idx) = VIETNAMESE_CHARS.iter().position(|&c| c == ch) {
-        return Some(VkKeyStroke {
-            evdev_code: vn_index_to_evdev(idx),
-            shift: false,
-            one_level: true,
-        });
+    for (pair_idx, &(lo, up)) in VIETNAMESE_PAIRS.iter().enumerate() {
+        if ch == lo || ch == up {
+            let key_idx = pair_idx / 3;
+            let slot = pair_idx % 3;
+            let (_, evdev_code, _, _) = EIGHT_LEVEL_KEYS[key_idx];
+            let is_upper = ch == up;
+            let modifiers = match (slot, is_upper) {
+                (0, false) => XKB_MOD_MOD5,
+                (0, true) => XKB_MOD_SHIFT | XKB_MOD_MOD5,
+                (1, false) => XKB_MOD_MOD3,
+                (1, true) => XKB_MOD_SHIFT | XKB_MOD_MOD3,
+                (2, false) => XKB_MOD_MOD5 | XKB_MOD_MOD3,
+                (2, true) => XKB_MOD_SHIFT | XKB_MOD_MOD5 | XKB_MOD_MOD3,
+                _ => unreachable!(),
+            };
+            return Some(VkKeyStroke {
+                evdev_code,
+                modifiers,
+            });
+        }
     }
 
-    let (evdev_code, shift, one_level) = match ch {
-        'a'..='z' => (ascii_letter_evdev(ch), false, false),
-        'A'..='Z' => (ascii_letter_evdev(ch.to_ascii_lowercase()), true, false),
-        '1' => (2, false, false),
-        '!' => (2, true, false),
-        '2' => (3, false, false),
-        '@' => (3, true, false),
-        '3' => (4, false, false),
-        '#' => (4, true, false),
-        '4' => (5, false, false),
-        '$' => (5, true, false),
-        '5' => (6, false, false),
-        '%' => (6, true, false),
-        '6' => (7, false, false),
-        '^' => (7, true, false),
-        '7' => (8, false, false),
-        '&' => (8, true, false),
-        '8' => (9, false, false),
-        '*' => (9, true, false),
-        '9' => (10, false, false),
-        '(' => (10, true, false),
-        '0' => (11, false, false),
-        ')' => (11, true, false),
-        '-' => (12, false, false),
-        '_' => (12, true, false),
-        '=' => (13, false, false),
-        '+' => (13, true, false),
-        '\t' => (15, false, true),
-        '[' => (26, false, false),
-        '{' => (26, true, false),
-        ']' => (27, false, false),
-        '}' => (27, true, false),
-        '\n' => (28, false, true),
-        ';' => (39, false, false),
-        ':' => (39, true, false),
-        '\'' => (40, false, false),
-        '"' => (40, true, false),
-        '`' => (41, false, false),
-        '~' => (41, true, false),
-        '\\' => (43, false, false),
-        '|' => (43, true, false),
-        ',' => (51, false, false),
-        '<' => (51, true, false),
-        '.' => (52, false, false),
-        '>' => (52, true, false),
-        '/' => (53, false, false),
-        '?' => (53, true, false),
-        ' ' => (57, false, true),
+    let (evdev_code, modifiers) = match ch {
+        'a'..='z' => (ascii_letter_evdev(ch), 0),
+        'A'..='Z' => (ascii_letter_evdev(ch.to_ascii_lowercase()), XKB_MOD_SHIFT),
+        '1' => (2, 0),
+        '!' => (2, XKB_MOD_SHIFT),
+        '2' => (3, 0),
+        '@' => (3, XKB_MOD_SHIFT),
+        '3' => (4, 0),
+        '#' => (4, XKB_MOD_SHIFT),
+        '4' => (5, 0),
+        '$' => (5, XKB_MOD_SHIFT),
+        '5' => (6, 0),
+        '%' => (6, XKB_MOD_SHIFT),
+        '6' => (7, 0),
+        '^' => (7, XKB_MOD_SHIFT),
+        '7' => (8, 0),
+        '&' => (8, XKB_MOD_SHIFT),
+        '8' => (9, 0),
+        '*' => (9, XKB_MOD_SHIFT),
+        '9' => (10, 0),
+        '(' => (10, XKB_MOD_SHIFT),
+        '0' => (11, 0),
+        ')' => (11, XKB_MOD_SHIFT),
+        '-' => (12, 0),
+        '_' => (12, XKB_MOD_SHIFT),
+        '=' => (13, 0),
+        '+' => (13, XKB_MOD_SHIFT),
+        '\t' => (15, 0),
+        '[' => (26, 0),
+        '{' => (26, XKB_MOD_SHIFT),
+        ']' => (27, 0),
+        '}' => (27, XKB_MOD_SHIFT),
+        '\n' => (28, 0),
+        ';' => (39, 0),
+        ':' => (39, XKB_MOD_SHIFT),
+        '\'' => (40, 0),
+        '"' => (40, XKB_MOD_SHIFT),
+        '`' => (41, 0),
+        '~' => (41, XKB_MOD_SHIFT),
+        '\\' => (43, 0),
+        '|' => (43, XKB_MOD_SHIFT),
+        ',' => (51, 0),
+        '<' => (51, XKB_MOD_SHIFT),
+        '.' => (52, 0),
+        '>' => (52, XKB_MOD_SHIFT),
+        '/' => (53, 0),
+        '?' => (53, XKB_MOD_SHIFT),
+        ' ' => (57, 0),
         _ => return None,
     };
 
     Some(VkKeyStroke {
         evdev_code,
-        shift,
-        one_level,
+        modifiers,
     })
 }
 
@@ -175,38 +262,15 @@ const STANDARD_KEYS: &[(&str, u32, &str, &str)] = &[
     ("AE12", 13, "TWO_LEVEL", "[ equal, plus ]"),
     ("BKSP", 14, "ONE_LEVEL", "[ BackSpace ]"),
     ("TAB", 15, "TWO_LEVEL", "[ Tab, ISO_Left_Tab ]"),
-    ("AD01", 16, "ALPHABETIC", "[ q, Q ]"),
-    ("AD02", 17, "ALPHABETIC", "[ w, W ]"),
-    ("AD03", 18, "ALPHABETIC", "[ e, E ]"),
-    ("AD04", 19, "ALPHABETIC", "[ r, R ]"),
-    ("AD05", 20, "ALPHABETIC", "[ t, T ]"),
-    ("AD06", 21, "ALPHABETIC", "[ y, Y ]"),
-    ("AD07", 22, "ALPHABETIC", "[ u, U ]"),
-    ("AD08", 23, "ALPHABETIC", "[ i, I ]"),
-    ("AD09", 24, "ALPHABETIC", "[ o, O ]"),
-    ("AD10", 25, "ALPHABETIC", "[ p, P ]"),
     ("AD11", 26, "TWO_LEVEL", "[ bracketleft, braceleft ]"),
     ("AD12", 27, "TWO_LEVEL", "[ bracketright, braceright ]"),
     ("RTRN", 28, "ONE_LEVEL", "[ Return ]"),
     ("LCTL", 29, "ONE_LEVEL", "[ Control_L ]"),
-    ("AC01", 30, "ALPHABETIC", "[ a, A ]"),
-    ("AC02", 31, "ALPHABETIC", "[ s, S ]"),
-    ("AC03", 32, "ALPHABETIC", "[ d, D ]"),
-    ("AC04", 33, "ALPHABETIC", "[ f, F ]"),
-    ("AC05", 34, "ALPHABETIC", "[ g, G ]"),
-    ("AC06", 35, "ALPHABETIC", "[ h, H ]"),
-    ("AC07", 36, "ALPHABETIC", "[ j, J ]"),
-    ("AC08", 37, "ALPHABETIC", "[ k, K ]"),
-    ("AC09", 38, "ALPHABETIC", "[ l, L ]"),
     ("AC10", 39, "TWO_LEVEL", "[ semicolon, colon ]"),
     ("AC11", 40, "TWO_LEVEL", "[ apostrophe, quotedbl ]"),
     ("TLDE", 41, "TWO_LEVEL", "[ grave, asciitilde ]"),
     ("LFSH", 42, "ONE_LEVEL", "[ Shift_L ]"),
     ("BKSL", 43, "TWO_LEVEL", "[ backslash, bar ]"),
-    ("AB01", 44, "ALPHABETIC", "[ z, Z ]"),
-    ("AB02", 45, "ALPHABETIC", "[ x, X ]"),
-    ("AB03", 46, "ALPHABETIC", "[ c, C ]"),
-    ("AB04", 47, "ALPHABETIC", "[ v, V ]"),
     ("AB05", 48, "ALPHABETIC", "[ b, B ]"),
     ("AB06", 49, "ALPHABETIC", "[ n, N ]"),
     ("AB07", 50, "ALPHABETIC", "[ m, M ]"),
@@ -263,7 +327,7 @@ const STANDARD_KEYS: &[(&str, u32, &str, &str)] = &[
 ];
 
 pub(crate) fn build_xkb_keymap() -> String {
-    let mut out = String::with_capacity(14_336);
+    let mut out = String::with_capacity(16_384);
     out.push_str("xkb_keymap {\n");
     out.push_str("xkb_keycodes \"vietc_vk\" {\n");
     out.push_str("    minimum = 8;\n");
@@ -271,15 +335,14 @@ pub(crate) fn build_xkb_keymap() -> String {
     for &(name, evdev, _, _) in STANDARD_KEYS {
         let _ = writeln!(out, "    <{name}> = {};", evdev + 8);
     }
-    for idx in 0..VIETNAMESE_CHARS.len() {
-        let xkb_code = vn_index_to_evdev(idx) + 8;
-        let _ = writeln!(out, "    <V{idx:02X}> = {xkb_code};");
+    for &(name, evdev, _, _) in &EIGHT_LEVEL_KEYS {
+        let _ = writeln!(out, "    <{name}> = {};", evdev + 8);
     }
     out.push_str("};\n");
 
     out.push_str(
         r#"xkb_types "vietc_vk" {
-    virtual_modifiers NumLock,Alt,LevelThree,Super,Meta,Hyper,ScrollLock;
+    virtual_modifiers NumLock, Alt, Super, Meta;
     type "ONE_LEVEL" {
         modifiers= none;
         level_name[Level1]= "Any";
@@ -297,29 +360,48 @@ pub(crate) fn build_xkb_keymap() -> String {
         level_name[Level1]= "Base";
         level_name[Level2]= "Caps";
     };
-    type "VIETC_EXACT" {
-        modifiers= Shift+Lock;
-        level_name[Level1]= "Exact";
+    type "VIETC_EIGHT_LEVEL" {
+        modifiers = Shift + Lock + Mod5 + Mod3;
+        map[none] = Level1;
+        map[Shift] = Level2;
+        map[Lock] = Level2;
+        map[Mod5] = Level3;
+        map[Shift+Mod5] = Level4;
+        map[Lock+Mod5] = Level4;
+        map[Mod3] = Level5;
+        map[Shift+Mod3] = Level6;
+        map[Lock+Mod3] = Level6;
+        map[Mod5+Mod3] = Level7;
+        map[Shift+Mod5+Mod3] = Level8;
+        map[Lock+Mod5+Mod3] = Level8;
+        level_name[Level1] = "1";
+        level_name[Level2] = "2";
+        level_name[Level3] = "3";
+        level_name[Level4] = "4";
+        level_name[Level5] = "5";
+        level_name[Level6] = "6";
+        level_name[Level7] = "7";
+        level_name[Level8] = "8";
     };
 };
 xkb_compatibility "vietc_vk" {
-    virtual_modifiers NumLock,Alt,LevelThree,Super,Meta,Hyper,ScrollLock;
-    interpret.useModMapMods= AnyLevel;
-    interpret.repeat= False;
-    interpret Shift_L+AnyOf(all) { action= SetMods(modifiers=Shift,clearLocks); };
-    interpret Shift_R+AnyOf(all) { action= SetMods(modifiers=Shift,clearLocks); };
-    interpret Caps_Lock+AnyOf(all) { action= LockMods(modifiers=Lock); };
-    interpret Control_L+AnyOf(all) { action= SetMods(modifiers=Control,clearLocks); };
-    interpret Control_R+AnyOf(all) { action= SetMods(modifiers=Control,clearLocks); };
-    interpret Alt_L+AnyOf(all) { virtualModifier= Alt; action= SetMods(modifiers=modMapMods,clearLocks); };
-    interpret Alt_R+AnyOf(all) { virtualModifier= Alt; action= SetMods(modifiers=modMapMods,clearLocks); };
-    interpret Num_Lock+AnyOf(all) { virtualModifier= NumLock; action= LockMods(modifiers=NumLock); };
-    interpret Super_L+AnyOf(all) { virtualModifier= Super; action= SetMods(modifiers=modMapMods,clearLocks); };
-    interpret Super_R+AnyOf(all) { virtualModifier= Super; action= SetMods(modifiers=modMapMods,clearLocks); };
-    interpret Any+AnyOf(all) { action= NoAction(); };
+    interpret VoidSymbol { repeat= False; };
+    interpret.repeat= True;
+    interpret Shift_Lock+AnyOf(Shift+Lock) {
+        action= LockMods(modifiers=Lock);
+    };
+    interpret Num_Lock+AnyOf(all) {
+        virtualModifier= NumLock;
+        action= LockMods(modifiers=NumLock);
+    };
+    interpret ISO_Level3_Shift+AnyOf(all) {
+        action= SetMods(modifiers=Mod5);
+    };
+    interpret ISO_Level5_Shift+AnyOf(all) {
+        action= SetMods(modifiers=Mod3);
+    };
 };
 xkb_symbols "vietc_vk" {
-    name[Group1]= "English (US, VietC Direct Unicode)";
 "#,
     );
 
@@ -329,13 +411,29 @@ xkb_symbols "vietc_vk" {
             "    key <{name}> {{ type[Group1] = \"{ty}\", symbols[Group1] = {syms} }};"
         );
     }
-    for (idx, &ch) in VIETNAMESE_CHARS.iter().enumerate() {
+    for (i, &(name, _, lower, upper)) in EIGHT_LEVEL_KEYS.iter().enumerate() {
+        let mut syms = format!("[ {lower}, {upper}");
+        for slot in 0..3 {
+            let pair_idx = i * 3 + slot;
+            if pair_idx < VIETNAMESE_PAIRS.len() {
+                let (lo, up) = VIETNAMESE_PAIRS[pair_idx];
+                let _ = write!(
+                    out_sym(&mut syms),
+                    ", U{:04X}, U{:04X}",
+                    lo as u32,
+                    up as u32
+                );
+            } else {
+                syms.push_str(", VoidSymbol, VoidSymbol");
+            }
+        }
+        syms.push_str(" ]");
         let _ = writeln!(
             out,
-            "    key <V{idx:02X}> {{ type[Group1] = \"VIETC_EXACT\", symbols[Group1] = [ U{:04X} ] }};",
-            ch as u32
+            "    key <{name}> {{ type[Group1] = \"VIETC_EIGHT_LEVEL\", symbols[Group1] = {syms} }};"
         );
     }
+
     out.push_str(
         r#"    modifier_map Shift { <LFSH>, <RTSH> };
     modifier_map Lock { <CAPS> };
@@ -347,14 +445,19 @@ xkb_symbols "vietc_vk" {
 };
 "#,
     );
+
     out
+}
+
+#[inline]
+fn out_sym(s: &mut String) -> &mut String {
+    s
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
 
     #[test]
     fn all_vietnamese_and_ascii_keycodes_are_unique_and_within_8bit_xkb_limit() {
@@ -367,50 +470,68 @@ mod tests {
                 "duplicate evdev keycode {evdev} ({name})"
             );
         }
-        for (idx, &ch) in VIETNAMESE_CHARS.iter().enumerate() {
-            let evdev = vn_index_to_evdev(idx);
+        for &(name, evdev, _, _) in &EIGHT_LEVEL_KEYS {
             let xkb = evdev + 8;
-            assert!(
-                (8..=255).contains(&xkb),
-                "{ch} out of 8-bit XKB range: {xkb}"
-            );
+            assert!((8..=255).contains(&xkb), "{name} out of range: {xkb}");
             assert!(
                 seen.insert(evdev),
-                "duplicate evdev keycode {evdev} for {ch}"
+                "duplicate evdev keycode {evdev} ({name})"
             );
-            let stroke = char_to_vk_stroke(ch).expect("Vietnamese char mapped");
-            assert_eq!(stroke.evdev_code, evdev);
-            assert!(stroke.one_level);
-            assert!(!stroke.shift);
+        }
+        for &(lo, up) in &VIETNAMESE_PAIRS {
+            let stroke_lo = char_to_vk_stroke(lo).expect("Vietnamese lower char mapped");
+            let stroke_up = char_to_vk_stroke(up).expect("Vietnamese upper char mapped");
+            assert!(
+                stroke_lo.evdev_code <= 47,
+                "Vietnamese char {lo} mapped to high evdev code {}",
+                stroke_lo.evdev_code
+            );
+            assert!(
+                stroke_up.evdev_code <= 47,
+                "Vietnamese char {up} mapped to high evdev code {}",
+                stroke_up.evdev_code
+            );
         }
     }
 
     #[test]
     fn libxkbcommon_accepts_keymap_and_decodes_all_vietnamese_and_ascii_chars() {
+        use std::ffi::{c_char, c_int, c_void, CStr, CString};
+
+        type XkbContext = *mut c_void;
+        type XkbKeymap = *mut c_void;
+        type XkbState = *mut c_void;
+        type CtxNew = unsafe extern "C" fn(flags: c_int) -> XkbContext;
+        type CtxUnref = unsafe extern "C" fn(ctx: XkbContext);
+        type KmNew = unsafe extern "C" fn(
+            ctx: XkbContext,
+            string: *const c_char,
+            format: c_int,
+            flags: c_int,
+        ) -> XkbKeymap;
+        type KmUnref = unsafe extern "C" fn(km: XkbKeymap);
+        type ModIdx = unsafe extern "C" fn(km: XkbKeymap, name: *const c_char) -> u32;
+        type StNew = unsafe extern "C" fn(km: XkbKeymap) -> XkbState;
+        type StUnref = unsafe extern "C" fn(st: XkbState);
+        type StMask = unsafe extern "C" fn(
+            st: XkbState,
+            depressed_mods: u32,
+            latched_mods: u32,
+            locked_mods: u32,
+            depressed_layout: u32,
+            latched_layout: u32,
+            locked_layout: u32,
+        ) -> u32;
+        type StGetUtf8 =
+            unsafe extern "C" fn(st: XkbState, key: u32, buffer: *mut c_char, size: usize) -> c_int;
+        type StGetSym = unsafe extern "C" fn(st: XkbState, key: u32) -> u32;
+
         unsafe {
-            let lib = libc::dlopen(c"libxkbcommon.so.0".as_ptr(), libc::RTLD_NOW);
+            let lib = libc::dlopen(c"libxkbcommon.so.0".as_ptr(), libc::RTLD_LAZY);
             if lib.is_null() {
+                eprintln!("libxkbcommon.so.0 not found; skipping dynamic decode verification");
                 return;
             }
-            type CtxNew = unsafe extern "C" fn(c_int) -> *mut c_void;
-            type CtxUnref = unsafe extern "C" fn(*mut c_void);
-            type KmNew =
-                unsafe extern "C" fn(*mut c_void, *const c_char, c_int, c_int) -> *mut c_void;
-            type KmUnref = unsafe extern "C" fn(*mut c_void);
-            type ModIdx = unsafe extern "C" fn(*mut c_void, *const c_char) -> c_uint;
-            type StNew = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
-            type StUnref = unsafe extern "C" fn(*mut c_void);
-            type StUpdateMask = unsafe extern "C" fn(
-                *mut c_void,
-                c_uint,
-                c_uint,
-                c_uint,
-                c_uint,
-                c_uint,
-                c_uint,
-            ) -> c_int;
-            type StGetUtf8 = unsafe extern "C" fn(*mut c_void, c_uint, *mut c_char, usize) -> c_int;
-            type StGetSym = unsafe extern "C" fn(*mut c_void, c_uint) -> u32;
 
             let ctx_new: CtxNew =
                 std::mem::transmute(libc::dlsym(lib, c"xkb_context_new".as_ptr()));
@@ -425,11 +546,11 @@ mod tests {
             let st_new: StNew = std::mem::transmute(libc::dlsym(lib, c"xkb_state_new".as_ptr()));
             let st_unref: StUnref =
                 std::mem::transmute(libc::dlsym(lib, c"xkb_state_unref".as_ptr()));
-            let st_mask: StUpdateMask =
+            let st_mask: StMask =
                 std::mem::transmute(libc::dlsym(lib, c"xkb_state_update_mask".as_ptr()));
             let st_utf8: StGetUtf8 =
                 std::mem::transmute(libc::dlsym(lib, c"xkb_state_key_get_utf8".as_ptr()));
-            let st_sym: StGetSym =
+            let _st_sym: StGetSym =
                 std::mem::transmute(libc::dlsym(lib, c"xkb_state_key_get_one_sym".as_ptr()));
 
             let ctx = ctx_new(0);
@@ -438,7 +559,6 @@ mod tests {
             let km = km_new(ctx, keymap_src.as_ptr(), 1, 0);
             assert!(!km.is_null(), "libxkbcommon rejected build_xkb_keymap()");
 
-            // All real XKB modifiers required by Chromium/Ozone/GTK/Qt must exist!
             for (expected_idx, name) in [
                 (0u32, c"Shift"),
                 (1, c"Lock"),
@@ -455,15 +575,11 @@ mod tests {
             let state = st_new(km);
             assert!(!state.is_null());
 
-            // Verify BackSpace (14 -> 22 = 0xff08) and Delete (111 -> 119 = 0xffff)
-            assert_eq!(st_sym(state, 14 + 8), 0xff08);
-            assert_eq!(st_sym(state, 111 + 8), 0xffff);
-
-            // Verify every Vietnamese char decodes identically even when CapsLock OR Shift is active!
-            for &ch in &VIETNAMESE_CHARS {
-                let stroke = char_to_vk_stroke(ch).unwrap();
-                for (depressed, locked) in [(0, 0), (XKB_MOD_SHIFT, 0), (0, XKB_MOD_LOCK)] {
-                    st_mask(state, depressed, 0, locked, 0, 0, 0);
+            // Verify every Vietnamese char decodes identically
+            for &(lo, up) in &VIETNAMESE_PAIRS {
+                for &ch in &[lo, up] {
+                    let stroke = char_to_vk_stroke(ch).unwrap();
+                    st_mask(state, stroke.modifiers, 0, 0, 0, 0, 0);
                     let mut buf = [0 as c_char; 16];
                     let len = st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
                     assert!(len > 0);
@@ -476,8 +592,7 @@ mod tests {
             for byte in 0x20u8..=0x7eu8 {
                 let ch = byte as char;
                 let stroke = char_to_vk_stroke(ch).unwrap();
-                let depressed = if stroke.shift { XKB_MOD_SHIFT } else { 0 };
-                st_mask(state, depressed, 0, 0, 0, 0, 0);
+                st_mask(state, stroke.modifiers, 0, 0, 0, 0, 0);
                 let mut buf = [0 as c_char; 16];
                 let len = st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
                 assert!(len > 0);

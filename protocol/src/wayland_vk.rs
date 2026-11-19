@@ -94,6 +94,7 @@ struct VkSession {
     vk: ZwpVirtualKeyboardV1,
     _keymap_fd: OwnedFd,
     started: Instant,
+    last_timestamp_ms: u32,
     pressed_bitmap: [u64; 4],
     left_shift: bool,
     right_shift: bool,
@@ -164,6 +165,7 @@ impl WaylandVirtualKeyboard {
                 vk,
                 _keymap_fd: keymap_fd,
                 started: Instant::now(),
+                last_timestamp_ms: 0,
                 pressed_bitmap: [0; 4],
                 left_shift: false,
                 right_shift: false,
@@ -239,7 +241,7 @@ impl WaylandVirtualKeyboard {
                     } else {
                         sess.right_shift = true;
                     }
-                    let ts = sess.timestamp_ms();
+                    let ts = sess.next_timestamp_ms();
                     sess.vk.key(ts, keycode as u32, 1);
                     let dep = sess.phys_depressed();
                     let lck = sess.phys_locked();
@@ -252,7 +254,7 @@ impl WaylandVirtualKeyboard {
                     } else {
                         sess.right_shift = false;
                     }
-                    let ts = sess.timestamp_ms();
+                    let ts = sess.next_timestamp_ms();
                     sess.vk.key(ts, keycode as u32, 0);
                     let dep = sess.phys_depressed();
                     let lck = sess.phys_locked();
@@ -271,7 +273,7 @@ impl WaylandVirtualKeyboard {
             return false;
         }
 
-        let ts = sess.timestamp_ms();
+        let ts = sess.next_timestamp_ms();
         match value {
             1 => {
                 sess.set_bit(keycode, true);
@@ -314,7 +316,7 @@ impl WaylandVirtualKeyboard {
         if !left && !right {
             return (false, false);
         }
-        let ts = sess.timestamp_ms();
+        let ts = sess.next_timestamp_ms();
         if left {
             sess.left_shift = false;
             sess.set_bit(KEY_LEFTSHIFT, false);
@@ -344,7 +346,7 @@ impl WaylandVirtualKeyboard {
             .session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let ts = sess.timestamp_ms();
+        let ts = sess.next_timestamp_ms();
         if left && !sess.left_shift {
             sess.left_shift = true;
             sess.set_bit(KEY_LEFTSHIFT, true);
@@ -394,33 +396,33 @@ impl WaylandVirtualKeyboard {
             .session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let ts = sess.timestamp_ms();
-
         // Neutralize Shift and CapsLock during atomic edit so BackSpace/Delete
         // and ASCII case are 100% deterministic regardless of physical keys.
         let mut active_depressed = 0u32;
         sess.vk.modifiers(0, 0, 0, 0);
 
         for _ in 0..extra_deletes_after_caret {
+            let ts = sess.next_timestamp_ms();
             sess.vk.key(ts, KEY_DELETE, 1);
+            let ts = sess.next_timestamp_ms();
             sess.vk.key(ts, KEY_DELETE, 0);
         }
         for _ in 0..backspaces {
+            let ts = sess.next_timestamp_ms();
             sess.vk.key(ts, KEY_BACKSPACE, 1);
+            let ts = sess.next_timestamp_ms();
             sess.vk.key(ts, KEY_BACKSPACE, 0);
         }
 
         for stroke in strokes {
-            let needed_depressed = if !stroke.one_level && stroke.shift {
-                XKB_MOD_SHIFT
-            } else {
-                0
-            };
+            let needed_depressed = stroke.modifiers;
             if needed_depressed != active_depressed {
                 sess.vk.modifiers(needed_depressed, 0, 0, 0);
                 active_depressed = needed_depressed;
             }
+            let ts = sess.next_timestamp_ms();
             sess.vk.key(ts, stroke.evdev_code, 1);
+            let ts = sess.next_timestamp_ms();
             sess.vk.key(ts, stroke.evdev_code, 0);
         }
 
@@ -441,8 +443,10 @@ impl WaylandVirtualKeyboard {
 
 impl VkSession {
     #[inline]
-    fn timestamp_ms(&self) -> u32 {
-        self.started.elapsed().as_millis() as u32
+    fn next_timestamp_ms(&mut self) -> u32 {
+        let wall = self.started.elapsed().as_millis() as u32;
+        self.last_timestamp_ms = self.last_timestamp_ms.max(wall).wrapping_add(1);
+        self.last_timestamp_ms
     }
 
     #[inline]

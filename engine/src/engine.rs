@@ -494,7 +494,10 @@ impl Engine {
                 let canonical = (!entry.was_auto_restored)
                     .then(|| visible_to_canonical_raw(&entry.visible_word, method))
                     .flatten()
-                    .filter(|cand| self.compose_candidate(cand) == entry.visible_word);
+                    .filter(|cand| {
+                        crate::spelling::is_valid_vietnamese_syllable(&entry.visible_word)
+                            && self.compose_candidate(cand) == entry.visible_word
+                    });
                 if let Some(canon_raw) = canonical {
                     self.raw_buffer = canon_raw;
                     self.replay_bamboo_from_raw();
@@ -785,7 +788,16 @@ impl Engine {
             self.previous_screen_len = None;
             return None;
         }
-        self.rehydrated_word = false;
+        if self.rehydrated_word {
+            self.rehydrated_word = false;
+            let current = self.composed_tail();
+            let cand = self.compose_candidate(&format!("{}{}", self.raw_buffer, ch));
+            let is_valid_mod =
+                cand != current && crate::spelling::is_valid_vietnamese_syllable(&cand);
+            if !is_valid_mod {
+                self.clear_word_only();
+            }
+        }
 
         if self.method == InputMethod::Telex
             && ch.is_ascii_digit()
