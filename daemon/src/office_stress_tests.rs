@@ -545,10 +545,6 @@ impl OfficeDesktopRig {
                     && self.daemon.engine.buffer().chars().count() <= buf_before
                 {
                     self.consumed_keys.insert(keycode);
-                } else if is_flush_char(ch) && self.daemon.engine.is_enabled() {
-                    self.injector.send_key_event(keycode, 1);
-                    self.injector.send_key_event(keycode, 0);
-                    self.consumed_keys.insert(keycode);
                 } else {
                     self.injector.send_key_event(keycode, 1);
                 }

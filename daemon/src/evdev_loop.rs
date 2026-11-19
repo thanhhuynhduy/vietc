@@ -820,13 +820,7 @@ pub fn run_with_evdev(
                                 // Any forwarded printable key overwrites prior inline autocomplete
                                 // unless the browser emits a fresh TextSelectionChanged for it.
                                 clear_omnibox_shield(&*injector, &shared_focus);
-                                if is_flush_char(ch) && daemon.engine.is_enabled() {
-                                    injector.send_key_event(keycode, 1);
-                                    injector.send_key_event(keycode, 0);
-                                    consumed_keys.insert(keycode);
-                                } else {
-                                    injector.send_key_event(keycode, 1);
-                                }
+                                injector.send_key_event(keycode, 1);
                             }
                         } else {
                             if is_navigation_or_control_key(key) {
