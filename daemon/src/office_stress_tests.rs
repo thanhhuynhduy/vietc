@@ -536,14 +536,16 @@ impl OfficeDesktopRig {
                     let outcome = self.exec_with_shift_released(&commands);
                     assert!(self.daemon.handle_transaction_outcome(outcome));
                     if is_flush_char(ch) && self.daemon.engine.is_enabled() {
-                        self.injector.send_key_event(keycode, 1);
-                        self.injector.send_key_event(keycode, 0);
+                        let _ = self.injector.send_char(ch);
                         self.consumed_keys.insert(keycode);
                     }
                 } else if self.daemon.engine.is_enabled()
                     && is_vn_control_key(self.daemon.app_state.effective_method(), ch)
                     && self.daemon.engine.buffer().chars().count() <= buf_before
                 {
+                    self.consumed_keys.insert(keycode);
+                } else if is_flush_char(ch) && self.daemon.engine.is_enabled() {
+                    let _ = self.injector.send_char(ch);
                     self.consumed_keys.insert(keycode);
                 } else {
                     self.injector.send_key_event(keycode, 1);
@@ -555,7 +557,11 @@ impl OfficeDesktopRig {
                 self.injector.send_key_event(keycode, 1);
             }
         } else if value == 2 {
-            if !self.consumed_keys.contains(&keycode) {
+            if self.consumed_keys.contains(&keycode) {
+                if keycode == KeyCode::KEY_SPACE.code() && self.daemon.engine.is_enabled() {
+                    let _ = self.injector.send_char(' ');
+                }
+            } else {
                 self.injector.send_key_event(keycode, 2);
             }
         } else if value == 0 && !self.consumed_keys.remove(&keycode) {

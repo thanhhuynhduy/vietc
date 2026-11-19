@@ -795,8 +795,7 @@ pub fn run_with_evdev(
 
                                 if is_flush_char(ch) && daemon.engine.is_enabled() {
                                     clear_omnibox_shield(&*injector, &shared_focus);
-                                    injector.send_key_event(keycode, 1);
-                                    injector.send_key_event(keycode, 0);
+                                    let _ = injector.send_char(ch);
                                     consumed_keys.insert(keycode);
                                 }
                             } else if daemon.engine.is_enabled()
@@ -820,7 +819,12 @@ pub fn run_with_evdev(
                                 // Any forwarded printable key overwrites prior inline autocomplete
                                 // unless the browser emits a fresh TextSelectionChanged for it.
                                 clear_omnibox_shield(&*injector, &shared_focus);
-                                injector.send_key_event(keycode, 1);
+                                if is_flush_char(ch) && daemon.engine.is_enabled() {
+                                    let _ = injector.send_char(ch);
+                                    consumed_keys.insert(keycode);
+                                } else {
+                                    injector.send_key_event(keycode, 1);
+                                }
                             }
                         } else {
                             if is_navigation_or_control_key(key) {
@@ -831,6 +835,9 @@ pub fn run_with_evdev(
                         }
                     } else if value == 2 {
                         if consumed_keys.contains(&keycode) {
+                            if keycode == 57 && daemon.engine.is_enabled() {
+                                let _ = injector.send_char(' ');
+                            }
                             continue;
                         }
                         if !daemon.engine.buffer().is_empty() {
