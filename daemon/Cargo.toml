@@ -17,7 +17,7 @@ wayland = ["vietc-protocol/wayland-protocol", "dep:wayland-client", "dep:cosmic-
 [dependencies]
 vietc-engine.workspace = true
 vietc-protocol.workspace = true
-toml = "0.8"
+toml = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 evdev = "0.13.2"
