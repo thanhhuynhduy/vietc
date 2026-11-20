@@ -13,8 +13,8 @@ Lõi ngôn ngữ [`vietc-engine`](engine/) mô phỏng cơ chế **Dual-Hypothes
 
 ## Điểm nổi bật
 
-- **Kiến trúc thuần `evdev` + `uinput` (Rootless qua `uaccess`):**
-  - Bắt phím trực tiếp từ `/dev/input/event*` và phát phím qua `/dev/uinput` + giao thức clipboard nguyên tử (`ext-data-control-v1` / `zwlr-data-control-v1` trên Wayland, X11 Selection trên X11).
+- **Kiến trúc thuần `evdev` + `zwp_virtual_keyboard_v1` / `uinput` (Rootless qua `uaccess`):**
+  - Bắt phím trực tiếp từ `/dev/input/event*` và xuất ký tự Unicode trực tiếp trên Wayland qua `zwp_virtual_keyboard_v1` (Keymap XKB 8 cấp độ, không dùng clipboard, không gạch chân preedit), tự động fallback sang `/dev/uinput` và giao thức clipboard nguyên tử trên X11/TTY.
   - Cấp quyền theo phiên người dùng đang ngồi tại máy (`TAG+="uaccess", GROUP="root", MODE="0600"` trong [`70-vietc.rules`](packaging/70-vietc.rules)) — daemon chạy ở user-space thường, không cần `root`, không cần `setcap`, không cần thêm user vào nhóm `input`.
 - **Cơ chế song ngữ Việt–Anh học từ Gboard Android:**
   - **Song song hai giả thuyết (Dual-Hypothesis):** Luôn lưu chuỗi phím thô (`raw_buffer`) song song với âm tiết tiếng Việt đang dựng.
@@ -107,7 +107,7 @@ vs = "với"
 ## Cấu trúc dự án
 
 - [`engine/`](engine/): Lõi xử lý ngôn ngữ Việt–Anh độc lập I/O (Telex, VNI, chuẩn dấu kiểu cũ, Gboard Bilingual Bigram/Unigram Scorer, State Machine & Property Tests).
-- [`protocol/`](protocol/): Tầng giao tiếp `uinput` và giao dịch clipboard nguyên tử cho Wayland (`ext-data-control-v1` / `zwlr-data-control-v1`) & X11.
+- [`protocol/`](protocol/): Tầng xuất phím Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1` XKB 8-level), `uinput` và giao dịch clipboard nguyên tử cho Wayland (`ext-data-control-v1` / `zwlr-data-control-v1`) & X11.
 - [`daemon/`](daemon/): Dịch vụ nền `vietc-daemon` bắt phím `evdev`, quản lý trạng thái theo cửa sổ focus, phát hiện ô mật khẩu AT-SPI2 / `/proc`.
 - [`ui/`](ui/): Biểu tượng khay hệ thống `vietc-tray` qua giao thức StatusNotifierItem (`ksni`).
 - [`cli/`](cli/): Công cụ dòng lệnh `vietc-cli` để kiểm thử nhanh bộ gõ.

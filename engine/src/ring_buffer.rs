@@ -247,11 +247,18 @@ pub(crate) fn visible_to_canonical_raw(visible: &str, method: InputMethod) -> Op
                 VnShape::Horn => {
                     // In "ươ" compound nucleus, emit a single 'w' after 'o' ("uow")
                     // so the second 'w' does not undo the horn transform.
+                    // However, if there is no trailing consonant after "ươ" (an open prefix
+                    // like "đườ" or "thườ"), "uow" would compose as "uơ" for h/kh/th or wait,
+                    // wait: for "thườ", "thuowf" composes as "thuờ" (plain 'u') because open "-uơ"
+                    // rule applies to h/kh/th! Wait: for "thườ", if we emit "thuwowf"? No, two 'w's in
+                    // "thuwowf" undo in mark.rs only if w_positions[0] + 1 == w_positions[1]!
+                    // In "thuwowf", w_positions are at index 3 and index 5 (not adjacent!), so both 'u' and 'o' get Horn!
+                    let has_tail_after_next = i + 2 < chars.len();
                     let next_is_o_horn = i + 1 < chars.len() && {
                         let (nb, ns, _, _) = decompose_vn_char(chars[i + 1]);
                         base == 'u' && nb == 'o' && ns == VnShape::Horn
                     };
-                    if !next_is_o_horn {
+                    if !next_is_o_horn || !has_tail_after_next {
                         raw.push(if mod_upper { 'W' } else { 'w' });
                     }
                 }

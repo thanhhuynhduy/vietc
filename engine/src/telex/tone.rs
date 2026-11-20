@@ -165,13 +165,13 @@ fn is_valid_tone_trigger(
                 _ => false,
             };
             // Keep English silent-e words ("more", "core", "lose", "rose", "nose", "pose",
-            // "dose", "chose", "those") intact mid-word, while allowing genuine Vietnamese
+            // "dose", "chose", "those", "worse") intact mid-word, while allowing genuine Vietnamese
             // `oe` syllables (`khore` -> `khỏe`, `hofe` -> `hòe`, `xofe` -> `xòe`).
             let english_silent_oe = cluster == "oe"
                 && !has_coda
                 && matches!(
                     onset.as_str(),
-                    "m" | "c" | "l" | "r" | "n" | "p" | "d" | "ch" | "th"
+                    "m" | "c" | "l" | "r" | "n" | "p" | "d" | "ch" | "th" | "w"
                 );
             if !valid_cluster || english_silent_oe {
                 return false;
@@ -222,18 +222,15 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
     }
 
     // Scan consecutive identical tone triggers after a valid Vietnamese onset + vowel
-    // (e.g. "tess", "tesst", "offfer", "isssue", "fixx"? Wait: check onset only if no active trigger,
-    // wait: "fixx" has 'f' onset!).
-    // Note: in "fixx", 'f' is onset (not valid VN onset), EXCEPT "fixx" -> "fix" is in telex_golden!
-    // Look why "stuff" vs "fixx" differed: in "stuff", 's-t' is 2 consonants! In "fixx" / "ATXX",
-    // let's check whether the first trigger WOULD have been preceded by a single consonant or valid onset!
+    // (e.g. "tess", "tesst", "offfer", "isssue", "fixx").
     let first_vowel = vowels.first().copied();
     let onset_allows_escape = first_vowel.is_some_and(|fv| {
         if fv == 0 {
             true
         } else {
             let onset = detect_onset(raw, &consumed, fv);
-            is_valid_onset_str(&onset) || onset.chars().count() == 1
+            is_valid_onset_str(&onset)
+                || (onset.chars().count() == 1 && !matches!(onset.as_str(), "w" | "j" | "z"))
         }
     });
 

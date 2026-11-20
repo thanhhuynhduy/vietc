@@ -17,8 +17,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use evdev::KeyCode;
-use vietc_protocol::inject::{InjectResult, KeyInjector};
 use crate::config::Config;
 use crate::daemon::Daemon;
 use crate::event::{
@@ -26,6 +24,8 @@ use crate::event::{
     is_toggle_combination_state, is_toggle_key, is_vn_control_key, key_to_char_with_case,
 };
 use crate::inject::execute_commands;
+use evdev::KeyCode;
+use vietc_protocol::inject::{InjectResult, KeyInjector};
 
 #[derive(Clone, Default, Debug)]
 struct OfficeEditorState {
@@ -483,11 +483,9 @@ impl OfficeSimulator {
         if value == 1 {
             self.consumed_keys.remove(&keycode);
 
-            if let Some(ch) = key_to_char_with_case(
-                key,
-                is_modifier_held_shift(&self.key_state),
-                self.caps_lock,
-            ) {
+            if let Some(ch) =
+                key_to_char_with_case(key, is_modifier_held_shift(&self.key_state), self.caps_lock)
+            {
                 let buf_before = self.daemon.engine.buffer().chars().count();
                 let commands = self.daemon.process_key(ch);
                 if !commands.is_empty() {
@@ -632,8 +630,12 @@ impl OfficeSimulator {
 
     fn enable_vietnamese(&mut self) {
         self.daemon.engine.set_enabled(true);
-        self.daemon.engine.set_method(vietc_engine::InputMethod::Telex);
-        self.daemon.engine_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.daemon
+            .engine
+            .set_method(vietc_engine::InputMethod::Telex);
+        self.daemon
+            .engine_enabled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.daemon.config.input_method = "telex".into();
         self.daemon.app_state.set_global_enabled(true);
         self.daemon.app_state.set_global_method("telex");
@@ -711,7 +713,8 @@ fn office_contract_drafting_with_copy_paste_and_caps() {
     let actual = sim.text();
     assert!(
         actual.contains("Hợp đồng số: HD-2026/VNPT-001 đã ký kết giữa hai bên."),
-        "Actual text:\n{}", actual
+        "Actual text:\n{}",
+        actual
     );
 
     // 3. Selection with Shift+Left and copy
@@ -775,7 +778,10 @@ fn office_chat_shift_enter_behavior_in_telegram_and_slack() {
     sim.dispatch_key(KeyCode::KEY_ENTER, 0);
     sim.dispatch_key(KeyCode::KEY_LEFTSHIFT, 0);
 
-    assert!(sim.last_shift_enter(), "Shift+Enter must record Shift held!");
+    assert!(
+        sim.last_shift_enter(),
+        "Shift+Enter must record Shift held!"
+    );
     assert_eq!(sim.text(), "chào bạn ơi\n");
 
     // Line 2
@@ -807,7 +813,9 @@ fn office_scenario_finance_spreadsheet_calc_and_sheets() {
 
     // 2. Financial figures with currency & percentages
     sim.type_text("15.000.000 VND, thuees VAT 10%, doanh thu Q1/2026: 50,000.50 USD.\n");
-    assert!(sim.text().contains("15.000.000 VND, thuế VAT 10%, doanh thu Q1/2026: 50,000.50 USD.\n"));
+    assert!(sim
+        .text()
+        .contains("15.000.000 VND, thuế VAT 10%, doanh thu Q1/2026: 50,000.50 USD.\n"));
 }
 
 #[test]
@@ -817,7 +825,9 @@ fn office_scenario_workplace_email_exchange() {
 
     // Email subject
     sim.type_text("[Urgent] Kees hoachj trieenr khai duwj asn Q4 & Review howpj ddoongf\n");
-    assert!(sim.text().contains("[Urgent] Kế hoạch triển khai dự án Q4 & Review hợp đồng\n"));
+    assert!(sim
+        .text()
+        .contains("[Urgent] Kế hoạch triển khai dự án Q4 & Review hợp đồng\n"));
 
     // Email body with English terms & tech tokens
     sim.type_text("Kinhs guwri Anh/Chij Ban Giasm ddoocs,\n");
@@ -895,3 +905,28 @@ fn office_scenario_chat_multiline_and_emoji() {
     );
 }
 
+#[test]
+fn office_scenario_linux_terminal_command_instruction() {
+    let mut sim = OfficeSimulator::new("antigravity");
+    sim.enable_vietnamese();
+
+    // 1. With "thanhf"
+    sim.type_text("chuyeenr 2 leejnh sau veef thanhf leejnh cuar linux terminal giusp tao");
+    let actual = sim.text();
+    println!("Actual terminal instruction (thanhf):\n{}", actual);
+    assert_eq!(
+        actual,
+        "chuyển 2 lệnh sau về thành lệnh của linux terminal giúp tao"
+    );
+
+    // 2. With free-tone "thafnh"
+    let mut sim2 = OfficeSimulator::new("antigravity");
+    sim2.enable_vietnamese();
+    sim2.type_text("chuyeenr 2 leejnh sau veef thafnh leejnh cuar linux terminal giusp tao");
+    let actual2 = sim2.text();
+    println!("Actual terminal instruction (thafnh):\n{}", actual2);
+    assert_eq!(
+        actual2,
+        "chuyển 2 lệnh sau về thành lệnh của linux terminal giúp tao"
+    );
+}

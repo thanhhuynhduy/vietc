@@ -1,27 +1,116 @@
+use std::fs::{self, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-pub fn init() -> Result<(), Box<dyn std::error::Error>> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    match tracing_journald::layer() {
-        Ok(journald) => {
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(journald)
-                .try_init()?;
+pub fn default_log_path() -> PathBuf {
+    if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
+        if !state_home.is_empty() {
+            return PathBuf::from(state_home).join("vietc").join("vietc.log");
         }
-        Err(error) => {
-            eprintln!("[vietc] native journald logging unavailable ({error}); using stderr");
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(tracing_subscriber::fmt::layer().with_target(true))
-                .try_init()?;
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            let state_dir = PathBuf::from(&home)
+                .join(".local")
+                .join("state")
+                .join("vietc");
+            if state_dir.exists() || fs::create_dir_all(&state_dir).is_ok() {
+                return state_dir.join("vietc.log");
+            }
+            let config_dir = PathBuf::from(home).join(".config").join("vietc");
+            return config_dir.join("vietc.log");
+        }
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/tmp/vietc-{}.log", uid))
+}
+
+pub fn init(
+    debug_mode: bool,
+    custom_level: Option<&str>,
+    custom_log_file: Option<&Path>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let log_file_path = match custom_log_file {
+        Some(p) => p.to_path_buf(),
+        None => default_log_path(),
+    };
+
+    if let Some(parent) = log_file_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    // Rotate log if > 10MB
+    if let Ok(meta) = fs::metadata(&log_file_path) {
+        if meta.len() > 10 * 1024 * 1024 {
+            let mut old_path = log_file_path.clone();
+            old_path.set_extension("log.old");
+            let _ = fs::rename(&log_file_path, &old_path);
         }
     }
 
-    Ok(())
+    let default_level = if debug_mode {
+        "debug"
+    } else {
+        custom_level.unwrap_or("info")
+    };
+
+    let filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(default_level))
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path)?;
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_target(true)
+        .with_writer(Arc::new(file));
+
+    let (journald_layer, stderr_layer) = match tracing_journald::layer() {
+        Ok(journald) => (Some(journald), None),
+        Err(error) => {
+            eprintln!("[vietc] native journald logging unavailable ({error}); using stderr");
+            (
+                None,
+                Some(tracing_subscriber::fmt::layer().with_target(true)),
+            )
+        }
+    };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(journald_layer)
+        .with(stderr_layer)
+        .try_init()?;
+
+    Ok(log_file_path)
 }
 
 pub fn log_info(msg: &str) {
-    tracing::info!(message = msg);
+    tracing::info!("{msg}");
+}
+
+pub fn log_debug(msg: &str) {
+    tracing::debug!("{msg}");
+}
+
+pub fn log_trace(msg: &str) {
+    tracing::trace!("{msg}");
+}
+
+#[allow(dead_code)]
+pub fn log_warn(msg: &str) {
+    tracing::warn!("{msg}");
+}
+
+#[allow(dead_code)]
+pub fn log_error(msg: &str) {
+    tracing::error!("{msg}");
+}
+
+pub fn is_debug_active(config_debug: bool) -> bool {
+    config_debug || tracing::enabled!(tracing::Level::DEBUG)
 }

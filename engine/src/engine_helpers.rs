@@ -146,6 +146,18 @@ pub(crate) fn adapt_macro_casing(raw_shortcut: &str, expansion: &str) -> String 
     }
 }
 
+pub(crate) fn is_vn_d_abbreviation(composed: &str, raw_lower: &str) -> bool {
+    if (!composed.contains('Đ') && !composed.contains('đ')) || raw_lower == "ddos" {
+        return false;
+    }
+    let alpha: Vec<char> = composed.chars().filter(|c| c.is_alphabetic()).collect();
+    let all_upper = !alpha.is_empty() && alpha.iter().all(|c| c.is_uppercase());
+    let all_consonants = alpha
+        .iter()
+        .all(|&c| !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y'));
+    all_upper || all_consonants
+}
+
 pub(crate) fn match_casing(raw: &str, processed: &str) -> String {
     if raw.is_empty() || processed.is_empty() {
         return processed.to_string();
@@ -159,6 +171,16 @@ pub(crate) fn match_casing(raw: &str, processed: &str) -> String {
     let all_upper = alpha.iter().all(|c| c.is_uppercase());
     if all_upper {
         processed.to_uppercase()
+    } else if alpha[0].is_lowercase()
+        && !processed.is_ascii()
+        && !raw.eq_ignore_ascii_case("ddos")
+        && alpha.len() >= 3
+        && alpha[1..].iter().filter(|c| c.is_uppercase()).count() == 1
+        && processed.chars().skip(1).any(|c| c.is_uppercase())
+        && crate::spelling::is_valid_vietnamese_syllable(processed)
+        && crate::spelling::is_in_vietnamese_dictionary(processed)
+    {
+        processed.to_lowercase()
     } else if alpha[0].is_uppercase() {
         let mut chars = processed.chars();
         match chars.next() {

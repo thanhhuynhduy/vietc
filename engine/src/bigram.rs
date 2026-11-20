@@ -48,6 +48,17 @@ pub(crate) fn evaluate_forward_bigram(
                     | "trường"
                     | "quả"
                     | "đội"
+                    | "nên"
+                    | "cần"
+                    | "để"
+                    | "tự"
+                    | "muốn"
+                    | "phải"
+                    | "sẽ"
+                    | "đang"
+                    | "vừa"
+                    | "thử"
+                    | "dụng"
             ) =>
         {
             return Some(true);
@@ -237,6 +248,24 @@ pub(crate) fn is_english_retroactive_phrase(w1_raw: &str, w2_final: &str, w2_raw
         "maps" => matches!(w2, "of" | "from" | "for"),
         "tips" => matches!(w2, "for" | "from" | "and"),
         "hits" => matches!(w2, "the" | "from"),
+        "test" => matches!(
+            w2,
+            "suite"
+                | "case"
+                | "cases"
+                | "plan"
+                | "run"
+                | "runner"
+                | "file"
+                | "data"
+                | "env"
+                | "tool"
+                | "tools"
+                | "result"
+                | "results"
+                | "report"
+                | "coverage"
+        ),
         "too" => matches!(
             w2,
             "much"

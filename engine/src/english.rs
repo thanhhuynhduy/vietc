@@ -32,7 +32,8 @@ const ENGLISH_DOMINANT_COLLISIONS: &[&str] = &[
     "nose", "chose", "those", "these", "here", "there", "where", "were", "care", "share", "base",
     "case", "use", "pure", "cure", "hire", "fire", "user", "laser", "server", "order", "border",
     "sister", "todo", "logo", "solo", "photo", "auto", "demo", "repo", "sudo", "cargo", "macro",
-    "docs", "bits",
+    "docs", "bits", "add", "odd", "odds", "beef", "beer", "boost", "deer", "door", "keen", "leer",
+    "loom", "moor", "queen", "reef", "roof", "seer", "tee",
 ];
 
 const VIETNAMESE_DOMINANT_COLLISIONS: &[&str] = &[
@@ -236,7 +237,7 @@ pub fn is_alphanumeric_tech_token(raw: &str) -> bool {
 
 /// Detect mixed internal uppercase tech casing (`"DDoS"`, `"GraphQL"`, `"PyTorch"`, `"iPhone"`, `"macOS"`)
 /// while preserving inverted-CapsLock Vietnamese (`"cHÀO"`, `"vIỆT"`) and early-Shift trailing
-/// Telex modifiers (`"chaoF"` -> `"chào"`, `"VieetJ"` -> `"Việt"`).
+/// Telex modifiers (`"chaoF"` -> `"chào"`, `"VieetJ"` -> `"Việt"`, `"vieeTj"` -> `"việt"`).
 pub fn has_mixed_internal_caps(raw: &str, composed: &str) -> bool {
     let alpha: Vec<char> = raw.chars().filter(|c| c.is_alphabetic()).collect();
     if alpha.len() < 3 {
@@ -254,15 +255,43 @@ pub fn has_mixed_internal_caps(raw: &str, composed: &str) -> bool {
     {
         return false;
     }
+    // Single accidental early-Shift on a vowel/coda letter before the trailing tone/mark key
+    // inside a valid non-ASCII Vietnamese dictionary syllable (`vieeTj` -> `việt`, `nguowIf` -> `người`, `dduowNgf` -> `đường`).
+    if !composed.is_ascii()
+        && !raw.eq_ignore_ascii_case("ddos")
+        && alpha[1..].iter().filter(|c| c.is_uppercase()).count() == 1
+        && crate::spelling::is_valid_vietnamese_syllable(composed)
+        && crate::spelling::is_in_vietnamese_dictionary(composed)
+    {
+        return false;
+    }
     alpha
         .windows(2)
         .any(|w| w[0].is_lowercase() && w[1].is_uppercase())
 }
 
-/// Detect natural English double-letter stems (`cheese`, `business`, `address`, `stuff`, `IEEE`)
+/// Detect natural English double-letter stems (`cheese`, `geese`, `business`, `address`, `stuff`, `IEEE`, `wedding`)
 /// so a Telex double-key undo restores the eaten letter rather than truncating the word.
 pub fn has_natural_english_double(raw_lower: &str) -> bool {
-    if raw_lower == "ieee" {
+    if matches!(
+        raw_lower,
+        "ieee"
+            | "geese"
+            | "cheese"
+            | "breeze"
+            | "freeze"
+            | "sneeze"
+            | "squeeze"
+            | "sleeve"
+            | "groove"
+            | "choose"
+            | "loose"
+            | "goose"
+            | "moose"
+            | "noose"
+            | "soothe"
+            | "smooth"
+    ) {
         return true;
     }
     let chars: Vec<char> = raw_lower.chars().collect();
@@ -321,6 +350,9 @@ pub fn has_natural_english_double(raw_lower: &str) -> bool {
                 | "diff"
                 | "tariff"
                 | "sheriff"
+                | "add"
+                | "odd"
+                | "odds"
         )
     {
         return true;
@@ -330,6 +362,8 @@ pub fn has_natural_english_double(raw_lower: &str) -> bool {
         || raw_lower.starts_with("cross")
         || raw_lower.starts_with("addr")
         || raw_lower.starts_with("busin")
+        || raw_lower.starts_with("add")
+        || raw_lower.starts_with("odd")
     {
         return true;
     }
@@ -340,6 +374,14 @@ pub fn has_natural_english_double(raw_lower: &str) -> bool {
         if c0 == c1
             && matches!(c0, 's' | 'f' | 'r')
             && matches!(c2, 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+        {
+            return true;
+        }
+        if i > 0
+            && c0 == 'd'
+            && c1 == 'd'
+            && matches!(chars[i - 1], 'a' | 'e' | 'i' | 'o' | 'u')
+            && matches!(c2, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'l' | 'r')
         {
             return true;
         }
@@ -452,4 +494,3 @@ pub fn is_path_or_code_context(
 
     false
 }
-

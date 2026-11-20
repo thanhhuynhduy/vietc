@@ -719,6 +719,18 @@ fn phase4_backspace_removes_one_raw_key_and_restores_each_prior_state() {
             );
         }
     }
+
+    // Closed syllable with free-order trailing tone (`vieetj` -> `việt`, `dduocwj` -> `được`):
+    // Backspace followed by a new final consonant replaces the coda while preserving the vowel tone
+    // (`vieetj` + BS + `c` -> `việc`, matching System Architecture Spec 7.3.4).
+    let mut engine = Engine::new(InputMethod::Telex);
+    for ch in "vieetj".chars() {
+        engine.process_key(ch);
+    }
+    assert_eq!(engine.buffer(), "việt");
+    engine.reduce(crate::state::PhysicalEvent::Backspace);
+    engine.process_key('c');
+    assert_eq!(engine.buffer(), "việc");
 }
 
 #[test]

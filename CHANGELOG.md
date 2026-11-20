@@ -10,12 +10,17 @@
 - Moved daemon single-instance lockfile to `$XDG_RUNTIME_DIR/vietc-daemon.lock` so `PrivateTmp=yes` services and manual invocations share the same lock namespace.
 
 ### Added
+- **Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1`) Zero-Clipboard Backend (`vietc-protocol`):**
+  - Persistent 8-level XKB keymap (`VIETC_EIGHT_LEVEL`) uploaded once via `memfd_create`, mapping all 134 Vietnamese Unicode characters within safe evdev keycodes `1..=111` (eliminating Chromium/Electron DomCode collisions and clipboard churn).
+  - Monotonic timestamp FIFO, Shift handoff between `zwp_virtual_keyboard_v1` and `uinput`, and Atomic Space delimiter dispatch to prevent sticky words at high WPM.
+  - Chrome/Edge Omnibox Inline Autocomplete Selection Shield (`KEY_DELETE` pre-clear on both typing transforms and `Backspace` edits).
 - **Gboard-inspired Dual-Hypothesis Bilingual Engine (`vietc-engine`):**
-  - Preceding-word Bigram context (`LanguageContext`) + Unigram collision tiers (`english_dominant_collisions` vs `vietnamese_dominant_collisions`) to disambiguate bilingual sentences (`"bánh tét"` vs `"cargo test"`, `"cảm ơn"` vs `"my own"`, `"hai bên"` vs `"have been"`).
-  - Gboard Backspace-after-Space undo: pressing `Backspace` immediately after an ambiguous auto-restore reverts to the Vietnamese syllable and locks Vietnamese priority for the next word boundary.
+  - Preceding-word Bigram context (`LanguageContext`), retroactive 2-word disambiguation (`"Lát nữa"`, `"Lots of"`, `"Mã số"`, `"Too much"`), and Unigram collision tiers (`english_dominant_collisions` vs `vietnamese_dominant_collisions`).
+  - Guarded `Backspace`-across-`Space` rehydration (`CommittedRingBuffer`) and Gboard Space-Undo after auto-restore.
+  - Character-granular coda replacement on mid-word `Backspace` after free-order tone triggers (`vieetj` + `Backspace` + `c` → `việc`, `dduowngf` + `Backspace*2` + `cj` → `được`).
   - Full Telex `z` and VNI `0` tone removal, `-ươu` triphthong composition (`huouw` → `hươu`, `ruouwj` → `rượu`), free-order `qu`/`gi`/`oe` glides (`gifa` → `già`, `qusa` → `quá`, `khore` → `khỏe`, `quo7` → `quơ`, `dan9` → `đan`), and circumflex/breve/horn shape overrides (`aaw` → `ă`, `oow` → `ơ`, `a68` → `ă`, `o67` → `ơ`).
-  - Expanded English double-letter & technical token protection (`cheese`, `loose`, `keeper`, `stuff`, `business`, `address`, `DDoS`, `u32`, `i64`, `mp4`, `sha256`) and Vietnamese shorthand whitelist (`đc`, `đk`, etc.).
+  - Expanded English double-letter (`dd`, `ee`, `oo`, `ss`, `ff`, `rr`), `w`-onset, path/URL token, and technical/early-Shift protection (`DDoS`, `add`, `wedding`, `worse`, `wonderful`, `geese`, `vieeTj` → `việt`, `u32`, `mp4`, `sha256`), plus Vietnamese `Đ/đ` abbreviation whitelist (`QĐ`, `HĐ`, `đc`, `đk`).
 
 ### Changed
 - **Old-Style Vietnamese Tone Placement (`Kiểu cũ`):** Open diphthongs `oa`, `oe`, `uy` place tones on the first vowel (`hòa`, `khỏe`, `thủy`) and automatically shift to the second vowel when closed by a coda consonant (`hoàn`, `toán`, `huỳnh`, `tuýt`).
-- Unified pure `evdev` + `uinput` architecture; removed all IBus, Fcitx5, Wayland IM (`zwp_input_method_v2`), X11 XRecord, `vietcctl`, `uinputd`, `vk`, `web`, and legacy PPA/AUR packaging code.
+- Unified pure `evdev` + `zwp_virtual_keyboard_v1` / `uinput` architecture; removed all IBus, Fcitx5, Wayland IM (`zwp_input_method_v2`), X11 XRecord, `vietcctl`, `uinputd`, `vk`, `web`, and legacy PPA/AUR packaging code.

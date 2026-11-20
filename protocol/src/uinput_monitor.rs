@@ -316,9 +316,6 @@ impl KeyInjector for UinputInjector {
             self.send_uinput_event_unlocked(EV_KEY, keycode, value)?;
             self.send_uinput_event_unlocked(0, 0, 0)
         });
-        if value == 0 && !bypassed {
-            std::thread::sleep(Duration::from_millis(2));
-        }
         if matches!(result, Ok(Ok(()))) {
             InjectResult::Success
         } else {
@@ -387,7 +384,6 @@ impl KeyInjector for UinputInjector {
                 if result != InjectResult::Success {
                     return result;
                 }
-                std::thread::sleep(Duration::from_millis(2));
             }
             return InjectResult::Success;
         }
@@ -556,11 +552,8 @@ impl UinputInjector {
             .chars()
             .all(|c| char_to_linux_keycode(c).is_some() || c == '\n')
         {
-            if backspaces > 0 {
-                if self.send_backspaces(backspaces).is_err() {
-                    return InjectResult::Failed;
-                }
-                std::thread::sleep(Duration::from_millis(8));
+            if backspaces > 0 && self.send_backspaces(backspaces).is_err() {
+                return InjectResult::Failed;
             }
             for ch in text.chars() {
                 if ch == '\n' {
@@ -570,7 +563,6 @@ impl UinputInjector {
                 } else if self.send_char(ch) != InjectResult::Success {
                     return InjectResult::Failed;
                 }
-                std::thread::sleep(Duration::from_millis(3));
             }
             return InjectResult::Success;
         }

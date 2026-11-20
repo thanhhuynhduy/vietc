@@ -38,6 +38,12 @@ pub struct Config {
     #[serde(default = "default_false")]
     pub debug: bool,
 
+    #[serde(default)]
+    pub log_file: Option<String>,
+
+    #[serde(default)]
+    pub log_level: Option<String>,
+
     #[serde(default = "default_false")]
     pub deduplicate_keys: bool,
 
@@ -336,6 +342,8 @@ impl Default for Config {
             macros,
             grab: true,
             debug: false,
+            log_file: None,
+            log_level: None,
             deduplicate_keys: true,
             deduplicate_two_back: false,
             deduplicate_window_ms: default_dedup_window_ms(),

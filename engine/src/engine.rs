@@ -5,7 +5,7 @@ use crate::bigram::{
 };
 use crate::engine_helpers::{
     active_telex_transform, adapt_macro_casing, case_shape, is_flush_char, is_sentence_boundary,
-    match_casing,
+    is_vn_d_abbreviation, match_casing,
 };
 use crate::english::{
     has_mixed_internal_caps, has_natural_english_double, is_alphanumeric_tech_token,
@@ -66,6 +66,7 @@ pub struct Engine {
     ring_buffer: CommittedRingBuffer,
     rehydrated_word: bool,
     rehydrated_ascii_only: bool,
+    pending_coda_edit_canon: Option<String>,
     pending_restore_undo: Option<AutoRestoreUndo>,
     override_keep_vietnamese: bool,
     active_transform: Option<TransformIdentity>,
@@ -102,6 +103,7 @@ impl Engine {
             ring_buffer: CommittedRingBuffer::new(),
             rehydrated_word: false,
             rehydrated_ascii_only: false,
+            pending_coda_edit_canon: None,
             pending_restore_undo: None,
             override_keep_vietnamese: false,
             active_transform: None,
@@ -180,9 +182,7 @@ impl Engine {
                 return true;
             }
 
-            let is_vn_d_abbreviation = (composed.contains('Đ') || composed.contains('đ'))
-                && raw_lower != "ddos";
-            if is_vn_d_abbreviation {
+            if is_vn_d_abbreviation(composed, &raw_lower) {
                 return false;
             }
             return true;
@@ -315,6 +315,7 @@ impl Engine {
         self.recovered_screen_len = None;
         self.rehydrated_word = false;
         self.rehydrated_ascii_only = false;
+        self.pending_coda_edit_canon = None;
         self.override_keep_vietnamese = false;
         self.active_transform = None;
         self.boundary = BoundaryState::Committed;
@@ -344,6 +345,7 @@ impl Engine {
         self.ring_buffer.clear();
         self.rehydrated_word = false;
         self.rehydrated_ascii_only = false;
+        self.pending_coda_edit_canon = None;
         self.pending_restore_undo = None;
         self.override_keep_vietnamese = false;
         self.active_transform = None;
@@ -589,9 +591,32 @@ impl Engine {
             .take()
             .unwrap_or_else(|| previous.chars().count());
         self.previous_screen_len = Some(prev_len);
-        let _ = self.raw_buffer.pop();
         self.override_keep_vietnamese = false;
+
+        let base_visible = self
+            .pending_coda_edit_canon
+            .as_deref()
+            .map(|c| self.compose_candidate(c))
+            .unwrap_or_else(|| previous.clone());
+
+        let _ = self.raw_buffer.pop();
         self.replay_bamboo_from_raw();
+        let popped_visible = self.composed_tail();
+
+        if !base_visible.is_ascii()
+            && self.pasted_prefix.is_empty()
+            && (self.pending_coda_edit_canon.is_some()
+                || popped_visible.chars().count() == prev_len)
+        {
+            let mut truncated = base_visible;
+            let _ = truncated.pop();
+            self.pending_coda_edit_canon = (!truncated.is_empty())
+                .then(|| visible_to_canonical_raw(&truncated, self.method))
+                .flatten();
+        } else {
+            self.pending_coda_edit_canon = None;
+        }
+
         self.active_transform = None;
         self.boundary = if self.raw_buffer.is_empty() && self.pasted_prefix.is_empty() {
             BoundaryState::Committed
@@ -599,7 +624,7 @@ impl Engine {
             BoundaryState::Composing
         };
         self.last_transition = Some(TransitionKind::Edit);
-        Some(self.replacement(prev_len, self.composed_tail(), ReplacementReason::Edit))
+        Some(self.replacement(prev_len, popped_visible, ReplacementReason::Edit))
     }
 
     pub fn process_key(&mut self, ch: char) -> Option<EngineEvent> {
@@ -823,8 +848,9 @@ impl Engine {
             self.rehydrated_word = false;
             let current = self.composed_tail();
             let cand = self.compose_candidate(&format!("{}{}", self.raw_buffer, ch));
-            let is_valid_mod =
-                cand != current && crate::spelling::is_valid_vietnamese_syllable(&cand);
+            let is_valid_mod = cand != current
+                && crate::spelling::is_valid_vietnamese_syllable(&cand)
+                && crate::spelling::is_in_vietnamese_dictionary(&cand);
             if !is_valid_mod {
                 self.clear_word_only();
             }
@@ -846,6 +872,19 @@ impl Engine {
             .recovered_screen_len
             .take()
             .unwrap_or_else(|| previous.chars().count());
+
+        if let Some(coda_canon) = self.pending_coda_edit_canon.take() {
+            let normal_cand = self.compose_candidate(&format!("{}{}", self.raw_buffer, ch));
+            let normal_valid = !normal_cand.is_ascii()
+                && crate::spelling::is_valid_vietnamese_prefix(&normal_cand);
+            if !normal_valid {
+                let edit_cand = self.compose_candidate(&format!("{}{}", coda_canon, ch));
+                if crate::spelling::is_valid_vietnamese_prefix(&edit_cand) {
+                    self.raw_buffer = coda_canon;
+                    self.replay_bamboo_from_raw();
+                }
+            }
+        }
 
         if let Some(undo) = self.bamboo.undo_telex_transform(ch, &self.raw_buffer) {
             let consumed_stroke_literal = if undo == TelexUndo::ConsumeTrigger {

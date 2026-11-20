@@ -107,8 +107,8 @@ Hệ thống VietC được module hóa nghiêm ngặt thành các crate độc 
 1. [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine): Thuần túy tính toán logic tiếng Việt, không chứa bất kỳ lời gọi hệ thống hay giao thức I/O nào. Có thể chạy độc lập trong môi trường WebAssembly hoặc Unit Test.
 2. [`vietc-daemon`](file:///home/thanhhd/Git-projects/vietc/daemon): Tiến trình chạy nền (daemon service), điều phối việc bắt phím phần cứng `evdev`, đồng bộ tiêu điểm AT-SPI, bảo vệ mật khẩu và điều khiển State Machine.
 3. [`vietc-protocol`](file:///home/thanhhd/Git-projects/vietc/protocol): Tầng trừu tượng hóa giao thức xuất phím, chứa bộ nạp Wayland Virtual Keyboard, cấu hình Keymap XKB 8 cấp độ và Linux Uinput.
-4. [`vietc-ui`](file:///home/thanhhd/Git-projects/vietc/ui): Giao diện đồ họa cấu hình và khay hệ thống (System Tray).
-5. [`vietc-cli`](file:///home/thanhhd/Git-projects/vietc/cli) / [`vietcctl`](file:///home/thanhhd/Git-projects/vietc/vietcctl): Công cụ dòng lệnh giao tiếp với daemon qua Unix Domain Socket (`/run/user/$UID/vietc.sock`).
+4. [`vietc-ui`](file:///home/thanhhd/Git-projects/vietc/ui): Giao diện đồ họa cấu hình và khay hệ thống (System Tray), giao tiếp với daemon qua tín hiệu POSIX (`SIGUSR1` chuyển chế độ, `SIGUSR2` nạp lại cấu hình) và tệp trạng thái `/tmp/vietc-status-$UID`.
+5. [`vietc-cli`](file:///home/thanhhd/Git-projects/vietc/cli): Công cụ dòng lệnh (Interactive REPL Test Harness) kiểm thử trực tiếp máy trạng thái [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine).
 
 ---
 
@@ -119,30 +119,30 @@ Vị trí mã nguồn: [`daemon/src/evdev_loop.rs`](file:///home/thanhhd/Git-pro
 ### 2.1. Độc quyền Bắt phím cấp Nhân (`evdev grab`) và Vòng lặp `libc::poll`
 - **Cơ chế `grab()`:** Ngay khi khởi động, daemon mở file thiết bị tại `/dev/input/event*` và gửi ioctl `EVIOCGRAB`. Nhân Linux lập tức khóa cổng chuyển tiếp của bàn phím này: toàn bộ sự kiện phím vật lý bị chặn lại, không truyền tới X11, Wayland Compositor hay tty.
 - **Tối ưu Vòng lặp I/O:** Daemon sử dụng hàm hệ thống `libc::poll` để giám sát tập hợp file descriptors của tất cả các bàn phím đồng thời. Khi có phím bấm, luồng thức dậy ngay lập tức mà không tiêu tốn chu kỳ CPU nào trong trạng thái nghỉ.
-- **Ưu tiên Luồng Real-time:** Hàm [`boost_thread_priority()`](file:///home/thanhhd/Git-projects/vietc/daemon/src/main.rs#L39-L44) thiết lập mức ưu tiên `nice -10` cho tiến trình daemon, đảm bảo độ trễ phản hồi phím luôn $\le 1\text{ms}$ ngay cả khi hệ thống đang tải nặng.
+- **Ưu tiên Luồng Real-time:** Hàm [`boost_thread_priority()`](file:///home/thanhhd/Git-projects/vietc/daemon/src/main.rs#L40-L46) thiết lập mức ưu tiên `nice -10` cho tiến trình daemon, đảm bảo độ trễ phản hồi phím luôn $\le 1\text{ms}$ ngay cả khi hệ thống đang tải nặng.
 
 ### 2.2. Cơ chế Tự động Phát hiện Bàn phím Cắm ngoài (Hotplug Detection)
 Vòng lặp chính duy trì một bộ hẹn giờ định kỳ kiểm tra các thiết bị mới trong `/dev/input/`. Khi phát hiện người dùng cắm thêm bàn phím cơ USB hoặc bàn phím không dây Bluetooth:
 1. Xác định thiết bị có thuộc nhóm bàn phím thực hay không (thông qua cờ `EV_KEY` và các phím chữ cái tiêu chuẩn).
 2. Tự động khởi tạo kết nối và gọi `grab()` để đưa vào danh sách quản lý.
-3. Khi bàn phím bị rút ra, bộ điều phối tự động xóa descriptor khỏi mảng `poll` mà không gây treo hay đổ vỡ tiến trình.
+3. Khi bàn phím bị rút ra, bộ điều phối tự động giải phóng mọi phím đang giữ qua [`release_disconnected_device_keys()`](file:///home/thanhhd/Git-projects/vietc/daemon/src/evdev_loop.rs#L196-L210) và xóa descriptor khỏi mảng `poll` mà không gây treo hay kẹt phím.
 
 ### 2.3. Máy Quản lý Trạng thái Phím và Modifier (`KeyboardState`)
 Mỗi sự kiện phím thô bao gồm: `keycode` (mã phím phần cứng), `value` (0 = KeyUp, 1 = KeyDown, 2 = KeyRepeat).
-Module [`KeyboardState`](file:///home/thanhhd/Git-projects/vietc/daemon/src/app_state.rs) theo dõi một bitmask liên tục:
+Cấu trúc [`KeyboardState`](file:///home/thanhhd/Git-projects/vietc/daemon/src/evdev_loop.rs#L178-L194) theo dõi trạng thái phím trên từng thiết bị cùng trạng thái khóa toàn cục:
 - Các phím Modifier vật lý: `Shift_L` (42), `Shift_R` (54), `Ctrl_L` (29), `Ctrl_R` (97), `Alt_L` (56), `Alt_R` (100), `Super_L` (125), `Super_R` (126).
-- Trạng thái khóa: `CapsLock` (58), `NumLock` (69).
-- Bộ lọc chống dội phím (Debounce/Dedup): Loại bỏ các sự kiện trùng lặp bất thường do switch bàn phím chập chờn.
+- Trạng thái khóa: `CapsLock` (58) đồng bộ qua LED phần cứng và trạng thái virtual keyboard.
+- Bộ lọc chống dội phím ([`KeyDeduplicator`](file:///home/thanhhd/Git-projects/vietc/daemon/src/key_dedup.rs)): Loại bỏ các sự kiện trùng lặp bất thường do switch bàn phím cơ chập chờn.
 
 ### 2.4. Phím tắt Chuyển đổi Bộ gõ (`Toggle Method`) và Nuốt phím
-- Phím tắt mặc định chuyển đổi giữa Tiếng Việt và Tiếng Anh là `Ctrl + Space` hoặc `Alt + Z` (có thể tùy biến trong file cấu hình `~/.config/vietc/config.toml`).
-- **Quy tắc Nuốt phím (Key Consumption):** Khi phát hiện tổ hợp phím tắt được nhấn, daemon lập tức "nuốt" sự kiện này (không chuyển tiếp tới ứng dụng đích), đảo cờ chế độ gõ và phát âm thanh/hiển thị thông báo OSD nếu được kích hoạt.
+- Phím tắt mặc định chuyển đổi giữa Tiếng Việt và Tiếng Anh là `Ctrl + Space` hoặc `Alt + Z` (có thể tùy biến trong file cấu hình `~/.config/vietc/config.toml`, xử lý tại [`daemon/src/event.rs:89-145`](file:///home/thanhhd/Git-projects/vietc/daemon/src/event.rs#L89-L145)).
+- **Quy tắc Nuốt phím (Key Consumption):** Khi phát hiện tổ hợp phím tắt được nhấn, daemon lập tức "nuốt" phím kích hoạt (đưa vào `consumed_keys`, không chuyển tiếp tới ứng dụng đích), xóa trạng thái Omnibox Shield, đảo cờ chế độ gõ và cập nhật tệp trạng thái cho khay hệ thống.
 
 ### 2.5. Đồng bộ Cửa sổ và Ứng dụng đích (`FocusTracker`)
 Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus_tracker.rs).
 - Sử dụng giao thức AT-SPI2 DBus Accessibility và Wayland Toplevel Protocol để theo dõi cửa sổ đang nhận tiêu điểm nhập liệu (active focused window).
 - **Nguyên tắc Reset Tuyệt đối:** Khi tiêu điểm chuyển từ ứng dụng này sang ứng dụng khác (ví dụ: chuyển từ VS Code sang Telegram):
-  1. Daemon lập tức gọi `engine.reset_composition_state()`.
+  1. Daemon lập tức gọi `daemon.reset_composition_state()`.
   2. Toàn bộ `raw_buffer` và chuỗi giao dịch đang soạn dở bị hủy bỏ.
   3. Đảm bảo từ đang gõ dở ở ứng dụng cũ không bao giờ bị chèn nhầm sang ứng dụng mới.
 
@@ -175,20 +175,20 @@ Lõi xử lý kế thừa và phát triển các nguyên lý tối ưu từ bộ
    - Phím chữ `đ`: `dd` $\rightarrow$ `đ`, gõ tiếp `d` $\rightarrow$ `dd`.
 
 ### 3.2. Chuẩn Đặt Dấu Thanh: Kiểu Cũ (Old-style Orthography)
-VietC tuân thủ nghiêm ngặt quy tắc đặt dấu thanh truyền thống:
-- Khi một âm tiết chứa nguyên âm đôi có âm đệm `o` hoặc `u` (`oa`, `oe`, `uy`): Dấu thanh được đặt trên **nguyên âm chính** đứng sau:
+VietC tuân thủ nghiêm ngặt quy tắc đặt dấu thanh truyền thống tại [`engine/src/telex/tone.rs:362-395`](file:///home/thanhhd/Git-projects/vietc/engine/src/telex/tone.rs#L362-L395):
+- Khi âm tiết mở (không có phụ âm cuối, `!has_coda`) chứa cặp nguyên âm không dấu (`oa`, `oe`, `uy`): Dấu thanh được đặt trên **nguyên âm thứ nhất** (`active[0]`):
   - `hòa` (KHÔNG PHẢI `hoà`)
   - `thủy` (KHÔNG PHẢI `thuỷ`)
   - `hóa` (KHÔNG PHẢI `hoá`)
+- Khi có âm đầu `qu` hoặc `gi` ([`detect_glide_vowel`](file:///home/thanhhd/Git-projects/vietc/engine/src/telex/tone.rs#L75-L90) tách `u`/`i` vào phụ âm đầu) hoặc khi là âm tiết đóng có phụ âm cuối đi kèm (`oan`, `oat`, `uyen`, `uynh`): Trọng tâm dấu thanh đặt trên nguyên âm chính đứng sau (`active[1]`):
   - `quỳnh` (KHÔNG PHẢI `qùynh`)
-- Khi có phụ âm cuối đi kèm (`oan`, `oat`, `uyen`): Trọng tâm dấu thanh tự động dịch chuyển vào nguyên âm áp chót:
   - `hoàn` (trên `a`)
-  - `khuyên` (trên `e`)
-  - `thuở`, `khuỷu` (đặt chuẩn trên nguyên âm biểu thị âm sắc chính).
+  - `khuyên` (trên `ê`)
+  - `thuở`, `khuỷu` (đặt chuẩn trên nguyên âm mang dấu phụ hoặc nguyên âm giữa của cụm 3 nguyên âm).
 
 ### 3.3. Bộ đệm Vòng Lịch sử Từ (`CommittedRingBuffer`) và Quản lý Ranh giới
 Vị trí mã nguồn: [`engine/src/ring_buffer.rs`](file:///home/thanhhd/Git-projects/vietc/engine/src/ring_buffer.rs).
-- `CommittedRingBuffer` lưu trữ một danh sách cố định (thường là 8-16 từ gần nhất) đã được người dùng gõ hoàn tất:
+- `CommittedRingBuffer` lưu trữ một danh sách cố định (`RING_BUFFER_CAPACITY = 5` từ gần nhất) đã được người dùng gõ hoàn tất:
   ```rust
   pub struct CommittedWordEntry {
       pub raw_keys: String,             // Chuỗi phím thô (ví dụ: "mayf")
@@ -200,10 +200,10 @@ Vị trí mã nguồn: [`engine/src/ring_buffer.rs`](file:///home/thanhhd/Git-pr
       pub user_override_vn: bool,
   }
   ```
-- **Bất biến Phân định Ranh giới Từ:** Khi người dùng bấm phím phân cách (`is_flush_char`: Space, Enter, dấu chấm, dấu phẩy...), từ hiện tại được coi là đã hoàn tất (`Committed`) và chuyển vào Ring Buffer.
-- **Quy tắc Xử lý Backspace Khi Buffer Rỗng (`on_backspace_when_idle`):**
-  - Khi người dùng gõ một từ mới, `raw_buffer` khởi đầu hoàn toàn sạch.
-  - Tuyệt đối không tự ý ghép nối ký tự của từ mới vào từ cũ đã nằm trong Ring Buffer.
+- **Bất biến Phân định Ranh giới Từ:** Khi người dùng bấm phím phân cách (`is_flush_char`: Space, Enter, dấu chấm, dấu phẩy...), từ hiện tại được coi là đã hoàn tất (`Committed`) và chuyển vào Ring Buffer. Khi bắt đầu gõ từ mới sau dấu phân cách, `raw_buffer` luôn khởi đầu rỗng hoàn toàn.
+- **Quy tắc Hồi phục Có Kiểm soát Khi Xóa Khoảng trắng (`on_backspace_when_idle` & Guarded Rehydration):**
+  - Khi người dùng chủ động nhấn `Backspace` xóa hết khoảng trắng ngay sau từ vừa commit, từ đó được đưa vào trạng thái chờ `rehydrated_word = true`.
+  - Tại phím gõ tiếp theo `ch` ([`engine/src/engine.rs:822-831`](file:///home/thanhhd/Git-projects/vietc/engine/src/engine.rs#L822-L831)), hệ thống chỉ cho phép biến đổi từ cũ nếu tổ hợp `raw_buffer + ch` tạo ra sự thay đổi hợp lệ cả về cấu trúc âm tiết (`is_valid_vietnamese_syllable`) lẫn từ điển tiếng Việt (`is_in_vietnamese_dictionary`) (ví dụ: `"xin chao "` + `BS` + `"f"` $\rightarrow$ `"xin chào"`). Nếu không thỏa mãn (ví dụ người dùng xóa Space rồi gõ chữ cái đầu của từ mới như `"cấu "` + `BS` + `"h"`), hệ thống lập tức gọi `clear_word_only()` để tách biệt hoàn toàn từ cũ và khởi tạo từ mới độc lập.
 
 ### 3.4. Bộ Nhận diện Ngôn ngữ và Tự động Khôi phục Tiếng Anh (`english.rs`, `spelling.rs`)
 - **Tập Từ điển Nhúng:**
@@ -303,9 +303,9 @@ Mỗi giao dịch thay thế ký tự diễn ra tuần tự và nguyên tử qua
 # PHẦN 5: BẢO VỆ GIAO DIỆN & CÁC TRƯỜNG HỢP BIÊN ĐẶC BIỆT (EDGE CASES)
 
 ### 5.1. Chrome / Chromium Omnibox Autocomplete & Selection Shield
-Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus_tracker.rs), [`daemon/src/focus.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus.rs).
-- **Vấn đề:** Khi gõ vào thanh địa chỉ của Google Chrome hoặc Microsoft Edge, trình duyệt tự động gợi ý URL và bôi đen phần gợi ý (ví dụ: gõ `h` $\rightarrow$ gợi ý `h[ttps://google.com]`). Nếu người dùng gõ tiếp `o` để tạo thành `hòa`, việc gửi phím `Backspace` sẽ xóa sạch toàn bộ vùng bôi đen thay vì chỉ xóa chữ `o`.
-- **Cơ chế Omnibox Shield:** VietC lắng nghe sự kiện `TextSelectionChanged` từ AT-SPI. Khi phát hiện vùng bôi đen nội tuyến (inline selection) được kích hoạt bởi trình duyệt, daemon sẽ phát phím mũi tên phải (`KEY_RIGHT`) để giải phóng vùng chọn trước khi thực thi việc thay thế ký tự tiếng Việt.
+Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus_tracker.rs), [`daemon/src/focus.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus.rs), [`protocol/src/wayland_vk.rs:431-436`](file:///home/thanhhd/Git-projects/vietc/protocol/src/wayland_vk.rs#L431-L436).
+- **Vấn đề:** Khi gõ vào thanh địa chỉ của Google Chrome hoặc Microsoft Edge, trình duyệt tự động gợi ý URL và bôi đen phần gợi ý (ví dụ: gõ `h` $\rightarrow$ gợi ý `h[ttps://google.com]`). Nếu người dùng gõ tiếp `o` và `f` để tạo thành `hòa`, phím `Backspace` đầu tiên sẽ chỉ xóa phần gợi ý đang bôi đen thay vì xóa ký tự `o` đứng trước con trỏ.
+- **Cơ chế Omnibox Shield:** VietC lắng nghe sự kiện `TextSelectionChanged` từ AT-SPI. Khi phát hiện vùng bôi đen nội tuyến (inline autocomplete suffix) đang hoạt động trong khi bộ đệm từ đang soạn dở (`buf_before > 0`), daemon sẽ phát trước 1 phím `KEY_DELETE` (keycode `111`, `extra_deletes_after_caret = 1`) để xóa bỏ phần gợi ý bôi đen phía sau con trỏ, sau đó mới phát chính xác $N$ phím `KEY_BACKSPACE` và chèn ký tự tiếng Việt.
 
 ### 5.2. Trình soạn thảo Hiện đại (VS Code, Sublime Text, JetBrains)
 - Các IDE hiện đại thường có tính năng tự động đóng ngoặc (`Auto Closing Quotes / Brackets`) và hỗ trợ nhiều con trỏ đồng thời (Multi-Cursor).
@@ -326,9 +326,9 @@ Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-
 Bất kỳ lập trình viên nào khi chỉnh sửa mã nguồn VietC đều phải tuân thủ nghiêm ngặt 6 Bất biến sau đây. Vi phạm bất kỳ bất biến nào đều bị coi là lỗi kiến trúc nghiêm trọng:
 
 ### ⚠️ BẤT BIẾN 1: TÍNH ĐỘC LẬP CỦA RANH GIỚI TỪ (WORD BOUNDARY ISOLATION)
-- Khi một từ được kết thúc bằng phím phân cách (`Space`, Enter, dấu câu), từ đó thuộc về văn bản của tài liệu.
-- **CẤM:** Tuyệt đối không tự ý "hồi sinh" (rehydrate) từ cũ vào `raw_buffer` khi người dùng đang bắt đầu gõ một từ mới.
-- Một từ mới phải được khởi tạo với trạng thái hoàn toàn độc lập, không cho phép ký tự của từ mới bị ghép nối ngầm vào chuỗi phím thô của từ trước đó.
+- Khi một từ được kết thúc bằng phím phân cách (`Space`, Enter, dấu câu), từ đó thuộc về văn bản của tài liệu và `raw_buffer` được làm rỗng hoàn toàn cho từ tiếp theo.
+- **Quy tắc Hồi phục Có Kiểm soát (Guarded Rehydration):** Khi người dùng chủ động nhấn `Backspace` xóa khoảng trắng ngay sau từ vừa commit, hệ thống chỉ cho phép biến đổi từ cũ nếu phím tiếp theo tạo ra một âm tiết tiếng Việt hợp lệ có trong từ điển (`is_valid_vietnamese_syllable && is_in_vietnamese_dictionary`).
+- Nếu phím tiếp theo không tạo thành biến thể âm tiết tiếng Việt hợp lệ trong từ điển của từ cũ (tức người dùng đang bắt đầu gõ một từ mới), `raw_buffer` của từ cũ phải bị xóa lập tức (`clear_word_only()`), khởi tạo từ mới với trạng thái hoàn toàn độc lập.
 
 ### ⚠️ BẤT BIẾN 2: THỨ TỰ SỰ KIỆN FIFO & TIMESTAMP ĐƠN ĐIỆU TUYỆT ĐỐI
 - Mọi phím ảo phát ra phải tuân thủ thứ tự FIFO và có timestamp tăng dần đều.

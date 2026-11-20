@@ -18,7 +18,7 @@ use crate::event::{
 };
 use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
-use crate::log::log_info;
+use crate::log::{log_debug, log_info, log_trace};
 use crate::signal::SIGNAL_EXIT;
 
 pub struct EvdevSharedState {
@@ -301,7 +301,7 @@ pub fn run_with_evdev(
     log_info("[vietc] Event loop started");
 
     // Cache debug flag to avoid reloading config every keystroke
-    let mut debug_logging = daemon.config.debug;
+    let mut debug_logging = crate::log::is_debug_active(daemon.config.debug);
 
     loop {
         if SIGNAL_EXIT.load(Ordering::SeqCst) {
@@ -349,7 +349,7 @@ pub fn run_with_evdev(
         if config_changed.load(Ordering::SeqCst) {
             daemon.reload_config();
             config_changed.store(false, Ordering::SeqCst);
-            debug_logging = daemon.config.debug;
+            debug_logging = crate::log::is_debug_active(daemon.config.debug);
             injector.set_bypass_mode(daemon.is_current_app_bypassed());
         }
 
@@ -502,7 +502,7 @@ pub fn run_with_evdev(
                         std::time::Instant::now(),
                     ) {
                         if debug_logging {
-                            log_info(&format!(
+                            log_debug(&format!(
                                 "[vietc] dedup dropped keycode {} (window {}ms)",
                                 keycode, daemon.config.deduplicate_window_ms
                             ));
@@ -670,7 +670,7 @@ pub fn run_with_evdev(
                     ) {
                         let commands = daemon.process_forwarded_key(ch);
                         if debug_logging && !commands.is_empty() {
-                            log_info(&format!(
+                            log_debug(&format!(
                                 "[vietc] non-grabbed inject: count={}",
                                 commands.len()
                             ));
@@ -719,12 +719,20 @@ pub fn run_with_evdev(
 
                     if key == evdev::KeyCode::KEY_BACKSPACE {
                         if value == 1 || value == 2 {
-                            clear_omnibox_shield(&*injector, &shared_focus);
+                            let buf_before = daemon.engine.buffer().chars().count();
                             let commands = daemon.process_key('\x08');
                             if commands.is_empty() {
+                                clear_omnibox_shield(&*injector, &shared_focus);
                                 injector.send_key_event(14, 1);
                                 injector.send_key_event(14, 0);
                             } else {
+                                if buf_before > 0
+                                    && crate::focus::take_omnibox_inline_selection(&shared_focus)
+                                {
+                                    injector.set_omnibox_inline_selection(true);
+                                } else {
+                                    clear_omnibox_shield(&*injector, &shared_focus);
+                                }
                                 let outcome = execute_with_shift_released(
                                     &*injector,
                                     &commands,
@@ -745,7 +753,7 @@ pub fn run_with_evdev(
 
                     if value == 1 {
                         if debug_logging {
-                            log_info(&format!(
+                            log_debug(&format!(
                                 "[vietc] grabbed key: code={} ch='{}' buf='{}' enabled={}",
                                 keycode,
                                 key_to_char_with_case(
@@ -771,7 +779,7 @@ pub fn run_with_evdev(
                             let commands = daemon.process_key(ch);
                             if !commands.is_empty() {
                                 if debug_logging {
-                                    log_info(&format!(
+                                    log_debug(&format!(
                                         "[vietc] grabbed inject: ch='{}' cmds={:?}",
                                         ch.escape_default(),
                                         commands,
@@ -779,8 +787,12 @@ pub fn run_with_evdev(
                                 }
                                 consumed_keys.insert(keycode);
 
-                                if crate::focus::take_omnibox_inline_selection(&shared_focus) {
+                                if buf_before > 0
+                                    && crate::focus::take_omnibox_inline_selection(&shared_focus)
+                                {
                                     injector.set_omnibox_inline_selection(true);
+                                } else {
+                                    clear_omnibox_shield(&*injector, &shared_focus);
                                 }
                                 let outcome = execute_with_shift_released(
                                     &*injector,
@@ -811,7 +823,7 @@ pub fn run_with_evdev(
                                 && daemon.engine.buffer().chars().count() <= buf_before
                             {
                                 if debug_logging {
-                                    log_info(&format!(
+                                    log_debug(&format!(
                                         "[vietc] grabbed consumed: ch='{}' (control key, no screen change)",
                                         ch.escape_default(),
                                     ));
@@ -819,7 +831,7 @@ pub fn run_with_evdev(
                                 consumed_keys.insert(keycode);
                             } else {
                                 if debug_logging {
-                                    log_info(&format!(
+                                    log_debug(&format!(
                                         "[vietc] grabbed forward: ch='{}' (no commands)",
                                         ch.escape_default(),
                                     ));
@@ -858,7 +870,13 @@ pub fn run_with_evdev(
                         injector.send_key_event(keycode, 2);
                     } else if value == 0 {
                         if consumed_keys.remove(&keycode) {
+                            if debug_logging {
+                                log_trace(&format!("[vietc] release consumed: code={}", keycode));
+                            }
                             continue;
+                        }
+                        if debug_logging {
+                            log_trace(&format!("[vietc] release forward: code={}", keycode));
                         }
                         injector.send_key_event(keycode, 0);
                     }

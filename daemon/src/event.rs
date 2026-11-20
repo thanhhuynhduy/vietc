@@ -87,19 +87,28 @@ pub fn is_caps_lock_on(device: &evdev::Device) -> bool {
 }
 
 pub fn is_toggle_key(key: evdev::KeyCode, key_name: &str) -> bool {
+    let lower = key_name.to_lowercase();
+    if matches!(lower.as_str(), "alt+z" | "z") {
+        return matches!(
+            key,
+            evdev::KeyCode::KEY_Z | evdev::KeyCode::KEY_LEFTALT | evdev::KeyCode::KEY_RIGHTALT
+        );
+    }
     if key == evdev::KeyCode::KEY_LEFTCTRL || key == evdev::KeyCode::KEY_RIGHTCTRL {
         return true;
     }
-    let target = match key_name.to_lowercase().as_str() {
-        "space" => evdev::KeyCode::KEY_SPACE,
-        "shift" => {
+    let target = match lower.as_str() {
+        "space" | "ctrl+space" => evdev::KeyCode::KEY_SPACE,
+        "shift" | "ctrl+shift" => {
             return key == evdev::KeyCode::KEY_LEFTSHIFT || key == evdev::KeyCode::KEY_RIGHTSHIFT
         }
         "capslock" => evdev::KeyCode::KEY_CAPSLOCK,
         "ctrl" => {
             return key == evdev::KeyCode::KEY_LEFTCTRL || key == evdev::KeyCode::KEY_RIGHTCTRL
         }
-        "alt" => return key == evdev::KeyCode::KEY_LEFTALT || key == evdev::KeyCode::KEY_RIGHTALT,
+        "alt" | "ctrl+alt" => {
+            return key == evdev::KeyCode::KEY_LEFTALT || key == evdev::KeyCode::KEY_RIGHTALT
+        }
         _ => return false,
     };
     key == target
@@ -109,6 +118,13 @@ pub fn is_toggle_combination_state(
     key_state: &evdev::AttributeSet<evdev::KeyCode>,
     key: &str,
 ) -> bool {
+    let lower = key.to_lowercase();
+    if matches!(lower.as_str(), "alt+z" | "z") {
+        let alt_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTALT)
+            || key_state.contains(evdev::KeyCode::KEY_RIGHTALT);
+        return alt_pressed && key_state.contains(evdev::KeyCode::KEY_Z);
+    }
+
     let ctrl_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTCTRL)
         || key_state.contains(evdev::KeyCode::KEY_RIGHTCTRL);
 
@@ -116,15 +132,15 @@ pub fn is_toggle_combination_state(
         return false;
     }
 
-    let target = match key.to_lowercase().as_str() {
-        "space" => evdev::KeyCode::KEY_SPACE,
-        "shift" => {
+    let target = match lower.as_str() {
+        "space" | "ctrl+space" => evdev::KeyCode::KEY_SPACE,
+        "shift" | "ctrl+shift" => {
             return key_state.contains(evdev::KeyCode::KEY_LEFTSHIFT)
                 || key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT);
         }
         "capslock" => evdev::KeyCode::KEY_CAPSLOCK,
         "ctrl" => return true,
-        "alt" => {
+        "alt" | "ctrl+alt" => {
             return key_state.contains(evdev::KeyCode::KEY_LEFTALT)
                 || key_state.contains(evdev::KeyCode::KEY_RIGHTALT);
         }

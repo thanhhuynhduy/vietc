@@ -396,6 +396,33 @@ impl WaylandVirtualKeyboard {
             .session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // Release any held typing keys before atomic backspaces and strokes.
+        // During fast typing with key overlap, the preceding character (e.g. 'h' in "thành"
+        // or 'c' in "các") may still be physically down on evdev and marked pressed on vk.
+        // If left pressed, emitting that same scancode in the replacement is discarded
+        // by compositors/clients as a duplicate KeyDown, dropping the letter!
+        for idx in 0..4 {
+            let word = sess.pressed_bitmap[idx];
+            if word != 0 {
+                for bit in 0..64 {
+                    if (word & (1u64 << bit)) != 0 {
+                        let code = (idx * 64 + bit) as u16;
+                        if code != KEY_LEFTSHIFT && code != KEY_RIGHTSHIFT {
+                            let ts = sess.next_timestamp_ms();
+                            sess.vk.key(ts, code as u32, 0);
+                        }
+                    }
+                }
+                let shift_mask = if idx == 0 {
+                    (1u64 << KEY_LEFTSHIFT) | (1u64 << KEY_RIGHTSHIFT)
+                } else {
+                    0
+                };
+                sess.pressed_bitmap[idx] &= shift_mask;
+            }
+        }
+
         // Neutralize Shift and CapsLock during atomic edit so BackSpace/Delete
         // and ASCII case are 100% deterministic regardless of physical keys.
         let mut active_depressed = 0u32;

@@ -13,8 +13,8 @@ Its [`vietc-engine`](engine/) core implements an Android **Gboard-inspired Dual-
 
 ## Highlights
 
-- **Pure `evdev` + `uinput` Architecture (Rootless via `uaccess`):**
-  - Captures hardware keystrokes via `/dev/input/event*` and commits text via `/dev/uinput` plus atomic clipboard transactions (`ext-data-control-v1` / `zwlr-data-control-v1` on Wayland, X11 Selection on X11).
+- **Pure `evdev` + `zwp_virtual_keyboard_v1` / `uinput` Architecture (Rootless via `uaccess`):**
+  - Captures hardware keystrokes via `/dev/input/event*` and commits Unicode text directly on Wayland via `zwp_virtual_keyboard_v1` (8-level XKB keymap, zero-clipboard, zero-underline), with automatic `/dev/uinput` and atomic clipboard fallback for X11/TTY.
   - Uses active-seat `systemd-logind` ACLs (`TAG+="uaccess", GROUP="root", MODE="0600"` in [`70-vietc.rules`](packaging/70-vietc.rules)) — runs as an unprivileged user service without `root`, Linux capabilities, or `input` group membership.
 - **Gboard-Inspired Bilingual Vietnamese–English Engine:**
   - **Dual-Hypothesis Tracking:** Maintains the exact `raw_buffer` alongside the composed Vietnamese syllable on every keystroke.

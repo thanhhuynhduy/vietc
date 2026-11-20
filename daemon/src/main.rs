@@ -24,9 +24,13 @@ mod stdin;
 #[cfg(test)]
 mod toplevel_tracker_stub {}
 #[cfg(test)]
+mod office_adversarial_exhaustive_suite;
+#[cfg(test)]
 mod office_stress_tests;
 #[cfg(test)]
 mod office_worker_stress_matrix;
+#[cfg(test)]
+mod probe_office_exhaustive;
 #[cfg(feature = "wayland")]
 mod toplevel_tracker;
 
@@ -46,7 +50,11 @@ fn boost_thread_priority() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    log::init()?;
+    recover_display_env();
+    let config_path = config::find_config_path();
+    let config = config::Config::load().unwrap_or_default();
+    let custom_log_file = config.log_file.as_deref().map(std::path::Path::new);
+    let active_log = log::init(config.debug, config.log_level.as_deref(), custom_log_file)?;
     install_signal_handlers();
     let _instance_lock = match ensure_single_instance("vietc-daemon") {
         Ok(lock) => lock,
@@ -57,9 +65,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(error) => return Err(error.into()),
     };
 
-    recover_display_env();
-    let config_path = config::find_config_path();
-    let config = config::Config::load()?;
     let engine_enabled = Arc::new(AtomicBool::new(config.start_enabled));
     let mut daemon = Daemon::new(config, config_path.clone(), engine_enabled.clone());
 
@@ -69,6 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compositor = display::detect_compositor();
 
     log_info(&format!("VietC Daemon v{}", env!("CARGO_PKG_VERSION")));
+    log_info(&format!(
+        "[vietc] Active log file: {}",
+        active_log.display()
+    ));
     log_info(&format!(
         "Display: {:?} ({})",
         display,
