@@ -119,35 +119,56 @@ pub fn is_toggle_combination_state(
     key: &str,
 ) -> bool {
     let lower = key.to_lowercase();
-    if matches!(lower.as_str(), "alt+z" | "z") {
-        let alt_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTALT)
-            || key_state.contains(evdev::KeyCode::KEY_RIGHTALT);
-        return alt_pressed && key_state.contains(evdev::KeyCode::KEY_Z);
-    }
-
     let ctrl_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTCTRL)
         || key_state.contains(evdev::KeyCode::KEY_RIGHTCTRL);
+    let alt_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTALT)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTALT);
+    let shift_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTSHIFT)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT);
+    let meta_pressed = key_state.contains(evdev::KeyCode::KEY_LEFTMETA)
+        || key_state.contains(evdev::KeyCode::KEY_RIGHTMETA);
 
-    if !ctrl_pressed {
+    if matches!(lower.as_str(), "alt+z" | "z") {
+        return alt_pressed
+            && !ctrl_pressed
+            && !shift_pressed
+            && !meta_pressed
+            && key_state.contains(evdev::KeyCode::KEY_Z);
+    }
+
+    if !ctrl_pressed || meta_pressed {
         return false;
     }
 
-    let target = match lower.as_str() {
-        "space" | "ctrl+space" => evdev::KeyCode::KEY_SPACE,
-        "shift" | "ctrl+shift" => {
-            return key_state.contains(evdev::KeyCode::KEY_LEFTSHIFT)
-                || key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT);
+    match lower.as_str() {
+        "space" | "ctrl+space" => {
+            !alt_pressed && !shift_pressed && key_state.contains(evdev::KeyCode::KEY_SPACE)
         }
-        "capslock" => evdev::KeyCode::KEY_CAPSLOCK,
-        "ctrl" => return true,
-        "alt" | "ctrl+alt" => {
-            return key_state.contains(evdev::KeyCode::KEY_LEFTALT)
-                || key_state.contains(evdev::KeyCode::KEY_RIGHTALT);
+        "shift" | "ctrl+shift" => !alt_pressed && shift_pressed,
+        "capslock" => {
+            !alt_pressed && !shift_pressed && key_state.contains(evdev::KeyCode::KEY_CAPSLOCK)
         }
-        _ => return false,
-    };
+        "ctrl" => !alt_pressed && !shift_pressed,
+        "alt" | "ctrl+alt" => alt_pressed && !shift_pressed,
+        _ => false,
+    }
+}
 
-    key_state.contains(target)
+/// Handle KeyUp (`value == 0`) and KeyRepeat (`value == 2`) for keys previously
+/// consumed on KeyDown (e.g., toggle chord keys, Telex transform triggers, or
+/// atomic Space). Must run before modifier-passthrough so releasing a consumed
+/// key while Ctrl/Alt/Meta is held never leaks `consumed_keys` or emits phantom
+/// shortcuts.
+pub fn consume_released_or_repeated_key(
+    consumed_keys: &mut std::collections::HashSet<u16>,
+    keycode: u16,
+    value: i32,
+) -> bool {
+    match value {
+        0 => consumed_keys.remove(&keycode),
+        2 => consumed_keys.contains(&keycode),
+        _ => false,
+    }
 }
 
 pub fn key_to_char_with_case(key: evdev::KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
@@ -476,5 +497,39 @@ mod tests {
             .map(|(k, shift)| key_to_char_with_case(k, shift, false).unwrap())
             .collect();
         assert_eq!(render("telex", &translated_bs), "(nhu");
+    }
+
+    #[test]
+    fn toggle_combination_requires_exact_modifiers() {
+        let mut ks = evdev::AttributeSet::new();
+        ks.insert(evdev::KeyCode::KEY_LEFTCTRL);
+        ks.insert(evdev::KeyCode::KEY_SPACE);
+        assert!(is_toggle_combination_state(&ks, "space"));
+        assert!(is_toggle_combination_state(&ks, "ctrl+space"));
+
+        // Ctrl+Shift+Space (VS Code Parameter Hints / LibreOffice NBSP) must NOT toggle!
+        ks.insert(evdev::KeyCode::KEY_LEFTSHIFT);
+        assert!(!is_toggle_combination_state(&ks, "space"));
+        ks.remove(evdev::KeyCode::KEY_LEFTSHIFT);
+
+        // Ctrl+Alt+Space and Ctrl+Super+Space must NOT toggle!
+        ks.insert(evdev::KeyCode::KEY_LEFTALT);
+        assert!(!is_toggle_combination_state(&ks, "space"));
+        ks.remove(evdev::KeyCode::KEY_LEFTALT);
+
+        ks.insert(evdev::KeyCode::KEY_LEFTMETA);
+        assert!(!is_toggle_combination_state(&ks, "space"));
+    }
+
+    #[test]
+    fn consumed_keys_clean_up_on_release_and_repeat() {
+        let mut consumed = std::collections::HashSet::from([31u16, 57u16]);
+        assert!(consume_released_or_repeated_key(&mut consumed, 31, 2));
+        assert!(consumed.contains(&31));
+        assert!(consume_released_or_repeated_key(&mut consumed, 31, 0));
+        assert!(!consumed.contains(&31));
+        assert!(!consume_released_or_repeated_key(&mut consumed, 31, 0));
+        assert!(consume_released_or_repeated_key(&mut consumed, 57, 0));
+        assert!(consumed.is_empty());
     }
 }

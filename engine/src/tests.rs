@@ -755,3 +755,66 @@ fn phase4_focus_change_invalidates_composition_and_prevents_trigger_crossing() {
         engine.buffer()
     );
 }
+
+#[test]
+fn office_audit_digraph_coda_acronyms_multitone_and_z_tone_removal() {
+    // 1. Digraph coda backspace replacement (`tieengs` + BS + `t` -> `tiết`)
+    let mut engine = Engine::new(InputMethod::Telex);
+    for ch in "tieengs".chars() {
+        engine.process_key(ch);
+    }
+    assert_eq!(engine.buffer(), "tiếng");
+    engine.process_key('\x08');
+    engine.process_key('t');
+    assert_eq!(engine.buffer(), "tiết");
+
+    // 2. ALLCAPS acronyms, double-undo (`err`, `arr`, `OOO`), and multi-tone (`nextjs`, `nuxtjs`)
+    for token in [
+        "AWS", "DDOS", "ECS", "DOS", "ORM", "GIF", "TAR", "RAR", "EOF", "ERR", "ARR", "COO", "OOO",
+        "POS", "EST", "TOS", "SOW", "ATS", "IR", "AR", "err", "arr", "nextjs", "nuxtjs", "var",
+        "usr", "res", "ref", "pos", "eof",
+    ] {
+        let mut eng = Engine::new(InputMethod::Telex);
+        let mut screen = String::new();
+        for ch in format!("{token} ").chars() {
+            match eng.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(rep.delete_before_cursor);
+                    screen = screen.chars().take(keep).collect();
+                    screen.push_str(&rep.insert);
+                    if ch == ' ' {
+                        screen.push(' ');
+                    }
+                }
+                None => screen.push(ch),
+                _ => {}
+            }
+        }
+        assert_eq!(screen, format!("{token} "), "token={token}");
+    }
+
+    // 3. Telex 'z' tone removal followed by Space must NOT auto-restore to raw `vieetjz `
+    let mut eng = Engine::new(InputMethod::Telex);
+    let mut screen = String::new();
+    for ch in "vieetjz ".chars() {
+        match eng.process_key(ch) {
+            Some(EngineEvent::Replace(rep)) => {
+                let keep = screen
+                    .chars()
+                    .count()
+                    .saturating_sub(rep.delete_before_cursor);
+                screen = screen.chars().take(keep).collect();
+                screen.push_str(&rep.insert);
+                if ch == ' ' {
+                    screen.push(' ');
+                }
+            }
+            None => screen.push(ch),
+            _ => {}
+        }
+    }
+    assert_eq!(screen, "viêt ");
+}

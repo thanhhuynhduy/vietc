@@ -96,6 +96,7 @@ struct VkSession {
     started: Instant,
     last_timestamp_ms: u32,
     pressed_bitmap: [u64; 4],
+    early_released_bitmap: [u64; 4],
     left_shift: bool,
     right_shift: bool,
     caps_lock: bool,
@@ -167,6 +168,7 @@ impl WaylandVirtualKeyboard {
                 started: Instant::now(),
                 last_timestamp_ms: 0,
                 pressed_bitmap: [0; 4],
+                early_released_bitmap: [0; 4],
                 left_shift: false,
                 right_shift: false,
                 caps_lock: false,
@@ -222,6 +224,16 @@ impl WaylandVirtualKeyboard {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let was_pressed_on_vk = sess.is_bit_set(keycode);
+        let was_early_released = sess.is_early_released(keycode);
+
+        if value == 1 && was_early_released {
+            sess.set_early_released(keycode, false);
+        } else if value == 0 && !was_pressed_on_vk && was_early_released {
+            sess.set_early_released(keycode, false);
+            return true;
+        } else if value == 2 && !was_pressed_on_vk && was_early_released {
+            return true;
+        }
 
         // If Ctrl/Alt/Super is held on uinput, new presses go to uinput,
         // EXCEPT releases of keys that were originally pressed on vk.
@@ -411,6 +423,7 @@ impl WaylandVirtualKeyboard {
                         if code != KEY_LEFTSHIFT && code != KEY_RIGHTSHIFT {
                             let ts = sess.next_timestamp_ms();
                             sess.vk.key(ts, code as u32, 0);
+                            sess.early_released_bitmap[idx] |= 1u64 << bit;
                         }
                     }
                 }
@@ -509,6 +522,24 @@ impl VkSession {
             self.pressed_bitmap[idx] |= 1u64 << bit;
         } else {
             self.pressed_bitmap[idx] &= !(1u64 << bit);
+        }
+    }
+
+    #[inline]
+    fn is_early_released(&self, keycode: u16) -> bool {
+        let idx = (keycode / 64) as usize;
+        let bit = keycode % 64;
+        (self.early_released_bitmap[idx] & (1u64 << bit)) != 0
+    }
+
+    #[inline]
+    fn set_early_released(&mut self, keycode: u16, released: bool) {
+        let idx = (keycode / 64) as usize;
+        let bit = keycode % 64;
+        if released {
+            self.early_released_bitmap[idx] |= 1u64 << bit;
+        } else {
+            self.early_released_bitmap[idx] &= !(1u64 << bit);
         }
     }
 

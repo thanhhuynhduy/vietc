@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: MIT
 use crate::bamboo::{BambooEngine, TelexUndo};
-use crate::bigram::{
-    evaluate_forward_bigram, evaluate_retroactive_first_word, has_english_compound_morphology,
-};
+use crate::bigram::evaluate_retroactive_first_word;
 use crate::engine_helpers::{
     active_telex_transform, adapt_macro_casing, case_shape, is_flush_char, is_sentence_boundary,
-    is_vn_d_abbreviation, match_casing,
+    match_casing, resolve_coda_edit_canon,
 };
-use crate::english::{
-    has_mixed_internal_caps, has_natural_english_double, is_alphanumeric_tech_token,
-    is_path_or_code_context, EnglishDict, LanguageContext,
-};
+use crate::english::{should_restore_word_decision, EnglishDict, LanguageContext};
 use crate::input_method::InputMethod;
 use crate::ring_buffer::{
     visible_to_canonical_raw, BackspaceAcrossBoundary, CommittedRingBuffer, CommittedWordEntry,
@@ -149,64 +144,14 @@ impl Engine {
         prev_visible_word: Option<&str>,
         boundary_context: Option<(Option<char>, char)>,
     ) -> bool {
-        if composed == raw {
-            return false;
-        }
-
-        let dict = english_dict();
-        let raw_lower = raw.to_lowercase();
-
-        if let Some((prev_b, next_b)) = boundary_context {
-            if is_path_or_code_context(prev_b, next_b, raw, composed, dict) {
-                return true;
-            }
-        }
-
-        if has_mixed_internal_caps(raw, composed) || is_alphanumeric_tech_token(raw) {
-            return true;
-        }
-
-        if composed.is_ascii() {
-            return dict.is_english_word(&raw_lower)
-                || has_natural_english_double(&raw_lower)
-                || has_english_compound_morphology(&raw_lower);
-        }
-
-        let valid_vn = crate::spelling::is_valid_vietnamese_syllable(composed)
-            && crate::spelling::is_in_vietnamese_dictionary(composed);
-        if !valid_vn {
-            let is_english = dict.is_english_word(&raw_lower)
-                || has_natural_english_double(&raw_lower)
-                || has_english_compound_morphology(&raw_lower);
-            if is_english {
-                return true;
-            }
-
-            if is_vn_d_abbreviation(composed, &raw_lower) {
-                return false;
-            }
-            return true;
-        }
-
-        if dict.is_unconditional_english_collision(&raw_lower) {
-            return true;
-        }
-
-        if let Some(bigram_decision) =
-            evaluate_forward_bigram(prev_visible_word, composed, raw, prev_context)
-        {
-            return bigram_decision;
-        }
-
-        if dict.is_english_dominant_collision(&raw_lower) {
-            return prev_context != LanguageContext::Vietnamese;
-        }
-
-        if dict.is_vietnamese_dominant_collision(&raw_lower) {
-            return prev_context == LanguageContext::English;
-        }
-
-        false
+        should_restore_word_decision(
+            english_dict(),
+            composed,
+            raw,
+            prev_context,
+            prev_visible_word,
+            boundary_context,
+        )
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -878,9 +823,10 @@ impl Engine {
             let normal_valid = !normal_cand.is_ascii()
                 && crate::spelling::is_valid_vietnamese_prefix(&normal_cand);
             if !normal_valid {
-                let edit_cand = self.compose_candidate(&format!("{}{}", coda_canon, ch));
-                if crate::spelling::is_valid_vietnamese_prefix(&edit_cand) {
-                    self.raw_buffer = coda_canon;
+                if let Some(resolved) = resolve_coda_edit_canon(&coda_canon, ch, self.method, |r| {
+                    self.compose_candidate(r)
+                }) {
+                    self.raw_buffer = resolved;
                     self.replay_bamboo_from_raw();
                 }
             }
@@ -942,6 +888,14 @@ impl Engine {
                             undo_policy: policy,
                         });
                         self.last_transition = Some(transition);
+                    }
+                    if self.method == InputMethod::Telex
+                        && ch.eq_ignore_ascii_case(&'z')
+                        && !cased.is_ascii()
+                        && cased.chars().count() == previous.chars().count()
+                        && !cased.ends_with(['z', 'Z'])
+                    {
+                        self.override_keep_vietnamese = true;
                     }
                     self.boundary = BoundaryState::Composing;
                     let reason = match self.last_transition {

@@ -192,6 +192,35 @@ pub(crate) fn match_casing(raw: &str, processed: &str) -> String {
     }
 }
 
+/// Resolve canonical raw buffer for replacing a 1-char or 2-char digraph coda (`ng`, `nh`, `ch`)
+/// after Backspace on a closed accented syllable (`vieetj`+BS+`c` -> `việc`, `tieengs`+BS+`t` -> `tiết`).
+pub(crate) fn resolve_coda_edit_canon(
+    coda_canon: &str,
+    ch: char,
+    method: crate::InputMethod,
+    compose: impl Fn(&str) -> String,
+) -> Option<String> {
+    let edit_cand = compose(&format!("{coda_canon}{ch}"));
+    if crate::spelling::is_valid_vietnamese_prefix(&edit_cand) {
+        return Some(coda_canon.to_string());
+    }
+    // Digraph coda (`ng`, `nh`, `ch`): after stripping the last char, `coda_vis` ends in `n` or `c`.
+    // Strip that remaining digraph lead consonant so typing a new coda (`t`, `p`, `m`, `c`...) succeeds.
+    let mut coda_vis = compose(coda_canon);
+    let last_lo = coda_vis.chars().last().map(|c| c.to_ascii_lowercase());
+    if matches!(last_lo, Some('n' | 'c')) {
+        coda_vis.pop();
+        if let Some(shorter_canon) = crate::ring_buffer::visible_to_canonical_raw(&coda_vis, method)
+        {
+            let shorter_cand = compose(&format!("{shorter_canon}{ch}"));
+            if crate::spelling::is_valid_vietnamese_prefix(&shorter_cand) {
+                return Some(shorter_canon);
+            }
+        }
+    }
+    None
+}
+
 impl crate::Engine {
     pub fn replay_keystrokes(
         method: crate::InputMethod,

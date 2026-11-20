@@ -55,7 +55,7 @@ pub struct Config {
 }
 
 fn default_dedup_window_ms() -> u64 {
-    120
+    35
 }
 
 #[derive(Debug, Deserialize)]

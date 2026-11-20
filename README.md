@@ -23,7 +23,7 @@ Lõi ngôn ngữ [`vietc-engine`](engine/) mô phỏng cơ chế **Dual-Hypothes
     - `"cảm ơn"` giữ tiếng Việt, `"my own"` khôi phục tiếng Anh.
     - `"hai bên"` giữ tiếng Việt, `"have been"` khôi phục tiếng Anh.
   - **Nhấn `Backspace` ngay sau `Space` để hoàn tác Auto-Restore:** Nếu gõ `"test"` + `Space` tự động đổi thành `"test "` nhưng bạn thực sự muốn gõ `"tét"`, chỉ cần bấm `Backspace` một lần để quay lại `"tét"` và khóa ưu tiên tiếng Việt cho lần nhấn `Space` kế tiếp.
-  - **Tự nhận diện token kỹ thuật & chữ hoa hỗn hợp:** Giữ nguyên `DDoS`, `GraphQL`, `iPhone`, `u32`, `i64`, `mp4`, `sha256`, các từ tiếng Anh có phụ âm/nguyên âm đôi (`cheese`, `loose`, `keeper`, `stuff`, `business`, `address`, `IEEE`) và từ viết tắt tiếng Việt thông dụng (`đc`, `đk`, `ko`, `vs`).
+  - **Tự nhận diện token kỹ thuật, từ viết tắt ALLCAPS & chữ hoa hỗn hợp:** Giữ nguyên `AWS`, `DDOS`, `ECS`, `ORM`, `GIF`, `OOO`, `DDoS`, `GraphQL`, `iPhone`, `u32`, `i64`, `mp4`, `sha256`, `err`, `arr`, `nextjs`, `nuxtjs`, các từ tiếng Anh có phụ âm/nguyên âm đôi (`cheese`, `loose`, `keeper`, `stuff`, `business`, `address`, `IEEE`) và từ viết tắt tiếng Việt thông dụng (`đc`, `đk`, `ko`, `vs`).
 - **Quy tắc dấu câu kiểu cũ (`Kiểu cũ`) & Gõ dấu tự do (Telex / VNI):**
   - Nguyên âm đôi mở `oa`, `oe`, `uy` đặt dấu vào nguyên âm đầu: `hòa`, `hóa`, `khỏe`, `xòe`, `thủy`, `túy`.
   - Khi thêm phụ âm cuối (âm tiết đóng), dấu tự động dịch sang nguyên âm thứ hai: `hòa` + `n` → `hoàn`, `toán`, `huỳnh`, `tuýt`.
@@ -64,8 +64,7 @@ sudo bash ./uninstall.sh
 
 | Thao tác | Mặc định | Ghi chú |
 |---|---|---|
-| Bật / Tắt tiếng Việt | `Ctrl + Space` | Tùy chỉnh qua `toggle_key` trong `config.toml` |
-| Đổi kiểu gõ (`Telex` ↔ `VNI`) | `Ctrl + Left Shift` | Tùy chỉnh qua `toggle_method_key` trong `config.toml` |
+| Chuyển chế độ (`Telex` → `EN` → `VNI` → `Telex`) | `Ctrl + Space` | Tùy chỉnh qua `toggle_key` trong `config.toml`; khớp chính xác modifier (không cướp `Ctrl+Shift+Space` hay `Ctrl+Alt+Space`) |
 | Xóa thanh điệu đang có | `z` (Telex) / `0` (VNI) | Ví dụ: `toansz` → `toan`, `toan10` → `toan` |
 | Hoàn tác Auto-Restore vừa xảy ra | `Backspace` ngay sau `Space` | Ví dụ: `"test "` + `Backspace` → `"tét"` |
 | Khay hệ thống (tùy chọn) | `vietc-tray` | Cho phép bật/tắt, đổi Telex/VNI và cấu hình nhanh |
@@ -79,8 +78,7 @@ Bản mẫu đầy đủ nằm tại [`vietc.toml`](vietc.toml):
 
 ```toml
 input_method = "telex"          # "telex" hoặc "vni"
-toggle_key = "space"            # Ctrl + <toggle_key> bật/tắt bộ gõ
-toggle_method_key = "shift"     # Ctrl + <toggle_method_key> chuyển Telex <-> VNI
+toggle_key = "space"            # Ctrl + <toggle_key> xoay vòng Telex -> EN -> VNI
 start_enabled = true
 grab = true
 debug = false
@@ -111,6 +109,7 @@ vs = "với"
 - [`daemon/`](daemon/): Dịch vụ nền `vietc-daemon` bắt phím `evdev`, quản lý trạng thái theo cửa sổ focus, phát hiện ô mật khẩu AT-SPI2 / `/proc`.
 - [`ui/`](ui/): Biểu tượng khay hệ thống `vietc-tray` qua giao thức StatusNotifierItem (`ksni`).
 - [`cli/`](cli/): Công cụ dòng lệnh `vietc-cli` để kiểm thử nhanh bộ gõ.
+- [`docs/vietc-system-architecture.md`](docs/vietc-system-architecture.md): Tài liệu kiến trúc chuẩn 3 tầng & 6 bất biến hệ thống.
 
 ---
 

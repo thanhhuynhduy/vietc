@@ -12,9 +12,9 @@ use crate::display;
 #[cfg(feature = "x11")]
 use crate::display::DisplayServer;
 use crate::event::{
-    is_caps_lock_on, is_flush_char, is_modifier_held_shift, is_modifier_pressed,
-    is_navigation_or_control_key, is_toggle_combination_state, is_toggle_key, is_vn_control_key,
-    key_to_char_with_case,
+    consume_released_or_repeated_key, is_caps_lock_on, is_flush_char, is_modifier_held_shift,
+    is_modifier_pressed, is_navigation_or_control_key, is_toggle_combination_state, is_toggle_key,
+    is_vn_control_key, key_to_char_with_case,
 };
 use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
@@ -689,6 +689,20 @@ pub fn run_with_evdev(
                         clear_omnibox_shield(&*injector, &shared_focus);
                     }
                 } else {
+                    if !(value == 2
+                        && key == evdev::KeyCode::KEY_BACKSPACE
+                        && !is_modifier_pressed(&key_state))
+                        && consume_released_or_repeated_key(&mut consumed_keys, keycode, value)
+                    {
+                        if value == 2
+                            && keycode == 57
+                            && daemon.engine.is_enabled()
+                            && !is_modifier_pressed(&key_state)
+                        {
+                            let _ = injector.send_char(' ');
+                        }
+                        continue;
+                    }
                     if is_modifier_pressed(&key_state) {
                         if value == 1
                             && !matches!(
@@ -857,24 +871,12 @@ pub fn run_with_evdev(
                             injector.send_key_event(keycode, 1);
                         }
                     } else if value == 2 {
-                        if consumed_keys.contains(&keycode) {
-                            if keycode == 57 && daemon.engine.is_enabled() {
-                                let _ = injector.send_char(' ');
-                            }
-                            continue;
-                        }
                         if !daemon.engine.buffer().is_empty() {
                             daemon.reset_composition_state();
                         }
                         clear_omnibox_shield(&*injector, &shared_focus);
                         injector.send_key_event(keycode, 2);
                     } else if value == 0 {
-                        if consumed_keys.remove(&keycode) {
-                            if debug_logging {
-                                log_trace(&format!("[vietc] release consumed: code={}", keycode));
-                            }
-                            continue;
-                        }
                         if debug_logging {
                             log_trace(&format!("[vietc] release forward: code={}", keycode));
                         }

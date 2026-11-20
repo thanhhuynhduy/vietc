@@ -33,7 +33,8 @@ const ENGLISH_DOMINANT_COLLISIONS: &[&str] = &[
     "case", "use", "pure", "cure", "hire", "fire", "user", "laser", "server", "order", "border",
     "sister", "todo", "logo", "solo", "photo", "auto", "demo", "repo", "sudo", "cargo", "macro",
     "docs", "bits", "add", "odd", "odds", "beef", "beer", "boost", "deer", "door", "keen", "leer",
-    "loom", "moor", "queen", "reef", "roof", "seer", "tee",
+    "loom", "moor", "queen", "reef", "roof", "seer", "tee", "var", "usr", "res", "ref", "pos",
+    "eof",
 ];
 
 const VIETNAMESE_DOMINANT_COLLISIONS: &[&str] = &[
@@ -353,6 +354,8 @@ pub fn has_natural_english_double(raw_lower: &str) -> bool {
                 | "add"
                 | "odd"
                 | "odds"
+                | "err"
+                | "arr"
         )
     {
         return true;
@@ -386,6 +389,127 @@ pub fn has_natural_english_double(raw_lower: &str) -> bool {
             return true;
         }
     }
+    false
+}
+
+/// Detect standard ALLCAPS office/tech acronyms (`AWS`, `DDOS`, `ECS`, `ORM`, `GIF`, `TAR`,
+/// `RAR`, `EOF`, `COO`, `POS`, `EST`, `TOS`, `SOW`, `ATS`, `IR`, `AR`, `OOO`, `ERR`, `ARR`)
+/// whose raw letters collide with short Vietnamese Telex syllables (`Ắ`, `ĐÓ`, `ÉC`, `GÌ`, `CÔ`).
+pub fn is_english_allcaps_acronym(raw: &str, raw_lower: &str) -> bool {
+    raw.len() >= 2
+        && raw.chars().all(|c| c.is_ascii_uppercase())
+        && matches!(
+            raw_lower,
+            "aws"
+                | "ecs"
+                | "ddos"
+                | "dos"
+                | "orm"
+                | "gif"
+                | "tar"
+                | "rar"
+                | "eof"
+                | "err"
+                | "arr"
+                | "coo"
+                | "ir"
+                | "ar"
+                | "ats"
+                | "sow"
+                | "pos"
+                | "est"
+                | "ooo"
+                | "tos"
+        )
+}
+
+/// Detect English/tech tokens that triggered >= 3 Telex tone overwrites inside a single word
+/// (e.g. `nextjs` consuming `x`, `j`, `s` to collapse into `nét`; `nuxtjs` into `nút`).
+pub fn has_multi_tone_overwrite_anomaly(raw: &str, composed: &str) -> bool {
+    if raw.len() < 5 || raw.len() < composed.chars().count() + 2 {
+        return false;
+    }
+    let mut seen_vowel = false;
+    let mut tone_triggers = 0usize;
+    for ch in raw.chars() {
+        let lo = ch.to_ascii_lowercase();
+        if matches!(lo, 'a' | 'e' | 'i' | 'o' | 'u' | 'y') {
+            seen_vowel = true;
+        } else if seen_vowel && matches!(lo, 's' | 'f' | 'r' | 'x' | 'j') {
+            tone_triggers += 1;
+        }
+    }
+    tone_triggers >= 3
+}
+
+pub(crate) fn should_restore_word_decision(
+    dict: &EnglishDict,
+    composed: &str,
+    raw: &str,
+    prev_context: LanguageContext,
+    prev_visible_word: Option<&str>,
+    boundary_context: Option<(Option<char>, char)>,
+) -> bool {
+    if composed == raw {
+        return false;
+    }
+
+    let raw_lower = raw.to_lowercase();
+
+    if let Some((prev_b, next_b)) = boundary_context {
+        if is_path_or_code_context(prev_b, next_b, raw, composed, dict) {
+            return true;
+        }
+    }
+
+    if has_mixed_internal_caps(raw, composed)
+        || is_alphanumeric_tech_token(raw)
+        || is_english_allcaps_acronym(raw, &raw_lower)
+        || has_multi_tone_overwrite_anomaly(raw, composed)
+    {
+        return true;
+    }
+
+    if composed.is_ascii() {
+        return dict.is_english_word(&raw_lower)
+            || has_natural_english_double(&raw_lower)
+            || crate::bigram::has_english_compound_morphology(&raw_lower);
+    }
+
+    let valid_vn = crate::spelling::is_valid_vietnamese_syllable(composed)
+        && crate::spelling::is_in_vietnamese_dictionary(composed);
+    if !valid_vn {
+        let is_english = dict.is_english_word(&raw_lower)
+            || has_natural_english_double(&raw_lower)
+            || crate::bigram::has_english_compound_morphology(&raw_lower);
+        if is_english {
+            return true;
+        }
+
+        if crate::engine_helpers::is_vn_d_abbreviation(composed, &raw_lower) {
+            return false;
+        }
+        return true;
+    }
+
+    if dict.is_unconditional_english_collision(&raw_lower) {
+        return true;
+    }
+
+    if let Some(bigram_decision) =
+        crate::bigram::evaluate_forward_bigram(prev_visible_word, composed, raw, prev_context)
+    {
+        return bigram_decision;
+    }
+
+    if dict.is_english_dominant_collision(&raw_lower) {
+        return prev_context != LanguageContext::Vietnamese;
+    }
+
+    if dict.is_vietnamese_dominant_collision(&raw_lower) {
+        return prev_context == LanguageContext::English;
+    }
+
     false
 }
 

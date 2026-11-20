@@ -23,7 +23,7 @@ Its [`vietc-engine`](engine/) core implements an Android **Gboard-inspired Dual-
     - `"cảm ơn"` stays Vietnamese, while `"my own"` restores to English.
     - `"hai bên"` stays Vietnamese, while `"have been"` restores to English.
   - **Backspace-after-Space Auto-Restore Undo:** If an ambiguous word is auto-restored on `Space` (e.g. `"test "` instead of `"tét"`), pressing `Backspace` immediately reverts to `"tét"` and locks Vietnamese priority for the next `Space`.
-  - **Technical Token & Double-Letter Protection:** Preserves `DDoS`, `GraphQL`, `iPhone`, `u32`, `i64`, `mp4`, `sha256`, English double-letter words (`cheese`, `loose`, `keeper`, `stuff`, `business`, `address`, `IEEE`), and common Vietnamese shorthand (`đc`, `đk`, `ko`, `vs`).
+  - **Technical Token, ALLCAPS Acronym & Double-Letter Protection:** Preserves `AWS`, `DDOS`, `ECS`, `ORM`, `GIF`, `OOO`, `DDoS`, `GraphQL`, `iPhone`, `u32`, `i64`, `mp4`, `sha256`, `err`, `arr`, `nextjs`, `nuxtjs`, English double-letter words (`cheese`, `loose`, `keeper`, `stuff`, `business`, `address`, `IEEE`), and common Vietnamese shorthand (`đc`, `đk`, `ko`, `vs`).
 - **Old-Style Tone Placement & Free-Order Telex / VNI:**
   - Open diphthongs `oa`, `oe`, `uy` place tones on the first vowel (`hòa`, `hóa`, `khỏe`, `xòe`, `thủy`, `túy`), automatically shifting to the second vowel when closed by a final consonant (`hoàn`, `toán`, `huỳnh`, `tuýt`).
   - Full **Telex** and **VNI** support including `z` / `0` tone removal, shape overrides (`aaw` → `ă`, `oow` → `ơ`, `a68` → `ă`, `o67` → `ơ`), `-ươu` triphthongs (`huouw` → `hươu`, `ruouwj` → `rượu`), and free-order `qu`/`gi` glides (`gifa` → `già`, `qusa` → `quá`, `quo7` → `quơ`, `dan9` → `đan`).
@@ -63,8 +63,7 @@ sudo bash ./uninstall.sh
 
 | Action | Default | Notes |
 |---|---|---|
-| Toggle Vietnamese / English | `Ctrl + Space` | Configurable via `toggle_key` in `config.toml` |
-| Switch Input Method (`Telex` ↔ `VNI`) | `Ctrl + Left Shift` | Configurable via `toggle_method_key` in `config.toml` |
+| Cycle Mode (`Telex` → `EN` → `VNI` → `Telex`) | `Ctrl + Space` | Configurable via `toggle_key` in `config.toml`; exact modifier matching (never hijacks `Ctrl+Shift+Space` or `Ctrl+Alt+Space`) |
 | Strip Active Tone | `z` (Telex) / `0` (VNI) | e.g. `toansz` → `toan`, `toan10` → `toan` |
 | Undo Auto-Restore | `Backspace` right after `Space` | e.g. `"test "` + `Backspace` → `"tét"` |
 | System Tray UI (optional) | `vietc-tray` | StatusNotifierItem tray icon for quick toggles |
