@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::collections::HashMap;
-use vietc_engine::{telex::resolve_and_render, Engine, InputMethod};
+use vietc_engine::{telex::resolve_and_render, Engine, EngineEvent, InputMethod};
 
 #[derive(Debug)]
 struct GoldenCase {
@@ -244,4 +244,37 @@ fn telex_boundaries_commit_each_word_independently() {
             "Telex boundary mismatch: input={input:?}, boundary={boundary:?}"
         );
     }
+}
+
+#[test]
+fn trailing_vowel_after_transform_emits_replacement() {
+    let mut e = Engine::new(InputMethod::Telex);
+    for ch in "caas".chars() {
+        let _ = e.process_key(ch);
+    }
+    assert_eq!(e.buffer(), "cấ");
+    let ev = e.process_key('u');
+    assert!(
+        matches!(
+            ev,
+            Some(EngineEvent::Replace(ref r)) if r.delete_before_cursor == 2 && r.insert == "cấu"
+        ),
+        "Expected 'u' after 'cấ' to emit atomic replacement for 'cấu', got {:?}",
+        ev
+    );
+
+    let mut e = Engine::new(InputMethod::Telex);
+    for ch in "chuw".chars() {
+        let _ = e.process_key(ch);
+    }
+    assert_eq!(e.buffer(), "chư");
+    let ev = e.process_key('a');
+    assert!(
+        matches!(
+            ev,
+            Some(EngineEvent::Replace(ref r)) if r.delete_before_cursor == 3 && r.insert == "chưa"
+        ),
+        "Expected 'a' after 'chư' to emit atomic replacement for 'chưa', got {:?}",
+        ev
+    );
 }

@@ -25,6 +25,8 @@ mod stdin;
 mod toplevel_tracker_stub {}
 #[cfg(test)]
 mod office_stress_tests;
+#[cfg(test)]
+mod office_worker_stress_matrix;
 #[cfg(feature = "wayland")]
 mod toplevel_tracker;
 

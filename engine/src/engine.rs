@@ -8,8 +8,8 @@ use crate::engine_helpers::{
     match_casing,
 };
 use crate::english::{
-    has_mixed_internal_caps, has_natural_english_double, is_alphanumeric_tech_token, EnglishDict,
-    LanguageContext,
+    has_mixed_internal_caps, has_natural_english_double, is_alphanumeric_tech_token,
+    is_path_or_code_context, EnglishDict, LanguageContext,
 };
 use crate::input_method::InputMethod;
 use crate::ring_buffer::{
@@ -73,6 +73,7 @@ pub struct Engine {
     visible_revision: u64,
     boundary: BoundaryState,
     last_transition: Option<TransitionKind>,
+    last_boundary_char: Option<char>,
 }
 
 impl Engine {
@@ -108,6 +109,7 @@ impl Engine {
             visible_revision: 0,
             boundary: BoundaryState::Committed,
             last_transition: None,
+            last_boundary_char: None,
         }
     }
 
@@ -135,7 +137,7 @@ impl Engine {
         raw: &str,
         prev_context: LanguageContext,
     ) -> bool {
-        Self::should_restore_word_with_bigram(composed, raw, prev_context, None)
+        Self::should_restore_word_with_bigram(composed, raw, prev_context, None, None)
     }
 
     pub(crate) fn should_restore_word_with_bigram(
@@ -143,6 +145,7 @@ impl Engine {
         raw: &str,
         prev_context: LanguageContext,
         prev_visible_word: Option<&str>,
+        boundary_context: Option<(Option<char>, char)>,
     ) -> bool {
         if composed == raw {
             return false;
@@ -150,6 +153,12 @@ impl Engine {
 
         let dict = english_dict();
         let raw_lower = raw.to_lowercase();
+
+        if let Some((prev_b, next_b)) = boundary_context {
+            if is_path_or_code_context(prev_b, next_b, raw, composed, dict) {
+                return true;
+            }
+        }
 
         if has_mixed_internal_caps(raw, composed) || is_alphanumeric_tech_token(raw) {
             return true;
@@ -164,6 +173,18 @@ impl Engine {
         let valid_vn = crate::spelling::is_valid_vietnamese_syllable(composed)
             && crate::spelling::is_in_vietnamese_dictionary(composed);
         if !valid_vn {
+            let is_english = dict.is_english_word(&raw_lower)
+                || has_natural_english_double(&raw_lower)
+                || has_english_compound_morphology(&raw_lower);
+            if is_english {
+                return true;
+            }
+
+            let is_vn_d_abbreviation = (composed.contains('Đ') || composed.contains('đ'))
+                && raw_lower != "ddos";
+            if is_vn_d_abbreviation {
+                return false;
+            }
             return true;
         }
 
@@ -304,6 +325,7 @@ impl Engine {
         self.prev_context = LanguageContext::None;
         self.ring_buffer.clear();
         self.pending_restore_undo = None;
+        self.last_boundary_char = None;
     }
 
     pub fn reset_visible_revision(&mut self) {
@@ -659,10 +681,19 @@ impl Engine {
             self.clear_word_only();
             self.last_transition = Some(TransitionKind::Commit);
 
+            let prev_boundary = self.last_boundary_char;
+            self.last_boundary_char = Some(ch);
+
             if prev_len > 0 {
                 let should_restore = self.auto_restore && !user_override && {
                     let prev_vis = self.ring_buffer.last().map(|e| e.visible_word.as_str());
-                    Self::should_restore_word_with_bigram(&previous, &raw, prior_context, prev_vis)
+                    Self::should_restore_word_with_bigram(
+                        &previous,
+                        &raw,
+                        prior_context,
+                        prev_vis,
+                        Some((prev_boundary, ch)),
+                    )
                 };
 
                 let final_word = if should_restore {
@@ -854,7 +885,7 @@ impl Engine {
         if self.bamboo.process_key(ch).is_some() {
             let expected = format!("{}{}", previous, ch);
             let cased = match_casing(&self.raw_buffer, &self.composed_tail());
-            if cased != expected {
+            if cased != expected || (self.active_transform.is_some() && cased != previous) {
                 if cased != previous {
                     if let Some((kind, trigger, policy)) =
                         active_telex_transform(&self.raw_buffer, ch, &cased)

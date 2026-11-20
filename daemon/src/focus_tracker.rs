@@ -95,9 +95,7 @@ fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedN
         .map(|(r,)| r)
         .unwrap_or(0);
     let is_password = role == crate::password_detector::ROLE_PASSWORD_TEXT;
-    let is_omnibox = if role == ROLE_AUTOCOMPLETE {
-        true
-    } else if role == ROLE_ENTRY || role == ROLE_TEXT {
+    let is_omnibox = if role == ROLE_AUTOCOMPLETE || role == ROLE_ENTRY || role == ROLE_TEXT {
         proxy
             .method_call::<(Variant<Box<dyn RefArg>>,), _, _, _>(
                 "org.freedesktop.DBus.Properties",

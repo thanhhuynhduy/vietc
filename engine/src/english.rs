@@ -346,3 +346,110 @@ pub fn has_natural_english_double(raw_lower: &str) -> bool {
     }
     false
 }
+
+/// Common technical token, directory/file name, or extension abbreviations.
+pub fn is_tech_token(raw_lower: &str) -> bool {
+    matches!(
+        raw_lower,
+        "conf"
+            | "inf"
+            | "das"
+            | "xml"
+            | "bin"
+            | "src"
+            | "doc"
+            | "docs"
+            | "lib"
+            | "var"
+            | "etc"
+            | "opt"
+            | "usr"
+            | "dev"
+            | "sys"
+            | "proc"
+            | "tmp"
+            | "app"
+            | "pkg"
+            | "cmd"
+            | "cli"
+            | "sdk"
+            | "api"
+            | "sql"
+            | "db"
+            | "web"
+            | "git"
+            | "cfg"
+            | "log"
+            | "logs"
+            | "dist"
+            | "deps"
+            | "yml"
+            | "yaml"
+            | "json"
+            | "toml"
+            | "properties"
+    )
+}
+
+/// Checks if a word is typed in a path, URL, file-extension, or code identifier context
+/// where raw ASCII must be restored instead of being corrupted into Vietnamese diacritics.
+pub fn is_path_or_code_context(
+    prev_boundary: Option<char>,
+    next_boundary: char,
+    raw: &str,
+    composed: &str,
+    dict: &EnglishDict,
+) -> bool {
+    let raw_lower = raw.to_ascii_lowercase();
+
+    // Vietnamese abbreviations with 'Đ' / 'đ' (`QĐ`, `HĐ`, `NĐ`, `UBND`, `VNĐ`)
+    // must NEVER be mangled back into 'DD' inside documents or legal codes!
+    if (composed.contains('Đ') || composed.contains('đ')) && raw_lower != "ddos" {
+        return false;
+    }
+
+    let is_prev_path = matches!(prev_boundary, Some('/') | Some('\\'));
+    let is_next_path = matches!(next_boundary, '/' | '\\');
+    let is_prev_dot = prev_boundary == Some('.');
+    let is_next_dot = next_boundary == '.';
+    let is_prev_hyphen = matches!(prev_boundary, Some('-') | Some('_'));
+    let is_next_hyphen = matches!(next_boundary, '-' | '_');
+
+    // 1. Path/URL context: preceded or succeeded by slash (`/conf/`, `WEB-INF/`, `/src/`)
+    if (is_prev_path || is_next_path)
+        && (is_tech_token(&raw_lower)
+            || dict.is_english_word(&raw_lower)
+            || is_alphanumeric_tech_token(raw))
+    {
+        return true;
+    }
+
+    // 2. Package / Domain / File extension context (`it.das.`, `web.xml`, `app.conf`)
+    if is_prev_dot {
+        if is_tech_token(&raw_lower)
+            || dict.is_english_word(&raw_lower)
+            || is_alphanumeric_tech_token(raw)
+        {
+            return true;
+        }
+    } else if is_next_dot
+        && (is_tech_token(&raw_lower)
+            || is_alphanumeric_tech_token(raw)
+            || is_prev_path
+            || is_prev_hyphen)
+    {
+        return true;
+    }
+
+    // 3. Kebab-case or Snake-case identifier (`WEB-INF`, `my-app`, `ioffice_web`)
+    if (is_prev_hyphen || is_next_hyphen)
+        && (is_tech_token(&raw_lower)
+            || dict.is_english_word(&raw_lower)
+            || is_alphanumeric_tech_token(raw))
+    {
+        return true;
+    }
+
+    false
+}
+

@@ -264,7 +264,7 @@ const STANDARD_KEYS: &[(&str, u32, &str, &str)] = &[
     ("TAB", 15, "TWO_LEVEL", "[ Tab, ISO_Left_Tab ]"),
     ("AD11", 26, "TWO_LEVEL", "[ bracketleft, braceleft ]"),
     ("AD12", 27, "TWO_LEVEL", "[ bracketright, braceright ]"),
-    ("RTRN", 28, "ONE_LEVEL", "[ Return ]"),
+    ("RTRN", 28, "TWO_LEVEL", "[ Return, Return ]"),
     ("LCTL", 29, "ONE_LEVEL", "[ Control_L ]"),
     ("AC10", 39, "TWO_LEVEL", "[ semicolon, colon ]"),
     ("AC11", 40, "TWO_LEVEL", "[ apostrophe, quotedbl ]"),
@@ -308,7 +308,7 @@ const STANDARD_KEYS: &[(&str, u32, &str, &str)] = &[
     ("KPDL", 83, "ONE_LEVEL", "[ period ]"),
     ("FK11", 87, "ONE_LEVEL", "[ F11 ]"),
     ("FK12", 88, "ONE_LEVEL", "[ F12 ]"),
-    ("KPEN", 96, "ONE_LEVEL", "[ Return ]"),
+    ("KPEN", 96, "TWO_LEVEL", "[ Return, Return ]"),
     ("RCTL", 97, "ONE_LEVEL", "[ Control_R ]"),
     ("KPDV", 98, "ONE_LEVEL", "[ slash ]"),
     ("RALT", 100, "ONE_LEVEL", "[ Alt_R ]"),
@@ -387,6 +387,12 @@ pub(crate) fn build_xkb_keymap() -> String {
 xkb_compatibility "vietc_vk" {
     interpret VoidSymbol { repeat= False; };
     interpret.repeat= True;
+    interpret Shift_L {
+        action= SetMods(modifiers=Shift);
+    };
+    interpret Shift_R {
+        action= SetMods(modifiers=Shift);
+    };
     interpret Shift_Lock+AnyOf(Shift+Lock) {
         action= LockMods(modifiers=Lock);
     };
@@ -402,6 +408,7 @@ xkb_compatibility "vietc_vk" {
     };
 };
 xkb_symbols "vietc_vk" {
+    name[Group1] = "English (US)";
 "#,
     );
 

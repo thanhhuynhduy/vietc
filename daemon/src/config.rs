@@ -321,7 +321,6 @@ impl Default for Config {
         macros.insert("dc".into(), "được".into());
         macros.insert("ng".into(), "người".into());
         macros.insert("nk".into(), "như".into());
-        macros.insert("vs".into(), "với".into());
         macros.insert("lm".into(), "làm".into());
         macros.insert("rd".into(), "rất".into());
         macros.insert("bt".into(), "biết".into());
@@ -407,7 +406,7 @@ vietnamese_apps = ["telegram", "discord"]
 [macros]
 ko = "không"
 dc = "được"
-vs = "với"
+bt = "biết"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.input_method, "vni");
@@ -422,7 +421,7 @@ vs = "với"
         );
         assert_eq!(config.macros.get("ko").unwrap(), "không");
         assert_eq!(config.macros.get("dc").unwrap(), "được");
-        assert_eq!(config.macros.get("vs").unwrap(), "với");
+        assert_eq!(config.macros.get("bt").unwrap(), "biết");
     }
 
     #[test]
@@ -499,7 +498,7 @@ terminal_input_method = "telex"
         let config = Config::default();
         assert!(config.macros.contains_key("ko"));
         assert!(config.macros.contains_key("dc"));
-        assert!(config.macros.contains_key("vs"));
+        assert!(config.macros.contains_key("bt"));
         assert!(config.macros.contains_key("lm"));
     }
 
