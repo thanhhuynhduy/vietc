@@ -291,7 +291,7 @@ impl KeyInjector for UinputInjector {
                     self.transfer_vk_shift_to_uinput();
                 }
             }
-        } else if !bypassed {
+        } else if !bypassed || value == 0 {
             #[cfg(feature = "wayland-protocol")]
             {
                 let mods_active = self.uinput_mod_mask.load(Ordering::Acquire) != 0;

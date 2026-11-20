@@ -235,6 +235,7 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
     });
 
     let mut active_trigger: Option<(usize, Tone)> = None;
+    let mut prior_triggers: Vec<usize> = Vec::new();
     for (i, &ch) in raw.iter().enumerate() {
         if consumed[i] {
             continue;
@@ -248,6 +249,9 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
                 if prev_idx + 1 == i {
                     consumed[prev_idx] = true;
                     if prev_tone == tone {
+                        for idx in prior_triggers {
+                            consumed[idx] = true;
+                        }
                         consumed[i] = false;
                         return ToneResolution {
                             tone: Tone::None,
@@ -258,8 +262,8 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
                 }
             }
             active_trigger = Some((i, tone));
-        } else {
-            active_trigger = None;
+        } else if let Some((prev_idx, _)) = active_trigger.take() {
+            prior_triggers.push(prev_idx);
         }
     }
 

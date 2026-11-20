@@ -297,11 +297,18 @@ fn candidate_config_paths() -> [Option<PathBuf>; 3] {
 }
 
 impl Config {
+    fn normalize(mut self) -> Self {
+        if self.toggle_key == "space" && self.toggle_method_key != "space" {
+            self.toggle_key = self.toggle_method_key.clone();
+        }
+        self
+    }
+
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         for path in candidate_config_paths().into_iter().flatten() {
             if path.exists() {
                 let content = fs::read_to_string(&path)?;
-                let config: Config = toml::from_str(&content)?;
+                let config: Config = toml::from_str::<Config>(&content)?.normalize();
                 eprintln!("[vietc] Loaded config from: {}", path.display());
                 return Ok(config);
             }
@@ -313,7 +320,7 @@ impl Config {
 
     pub fn load_from(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
         let content = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let config: Config = toml::from_str::<Config>(&content)?.normalize();
         Ok(config)
     }
 }

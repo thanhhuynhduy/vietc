@@ -867,7 +867,11 @@ impl AppStateManager {
 
         // Layer 3: Window title heuristic (for sudo prompts, browser dialogs)
         if self.check_window_title {
-            if let Some(title) = get_active_window_title() {
+            let title_opt = match crate::password_detector::cached_window_title() {
+                Some((_, cached)) => cached,
+                None => get_active_window_title(),
+            };
+            if let Some(title) = title_opt {
                 for keyword in &self.title_keywords {
                     if title.contains(keyword.as_str()) {
                         self.is_password_field = true;
@@ -879,12 +883,12 @@ impl AppStateManager {
         }
 
         // Layer 4: Process-based detection (for terminal sudo/passwd prompts)
-        if let Some(pid) = get_active_window_pid() {
-            if is_sudo_process(pid) {
-                self.is_password_field = true;
-                log_password_detection("process-sudo", &format!("PID {}", pid));
-                return true;
-            }
+        let is_sudo = crate::password_detector::cached_window_is_sudo()
+            .unwrap_or_else(|| get_active_window_pid().is_some_and(is_sudo_process));
+        if is_sudo {
+            self.is_password_field = true;
+            log_password_detection("process-sudo", &self.current_app);
+            return true;
         }
 
         self.is_password_field = false;
@@ -1068,6 +1072,12 @@ fn is_sudo_process(pid: u32) -> bool {
         }
     }
     false
+}
+
+pub fn refresh_background_window_security() {
+    let title = get_active_window_title();
+    let is_sudo = get_active_window_pid().is_some_and(is_sudo_process);
+    crate::password_detector::record_background_window_security(title, is_sudo);
 }
 
 fn override_path() -> std::path::PathBuf {

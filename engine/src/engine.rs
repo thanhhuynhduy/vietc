@@ -793,11 +793,28 @@ impl Engine {
             self.rehydrated_word = false;
             let current = self.composed_tail();
             let cand = self.compose_candidate(&format!("{}{}", self.raw_buffer, ch));
+            let is_tone_strip = (self.method == InputMethod::Telex
+                && ch.eq_ignore_ascii_case(&'z'))
+                || (self.method == InputMethod::Vni && ch == '0');
             let is_valid_mod = cand != current
-                && crate::spelling::is_valid_vietnamese_syllable(&cand)
-                && crate::spelling::is_in_vietnamese_dictionary(&cand);
+                && crate::spelling::is_valid_vietnamese_prefix(&cand)
+                && (is_tone_strip || crate::spelling::is_in_vietnamese_dictionary_or_prefix(&cand));
             if !is_valid_mod {
-                self.clear_word_only();
+                if let Some(resolved) =
+                    resolve_coda_edit_canon(&self.raw_buffer, ch, self.method, |r| {
+                        self.compose_candidate(r)
+                    })
+                {
+                    let edited = self.compose_candidate(&format!("{resolved}{ch}"));
+                    if crate::spelling::is_in_vietnamese_dictionary_or_prefix(&edited) {
+                        self.raw_buffer = resolved;
+                        self.replay_bamboo_from_raw();
+                    } else {
+                        self.clear_word_only();
+                    }
+                } else {
+                    self.clear_word_only();
+                }
             }
         }
 
@@ -809,6 +826,11 @@ impl Engine {
         {
             self.prev_context = LanguageContext::None;
             self.ring_buffer.clear();
+            return None;
+        }
+
+        if self.raw_buffer.chars().count() >= 64 {
+            self.clear_word_only();
             return None;
         }
 

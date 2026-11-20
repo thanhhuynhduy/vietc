@@ -37,7 +37,13 @@ pub fn init(
     };
 
     if let Some(parent) = log_file_path.parent() {
-        let _ = fs::create_dir_all(parent);
+        use std::os::unix::fs::DirBuilderExt;
+        if !parent.as_os_str().is_empty() && parent != Path::new("/tmp") {
+            let _ = fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent);
+        }
     }
 
     // Rotate log if > 10MB
@@ -59,9 +65,12 @@ pub fn init(
         .or_else(|_| EnvFilter::try_new(default_level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
+    use std::os::unix::fs::OpenOptionsExt;
     let file = OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&log_file_path)?;
     let file_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)

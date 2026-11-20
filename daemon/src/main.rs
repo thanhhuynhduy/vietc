@@ -17,20 +17,18 @@ mod focus_tracker;
 mod inject;
 mod key_dedup;
 mod log;
-mod password_detector;
-mod pointer_watcher;
-mod signal;
-mod stdin;
-#[cfg(test)]
-mod toplevel_tracker_stub {}
 #[cfg(test)]
 mod office_adversarial_exhaustive_suite;
 #[cfg(test)]
 mod office_stress_tests;
 #[cfg(test)]
 mod office_worker_stress_matrix;
+mod password_detector;
+mod pointer_watcher;
 #[cfg(test)]
 mod probe_office_exhaustive;
+mod signal;
+mod stdin;
 #[cfg(feature = "wayland")]
 mod toplevel_tracker;
 
@@ -69,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut daemon = Daemon::new(config, config_path.clone(), engine_enabled.clone());
 
     daemon.write_status();
+    daemon.write_method_status();
 
     let display = display::detect_display_server();
     let compositor = display::detect_compositor();
@@ -113,6 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let config_path = config_path.clone();
         let status_changed = status_changed.clone();
         let engine_enabled = engine_enabled.clone();
+        let initial_method = daemon.config.input_method.clone();
         let mut watched_config_path = config_path.clone();
         let user_config_candidate = config::user_config_path();
         let mut last_modified = std::fs::metadata(&watched_config_path)
@@ -123,13 +123,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut window_check_counter = 0;
             let status_path = config::user_ipc_file_path("status");
             let method_path = config::user_ipc_file_path("method");
-            let mut last_method = String::new();
+            let mut last_method = initial_method;
             loop {
                 if signal::SIGNAL_EXIT.load(Ordering::SeqCst) {
                     break;
                 }
                 let (compositor_class, authoritative_id) = {
-                    let focus = shared_focus.lock().unwrap();
+                    let focus = shared_focus
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     let auth = matches!(
                         &focus.identity,
                         Some(existing)
@@ -147,7 +149,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     app_state::get_focused_window_class()
                 };
-                let mut focus = shared_focus.lock().unwrap();
+                let mut focus = shared_focus
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let previous_identity = focus.identity.clone();
                 let previous_generation = focus.generation;
                 let authoritative = matches!(
@@ -174,6 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ));
                 }
                 drop(focus);
+                app_state::refresh_background_window_security();
 
                 if let Ok(content) = std::fs::read_to_string(&status_path) {
                     let is_vn = content.trim() == "vn";
@@ -186,9 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Ok(content) = std::fs::read_to_string(&method_path) {
                     let m = content.trim();
                     if !m.is_empty() && m != last_method {
-                        if !last_method.is_empty() {
-                            status_changed.store(true, Ordering::SeqCst);
-                        }
+                        status_changed.store(true, Ordering::SeqCst);
                         last_method = m.to_string();
                     }
                 }

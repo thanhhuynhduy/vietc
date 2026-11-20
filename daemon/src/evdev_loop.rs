@@ -53,7 +53,7 @@ fn sync_app_class(
     }
     let class = shared_focus
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .class
         .clone()
         .unwrap_or_default();
@@ -470,6 +470,9 @@ pub fn run_with_evdev(
                 // Completely bypass all IME processing for remote desktops, VM viewers and games
                 if daemon.is_current_app_bypassed() {
                     injector.set_bypass_mode(true);
+                    if consume_released_or_repeated_key(&mut consumed_keys, keycode, value) {
+                        continue;
+                    }
                     if grabbed {
                         injector.send_key_event(keycode, value);
                     }
@@ -560,7 +563,7 @@ pub fn run_with_evdev(
                         if daemon.config.app_state.enabled {
                             let class = shared_focus
                                 .lock()
-                                .unwrap()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
                                 .class
                                 .clone()
                                 .unwrap_or_default();
@@ -596,7 +599,7 @@ pub fn run_with_evdev(
                     } else if daemon.config.app_state.enabled {
                         let class = shared_focus
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .class
                             .clone()
                             .unwrap_or_default();
@@ -768,16 +771,8 @@ pub fn run_with_evdev(
                     if value == 1 {
                         if debug_logging {
                             log_debug(&format!(
-                                "[vietc] grabbed key: code={} ch='{}' buf='{}' enabled={}",
-                                keycode,
-                                key_to_char_with_case(
-                                    key,
-                                    is_modifier_held_shift(&key_state),
-                                    global_caps_lock
-                                )
-                                .map(|c| c.escape_default().to_string())
-                                .unwrap_or_default(),
-                                daemon.engine.buffer().escape_default(),
+                                "[vietc] grabbed key: buf_len={} enabled={}",
+                                daemon.engine.buffer().chars().count(),
                                 daemon.engine.is_enabled(),
                             ));
                         }
@@ -794,9 +789,8 @@ pub fn run_with_evdev(
                             if !commands.is_empty() {
                                 if debug_logging {
                                     log_debug(&format!(
-                                        "[vietc] grabbed inject: ch='{}' cmds={:?}",
-                                        ch.escape_default(),
-                                        commands,
+                                        "[vietc] grabbed inject: cmd_count={}",
+                                        commands.len(),
                                     ));
                                 }
                                 consumed_keys.insert(keycode);
@@ -837,18 +831,16 @@ pub fn run_with_evdev(
                                 && daemon.engine.buffer().chars().count() <= buf_before
                             {
                                 if debug_logging {
-                                    log_debug(&format!(
-                                        "[vietc] grabbed consumed: ch='{}' (control key, no screen change)",
-                                        ch.escape_default(),
-                                    ));
+                                    log_debug(
+                                        "[vietc] grabbed consumed: control key (no screen change)",
+                                    );
                                 }
                                 consumed_keys.insert(keycode);
                             } else {
                                 if debug_logging {
-                                    log_debug(&format!(
-                                        "[vietc] grabbed forward: ch='{}' (no commands)",
-                                        ch.escape_default(),
-                                    ));
+                                    log_debug(
+                                        "[vietc] grabbed forward: printable key (no commands)",
+                                    );
                                 }
                                 // Any forwarded printable key overwrites prior inline autocomplete
                                 // unless the browser emits a fresh TextSelectionChanged for it.

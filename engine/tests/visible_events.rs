@@ -348,3 +348,67 @@ fn gboard_backspace_after_space_undoes_auto_restore_and_locks_vietnamese() {
     screen.push(' ');
     assert_eq!(screen, "tét ");
 }
+
+#[test]
+fn qa_audit_tone_overwrite_undo_rehydrated_prefix_digit_space_and_buffer_bound() {
+    // 1. Overwritten tone followed by double-key tone undo ("asnff" -> "anf", never resurrecting 's')
+    let mut engine = Engine::new(InputMethod::Telex);
+    let mut screen = String::new();
+    for ch in "asnff".chars() {
+        type_key(&mut engine, &mut screen, ch);
+        assert_eq!(screen, engine.buffer());
+    }
+    assert_eq!(screen, "anf");
+
+    // 2. Rehydrated word across Space supports open-prefix edits ("đường " + BS*2 + "sg" -> "đướng")
+    // and intentional Telex 'z' tone removal ("tiếng " + BS + "z" -> "tiêng")
+    let mut engine2 = Engine::new(InputMethod::Telex);
+    let mut screen2 = String::new();
+    for ch in "dduowngf ".chars() {
+        type_key(&mut engine2, &mut screen2, ch);
+    }
+    assert_eq!(screen2, "đường ");
+    type_key(&mut engine2, &mut screen2, '\x08');
+    type_key(&mut engine2, &mut screen2, '\x08');
+    assert_eq!(screen2, "đườn");
+    type_key(&mut engine2, &mut screen2, 's');
+    assert_eq!(screen2, "đướn");
+    type_key(&mut engine2, &mut screen2, 'g');
+    assert_eq!(screen2, "đướng");
+
+    let mut engine3 = Engine::new(InputMethod::Telex);
+    let mut screen3 = String::new();
+    for ch in "tieengs ".chars() {
+        type_key(&mut engine3, &mut screen3, ch);
+    }
+    assert_eq!(screen3, "tiếng ");
+    type_key(&mut engine3, &mut screen3, '\x08');
+    type_key(&mut engine3, &mut screen3, 'z');
+    assert_eq!(screen3, "tiêng");
+
+    // 3. Digit-prefixed Vietnamese words ("9nhuw ", "10ddoongf ") preserve Vietnamese on Space
+    let mut engine4 = Engine::new(InputMethod::Telex);
+    let mut screen4 = String::new();
+    for ch in "9nhuw ".chars() {
+        type_key(&mut engine4, &mut screen4, ch);
+    }
+    assert_eq!(screen4, "9như ");
+
+    // 4. Literal unconsumed 'w' after accented 'é' ("esw" -> "éw") does not report false Mark("uw")
+    let mut engine5 = Engine::new(InputMethod::Telex);
+    for ch in "esw".chars() {
+        engine5.process_key(ch);
+    }
+    assert_eq!(engine5.buffer(), "éw");
+    assert_eq!(
+        engine5.state().active_transform.map(|t| t.kind),
+        Some(vietc_engine::TransformKind::Tone('s'))
+    );
+
+    // 5. Unbounded key hold (>64 chars) is bounded in O(1) without freeze or panic
+    let mut engine6 = Engine::new(InputMethod::Telex);
+    for _ in 0..200 {
+        let _ = engine6.process_key('a');
+    }
+    assert!(engine6.buffer().chars().count() <= 64);
+}

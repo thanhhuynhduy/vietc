@@ -6,10 +6,43 @@ pub const ROLE_PASSWORD_TEXT: i32 = 62;
 
 static ATSPI_OBSERVED_FOCUS: AtomicBool = AtomicBool::new(false);
 static ATSPI_FOCUSED_IS_PASSWORD: AtomicBool = AtomicBool::new(false);
+static BG_OBSERVED_WINDOW: AtomicBool = AtomicBool::new(false);
+static BG_FOCUSED_IS_SUDO: AtomicBool = AtomicBool::new(false);
 
 fn atspi_app_cache() -> &'static Mutex<Option<String>> {
     static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn bg_title_cache() -> &'static Mutex<Option<String>> {
+    static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Update cached window title and terminal sudo-descendant status from the
+/// 250ms background polling thread so the real-time `evdev_loop` thread never
+/// blocks on external CLI processes (`gdbus`, `xdotool`, `xprop`, `hyprctl`, `swaymsg`).
+pub fn record_background_window_security(title: Option<String>, is_sudo: bool) {
+    if let Ok(mut guard) = bg_title_cache().lock() {
+        *guard = title;
+    }
+    BG_FOCUSED_IS_SUDO.store(is_sudo, Ordering::Release);
+    BG_OBSERVED_WINDOW.store(true, Ordering::Release);
+}
+
+pub fn cached_window_title() -> Option<(bool, Option<String>)> {
+    if !BG_OBSERVED_WINDOW.load(Ordering::Acquire) {
+        return None;
+    }
+    let title = bg_title_cache().lock().ok().and_then(|g| g.clone());
+    Some((true, title))
+}
+
+pub fn cached_window_is_sudo() -> Option<bool> {
+    if !BG_OBSERVED_WINDOW.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(BG_FOCUSED_IS_SUDO.load(Ordering::Acquire))
 }
 
 /// Record the focused accessible node's role and owning application name from

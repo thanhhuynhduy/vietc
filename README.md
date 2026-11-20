@@ -82,6 +82,8 @@ toggle_key = "space"            # Ctrl + <toggle_key> xoay vòng Telex -> EN -> 
 start_enabled = true
 grab = true
 debug = false
+deduplicate_keys = false
+deduplicate_window_ms = 35
 
 [auto_restore]
 enabled = true
@@ -90,9 +92,10 @@ trigger_keys = ["space", "escape"]
 [app_state]
 enabled = true
 terminal_input_method = "vni"
-english_apps = ["code", "jetbrains", "vim", "nvim", "kitty", "alacritty", "foot", "ghostty"]
+english_apps = ["code", "jetbrains", "intellij", "pycharm", "webstorm", "vim", "nvim"]
 vietnamese_apps = ["telegram", "discord", "slack", "firefox", "chromium", "gedit", "gnome-text-editor"]
-bypass_apps = ["steam", "dota", "csgo", "minecraft", "remmina", "rustdesk", "virt-manager"]
+terminal_apps = ["terminal", "kitty", "alacritty", "foot", "ghostty", "cosmic-term", "wezterm", "konsole", "gnome-terminal"]
+bypass_apps = ["steam", "dota", "csgo", "cs2", "minecraft", "remmina", "rustdesk", "virt-manager"]
 
 [macros]
 ko = "không"

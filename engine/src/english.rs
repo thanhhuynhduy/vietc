@@ -476,8 +476,10 @@ pub(crate) fn should_restore_word_decision(
             || crate::bigram::has_english_compound_morphology(&raw_lower);
     }
 
-    let valid_vn = crate::spelling::is_valid_vietnamese_syllable(composed)
-        && crate::spelling::is_in_vietnamese_dictionary(composed);
+    let vn_candidate = composed.trim_start_matches(|c: char| c.is_ascii_digit());
+    let valid_vn = !vn_candidate.is_empty()
+        && crate::spelling::is_valid_vietnamese_syllable(vn_candidate)
+        && crate::spelling::is_in_vietnamese_dictionary(vn_candidate);
     if !valid_vn {
         let is_english = dict.is_english_word(&raw_lower)
             || has_natural_english_double(&raw_lower)
@@ -486,7 +488,7 @@ pub(crate) fn should_restore_word_decision(
             return true;
         }
 
-        if crate::engine_helpers::is_vn_d_abbreviation(composed, &raw_lower) {
+        if crate::engine_helpers::is_vn_d_abbreviation(vn_candidate, &raw_lower) {
             return false;
         }
         return true;

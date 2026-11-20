@@ -107,7 +107,7 @@ Hệ thống VietC được module hóa nghiêm ngặt thành các crate độc 
 1. [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine): Thuần túy tính toán logic tiếng Việt, không chứa bất kỳ lời gọi hệ thống hay giao thức I/O nào. Có thể chạy độc lập trong môi trường WebAssembly hoặc Unit Test.
 2. [`vietc-daemon`](file:///home/thanhhd/Git-projects/vietc/daemon): Tiến trình chạy nền (daemon service), điều phối việc bắt phím phần cứng `evdev`, đồng bộ tiêu điểm AT-SPI, bảo vệ mật khẩu và điều khiển State Machine.
 3. [`vietc-protocol`](file:///home/thanhhd/Git-projects/vietc/protocol): Tầng trừu tượng hóa giao thức xuất phím, chứa bộ nạp Wayland Virtual Keyboard, cấu hình Keymap XKB 8 cấp độ và Linux Uinput.
-4. [`vietc-ui`](file:///home/thanhhd/Git-projects/vietc/ui): Giao diện đồ họa cấu hình và khay hệ thống (System Tray), giao tiếp với daemon qua tín hiệu POSIX (`SIGUSR1` chuyển chế độ, `SIGUSR2` nạp lại cấu hình) và tệp trạng thái `/tmp/vietc-status-$UID`.
+4. [`vietc-ui`](file:///home/thanhhd/Git-projects/vietc/ui): Giao diện khay hệ thống (System Tray `ksni`), giao tiếp hai chiều với daemon qua tệp trạng thái IPC nguyên tử `~/.config/vietc/status` (`vn`/`en`) và `~/.config/vietc/method` (`telex`/`vni`) kết hợp `inotify`.
 5. [`vietc-cli`](file:///home/thanhhd/Git-projects/vietc/cli): Công cụ dòng lệnh (Interactive REPL Test Harness) kiểm thử trực tiếp máy trạng thái [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine).
 
 ---

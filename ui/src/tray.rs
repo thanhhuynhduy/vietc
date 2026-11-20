@@ -7,7 +7,18 @@ fn is_flatpak() -> bool {
 }
 
 fn ipc_file_path(name: &str) -> std::path::PathBuf {
-    if let Some(config_dir) = dirs::config_dir() {
+    if let Some(config_dir) = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(|h| std::path::PathBuf::from(h).join(".config"))
+        })
+        .or_else(dirs::config_dir)
+    {
         return config_dir.join("vietc").join(name);
     }
     if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
@@ -185,10 +196,6 @@ impl Tray for VietTray {
         };
         write_status(next_mode);
         write_method(next_im);
-        let mut cfg = config::Config::load();
-        cfg.start_enabled = next_mode == "vn";
-        cfg.input_method = next_im.into();
-        let _ = cfg.save();
         self.mode = next_mode.to_string();
         self.im = next_im.to_string();
     }
@@ -233,12 +240,6 @@ impl Tray for VietTray {
                     };
                     write_status(next_mode);
                     write_method(next_im);
-                    let mut cfg = config::Config::load();
-                    cfg.start_enabled = next_mode == "vn";
-                    cfg.input_method = next_im.into();
-                    if let Err(error) = cfg.save() {
-                        eprintln!("[vietc-tray] Could not save mode configuration: {error}");
-                    }
                     this.mode = next_mode.to_string();
                     this.im = next_im.to_string();
                 }),
@@ -257,12 +258,6 @@ impl Tray for VietTray {
                         };
                         write_status(mode);
                         write_method(im);
-                        let mut cfg = config::Config::load();
-                        cfg.start_enabled = mode == "vn";
-                        cfg.input_method = im.into();
-                        if let Err(error) = cfg.save() {
-                            eprintln!("[vietc-tray] Could not save mode configuration: {error}");
-                        }
                         this.mode = mode.into();
                         this.im = im.into();
                     }),
@@ -333,8 +328,9 @@ pub fn run() {
     service.spawn();
 
     std::thread::spawn(move || {
-        let dir = dirs::config_dir()
-            .map(|d| d.join("vietc"))
+        let dir = ipc_file_path("status")
+            .parent()
+            .map(|p| p.to_path_buf())
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
         let _ = std::fs::create_dir_all(&dir);
 

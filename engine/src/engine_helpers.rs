@@ -20,6 +20,13 @@ pub(crate) fn active_telex_transform(
 ) -> Option<(TransformKind, char, UndoPolicy)> {
     let trigger = ch.to_ascii_lowercase();
     if matches!(trigger, 'f' | 's' | 'r' | 'x' | 'j') {
+        if visible
+            .chars()
+            .last()
+            .is_some_and(|last| last.to_ascii_lowercase() == trigger)
+        {
+            return None;
+        }
         return Some((
             TransformKind::Tone(trigger),
             trigger,
@@ -39,22 +46,37 @@ pub(crate) fn active_telex_transform(
         .chars()
         .any(|c| matches!(c, 'ă' | 'ắ' | 'ằ' | 'ẳ' | 'ẵ' | 'ặ'));
 
-    let mark = if lower.ends_with("dd") {
+    let mark = if lower.ends_with("dd") && (vis_lower.contains('đ')) {
         Some((TransformKind::StrokeDd, UndoPolicy::ConsumeTrigger))
-    } else if lower.ends_with("aa") {
+    } else if lower.ends_with("aa")
+        && vis_lower
+            .chars()
+            .any(|c| matches!(c, 'â' | 'ấ' | 'ầ' | 'ẩ' | 'ẫ' | 'ậ'))
+    {
         Some((TransformKind::Mark("aa"), UndoPolicy::AppendTrigger))
-    } else if lower.ends_with("ee") {
+    } else if lower.ends_with("ee")
+        && vis_lower
+            .chars()
+            .any(|c| matches!(c, 'ê' | 'ế' | 'ề' | 'ể' | 'ễ' | 'ệ'))
+    {
         Some((TransformKind::Mark("ee"), UndoPolicy::AppendTrigger))
-    } else if lower.ends_with("oo") {
+    } else if lower.ends_with("oo")
+        && vis_lower
+            .chars()
+            .any(|c| matches!(c, 'ô' | 'ố' | 'ồ' | 'ổ' | 'ỗ' | 'ộ'))
+    {
         Some((TransformKind::Mark("oo"), UndoPolicy::AppendTrigger))
     } else if trigger == 'w' && has_u_horn && has_o_horn {
         Some((TransformKind::Mark("uo+w"), UndoPolicy::AppendTrigger))
     } else if trigger == 'w' && has_u_horn && lower.contains("ua") {
         Some((TransformKind::Mark("ua+w"), UndoPolicy::AppendTrigger))
-    } else if trigger == 'w' {
-        let kind = if has_a_breve || lower.contains("aw") {
+    } else if trigger == 'w'
+        && (has_a_breve || has_o_horn || has_u_horn)
+        && !vis_lower.ends_with('w')
+    {
+        let kind = if has_a_breve {
             "aw"
-        } else if has_o_horn || lower.contains("ow") {
+        } else if has_o_horn {
             "ow"
         } else {
             "uw"

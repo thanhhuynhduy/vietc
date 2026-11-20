@@ -59,13 +59,15 @@ fn observe_atspi_focus_with_path(
 
 fn is_omnibox_label(label: &str) -> bool {
     let lower = label.to_lowercase();
-    lower.contains("address")
-        || lower.contains("omnibox")
-        || lower.contains("url")
-        || lower.contains("location")
+    lower.contains("omnibox")
+        || lower.contains("address and search")
+        || lower.contains("address bar")
+        || lower.contains("url bar")
+        || lower.contains("location bar")
         || lower.contains("search or enter")
         || lower.contains("search with")
-        || lower.contains("địa chỉ")
+        || lower.contains("enter address")
+        || lower.contains("thanh địa chỉ")
         || lower.contains("tìm kiếm hoặc nhập")
 }
 
@@ -95,7 +97,9 @@ fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedN
         .map(|(r,)| r)
         .unwrap_or(0);
     let is_password = role == crate::password_detector::ROLE_PASSWORD_TEXT;
-    let is_omnibox = if role == ROLE_AUTOCOMPLETE || role == ROLE_ENTRY || role == ROLE_TEXT {
+    let is_omnibox = if role == ROLE_AUTOCOMPLETE {
+        true
+    } else if role == ROLE_ENTRY || role == ROLE_TEXT {
         proxy
             .method_call::<(Variant<Box<dyn RefArg>>,), _, _, _>(
                 "org.freedesktop.DBus.Properties",
@@ -366,6 +370,8 @@ mod omnibox_tests {
         assert!(is_omnibox_label("Search with Google or enter address"));
         assert!(is_omnibox_label("Thanh địa chỉ và tìm kiếm"));
         assert!(!is_omnibox_label("Compose email body"));
+        assert!(!is_omnibox_label("Email address"));
+        assert!(!is_omnibox_label("Street address"));
 
         // `h[ttps://github.com]` -> caret at 1, selection 1..18, char_count 18
         assert!(is_inline_autocomplete_selection(1, 1, 18, 18));

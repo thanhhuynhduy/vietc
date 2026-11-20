@@ -16,3 +16,5 @@ packaging/deb/vietc_*/
 status
 /dist/
 target/
+__pycache__/
+*.pyc

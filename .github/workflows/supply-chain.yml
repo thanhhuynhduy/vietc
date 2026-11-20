@@ -52,15 +52,20 @@ jobs:
           tool: cargo-audit,cargo-deny,cargo-cyclonedx
 
       - name: Check known vulnerabilities
-        run: cargo audit --deny warnings
+        run: |
+          cargo audit --deny warnings
+          cargo audit --file ui/Cargo.lock --deny warnings
 
       - name: Check licenses, sources, and duplicate dependencies
-        run: cargo deny check
+        run: |
+          cargo deny check
+          cargo deny --manifest-path ui/Cargo.toml check
 
       - name: Generate CycloneDX SBOM per crate
         run: |
           mkdir -p dist
           cargo cyclonedx --format json
+          cargo cyclonedx --manifest-path ui/Cargo.toml --format json
           find . -maxdepth 3 -type f -name '*.cdx.json' -exec mv -f {} dist/ \;
           test -n "$(find dist -maxdepth 1 -type f -name '*.cdx.json' -print -quit)"
 

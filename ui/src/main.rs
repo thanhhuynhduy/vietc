@@ -39,10 +39,31 @@ fn find_daemon_binary() -> String {
 }
 
 fn is_daemon_running() -> bool {
-    let uid = unsafe { libc::getuid() }.to_string();
+    let uid = unsafe { libc::getuid() };
+    let lock_path = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|dir| !dir.is_empty() && std::path::Path::new(dir).is_dir())
+        .map(|dir| format!("{}/vietc-daemon.lock", dir))
+        .unwrap_or_else(|| format!("/tmp/vietc-daemon-{}.lock", uid));
+    if let Ok(path_c) = std::ffi::CString::new(lock_path) {
+        let fd = unsafe { libc::open(path_c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        if fd >= 0 {
+            let locked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0;
+            if !locked {
+                let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
+            }
+            unsafe {
+                libc::close(fd);
+            }
+            if locked {
+                return true;
+            }
+        }
+    }
+    let uid_str = uid.to_string();
     let check = |name: &str| -> bool {
         std::process::Command::new("pgrep")
-            .args(["-u", &uid, "-x", name])
+            .args(["-u", &uid_str, "-x", name])
             .status()
             .map(|s| s.success())
             .unwrap_or(false)

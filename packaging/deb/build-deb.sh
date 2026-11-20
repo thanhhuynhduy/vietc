@@ -105,6 +105,12 @@ case "$1" in
     rm -f /usr/local/bin/vietc-tray /usr/local/bin/vietc /usr/local/bin/vietc-daemon \
           /usr/local/bin/vietc-cli /etc/udev/rules.d/99-vietc.rules 2>/dev/null || true
 
+    if command -v setcap >/dev/null 2>&1; then
+      setcap -r /usr/bin/vietc-daemon >/dev/null 2>&1 || true
+    fi
+
+    chmod o-rw /dev/uinput /dev/input/event* 2>/dev/null || true
+
     if command -v modprobe >/dev/null 2>&1; then
       modprobe uinput >/dev/null 2>&1 || true
     fi
@@ -144,8 +150,19 @@ cat > "$STAGING/DEBIAN/postrm" << 'POSTRM'
 #!/bin/sh
 set -e
 case "$1" in
-  purge)
-    rm -rf /etc/vietc 2>/dev/null || true
+  remove|purge)
+    if [ "$1" = "purge" ]; then
+      rm -rf /etc/vietc 2>/dev/null || true
+    fi
+    if command -v setfacl >/dev/null 2>&1; then
+      setfacl -b /dev/uinput /dev/input/event* >/dev/null 2>&1 || true
+    fi
+    chmod o-rw /dev/uinput /dev/input/event* 2>/dev/null || true
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm control --reload-rules >/dev/null 2>&1 || true
+      udevadm trigger --action=change --subsystem-match=input >/dev/null 2>&1 || true
+      udevadm trigger --action=change --subsystem-match=misc >/dev/null 2>&1 || true
+    fi
     ;;
 esac
 POSTRM

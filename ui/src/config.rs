@@ -131,6 +131,7 @@ impl Config {
         Self::default()
     }
 
+    #[allow(dead_code)]
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::DirBuilderExt;
         let path = user_config_path();
@@ -145,6 +146,7 @@ impl Config {
         self.save_to(&path)
     }
 
+    #[allow(dead_code)]
     fn save_to(&self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -178,9 +180,22 @@ impl Config {
     }
 }
 
+fn config_base_dir() -> Option<PathBuf> {
+    std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(|h| PathBuf::from(h).join(".config"))
+        })
+        .or_else(dirs::config_dir)
+}
+
 fn user_config_path() -> PathBuf {
-    dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+    config_base_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("vietc")
         .join("config.toml")
@@ -188,7 +203,7 @@ fn user_config_path() -> PathBuf {
 
 fn config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(config_dir) = dirs::config_dir() {
+    if let Some(config_dir) = config_base_dir() {
         paths.push(config_dir.join("vietc").join("config.toml"));
     }
     paths.push(PathBuf::from("/etc/vietc/config.toml"));

@@ -1,11 +1,10 @@
 input_method = "telex"
 toggle_key = "space"
-toggle_method_key = "space"
 start_enabled = true
 grab = true
 debug = false
 deduplicate_keys = false
-deduplicate_window_ms = 120
+deduplicate_window_ms = 35
 
 [auto_restore]
 enabled = true
@@ -24,10 +23,6 @@ english_apps = [
     "webstorm",
     "vim",
     "nvim",
-    "kitty",
-    "alacritty",
-    "foot",
-    "ghostty",
 ]
 vietnamese_apps = [
     "telegram",

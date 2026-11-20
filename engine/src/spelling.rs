@@ -68,6 +68,23 @@ pub fn is_in_vietnamese_dictionary(word: &str) -> bool {
     vietnamese_dict().contains(&normalized) || is_supplemental_vietnamese_syllable(&normalized)
 }
 
+/// Check if `word` is either a complete dictionary syllable or an in-progress
+/// digraph-coda prefix (`-n` of `-ng`/`-nh`, or `-c` of `-ch`) of a dictionary syllable.
+pub fn is_in_vietnamese_dictionary_or_prefix(word: &str) -> bool {
+    if is_in_vietnamese_dictionary(word) {
+        return true;
+    }
+    let toneless: String = word.to_lowercase().chars().map(strip_tone).collect();
+    if toneless.ends_with('n') {
+        return is_in_vietnamese_dictionary(&format!("{toneless}g"))
+            || is_in_vietnamese_dictionary(&format!("{toneless}h"));
+    }
+    if toneless.ends_with('c') {
+        return is_in_vietnamese_dictionary(&format!("{toneless}h"));
+    }
+    false
+}
+
 const FIRST_CONSONANT_SEQS: &[&str] = &[
     "b d đ g gh m n nh p ph r s t tr v",
     "c h k kh qu th",

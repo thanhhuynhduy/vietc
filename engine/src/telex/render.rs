@@ -66,6 +66,8 @@ fn toned(base: char, tone: Tone) -> char {
     }
 }
 
+const MAX_TELEX_WORD_CHARS: usize = 64;
+
 pub fn resolve_and_render(input: &str) -> String {
     let prefix_end = input
         .char_indices()
@@ -79,6 +81,9 @@ pub fn resolve_and_render(input: &str) -> String {
         .map(|(i, _)| i)
         .unwrap_or(rest.len());
     let (word, suffix) = rest.split_at(boundary);
+    if word.chars().count() > MAX_TELEX_WORD_CHARS {
+        return input.to_string();
+    }
     let raw: Vec<char> = word.chars().collect();
     let marks = mark::resolve(&raw);
     let tones = tone::resolve(&raw, &marks);
