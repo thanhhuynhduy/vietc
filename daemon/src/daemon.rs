@@ -12,23 +12,25 @@ use crate::event::is_flush_char;
 use crate::log::log_info;
 
 fn show_osd(summary: &str, body: &str) {
-    if let Ok(mut child) = std::process::Command::new("notify-send")
-        .args([
-            "-t",
-            "1000",
-            "-h",
-            "string:x-canonical-private-synchronous:vietc-osd",
-            "-a",
-            "VietC",
-            summary,
-            body,
-        ])
-        .spawn()
-    {
-        std::thread::spawn(move || {
+    let summary = summary.to_string();
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        if let Ok(mut child) = std::process::Command::new("notify-send")
+            .args([
+                "-t",
+                "1000",
+                "-h",
+                "string:x-canonical-private-synchronous:vietc-osd",
+                "-a",
+                "VietC",
+                &summary,
+                &body,
+            ])
+            .spawn()
+        {
             let _ = child.wait();
-        });
-    }
+        }
+    });
 }
 
 pub struct Daemon {
@@ -113,6 +115,27 @@ impl Daemon {
                     .mode(0o700)
                     .create(parent);
             }
+            let tmp_name = format!(
+                ".{}.tmp.{}",
+                path.file_name().and_then(|s| s.to_str()).unwrap_or("ipc"),
+                unsafe { libc::getpid() }
+            );
+            let tmp_path = parent.join(tmp_name);
+            let _ = std::fs::remove_file(&tmp_path);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&tmp_path)
+            {
+                if f.write_all(content.as_bytes()).is_ok()
+                    && std::fs::rename(&tmp_path, path).is_ok()
+                {
+                    return;
+                }
+            }
+            let _ = std::fs::remove_file(&tmp_path);
         }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -263,6 +286,7 @@ impl Daemon {
                 self.grab_enabled = new_config.grab;
                 self.config = new_config;
                 self.config_modified = modified;
+                self.write_method_status();
                 true
             }
             Err(_) => false,
@@ -361,14 +385,6 @@ impl Daemon {
         self.engine.reset();
         self.engine.reset_visible_revision();
         self.replay_reset();
-    }
-
-    #[allow(dead_code)]
-    pub fn has_composition_state(&self) -> bool {
-        !self.engine.buffer().is_empty()
-            || !self.event_store.is_empty()
-            || !self.screen_output.is_empty()
-            || self.visible_revision != 0
     }
 
     pub fn check_app_change_with(&mut self, new_class: String) {

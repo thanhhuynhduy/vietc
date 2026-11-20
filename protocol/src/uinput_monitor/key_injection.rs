@@ -271,13 +271,15 @@ impl UinputInjector {
             self.send_uinput_event_unlocked(EV_KEY, *code, 0)?;
         }
         self.send_uinput_event_unlocked(0, 0, 0)?; // SYN
+        self.uinput_mod_mask.store(0, Ordering::Release);
+        self.uinput_shift_mask.store(0, Ordering::Release);
         std::thread::sleep(std::time::Duration::from_millis(5));
         Ok(())
     }
 
     pub(super) fn send_ctrl_v(&self) -> std::io::Result<()> {
         let is_terminal = self.terminal_app.load(Ordering::Relaxed) || {
-            let st = self.clip.inner.lock().unwrap();
+            let st = self.clip.inner.lock().unwrap_or_else(|p| p.into_inner());
             let app = st.active_window.to_ascii_lowercase();
             app.contains("terminal")
                 || app.contains("cosmic-term")

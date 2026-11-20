@@ -173,11 +173,6 @@ impl EnglishDict {
         }
         prior_context
     }
-
-    #[allow(dead_code)]
-    pub fn classify_committed_word(&self, final_word: &str, raw: &str) -> LanguageContext {
-        self.classify_committed_word_with_prior(final_word, raw, LanguageContext::None)
-    }
 }
 
 /// Detect alphanumeric technical identifiers in VNI/Telex (e.g. `u32`, `i64`, `f32`,

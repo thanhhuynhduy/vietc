@@ -65,6 +65,9 @@ pub fn spawn_pointer_watcher() -> Arc<AtomicU64> {
         let mut devices: Vec<(std::path::PathBuf, evdev::Device)> = Vec::new();
         let mut last_scan = Instant::now() - RESCAN_INTERVAL;
         loop {
+            if crate::signal::SIGNAL_EXIT.load(Ordering::SeqCst) {
+                break;
+            }
             if last_scan.elapsed() >= RESCAN_INTERVAL {
                 last_scan = Instant::now();
                 devices.extend(scan_new(&mut open_paths));

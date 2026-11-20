@@ -33,13 +33,18 @@ pub fn find_wayland_socket_in_dir(runtime_dir: &Path) -> Option<String> {
 }
 
 /// Recover the user's display environment (`DISPLAY` / `XAUTHORITY` /
-/// `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`) into the daemon's own environment.
+/// `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR` / `XDG_CURRENT_DESKTOP` /
+/// `XDG_SESSION_TYPE` / `HYPRLAND_INSTANCE_SIGNATURE` / `SWAYSOCK`) into the daemon's own environment.
 pub fn recover_display_env() {
     for key in [
         "DISPLAY",
         "WAYLAND_DISPLAY",
         "XDG_RUNTIME_DIR",
         "XAUTHORITY",
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_TYPE",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+        "SWAYSOCK",
     ] {
         if std::env::var_os(key).is_some_and(|v| v.is_empty()) {
             std::env::remove_var(key);
@@ -67,8 +72,21 @@ pub fn recover_display_env() {
     let mut found_xdg: Option<String> = std::env::var("XDG_RUNTIME_DIR")
         .ok()
         .filter(|v| !v.is_empty());
+    let mut found_desktop: Option<String> = std::env::var("XDG_CURRENT_DESKTOP")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let mut found_session_type: Option<String> = std::env::var("XDG_SESSION_TYPE")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let mut found_hyprland: Option<String> = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let mut found_swaysock: Option<String> =
+        std::env::var("SWAYSOCK").ok().filter(|v| !v.is_empty());
 
-    if (found_display.is_none() || found_wayland.is_none()) && Path::new("/proc").is_dir() {
+    if (found_display.is_none() || found_wayland.is_none() || found_desktop.is_none())
+        && Path::new("/proc").is_dir()
+    {
         if let Ok(entries) = fs::read_dir("/proc") {
             for entry in entries.flatten() {
                 let name_s = entry.file_name().to_string_lossy().into_owned();
@@ -119,8 +137,40 @@ pub fn recover_display_env() {
                             }
                         }
                     }
+                    if found_desktop.is_none() {
+                        if let Some(v) = s.strip_prefix("XDG_CURRENT_DESKTOP=") {
+                            if !v.is_empty() {
+                                found_desktop = Some(v.to_string());
+                            }
+                        }
+                    }
+                    if found_session_type.is_none() {
+                        if let Some(v) = s.strip_prefix("XDG_SESSION_TYPE=") {
+                            if !v.is_empty() {
+                                found_session_type = Some(v.to_string());
+                            }
+                        }
+                    }
+                    if found_hyprland.is_none() {
+                        if let Some(v) = s.strip_prefix("HYPRLAND_INSTANCE_SIGNATURE=") {
+                            if !v.is_empty() {
+                                found_hyprland = Some(v.to_string());
+                            }
+                        }
+                    }
+                    if found_swaysock.is_none() {
+                        if let Some(v) = s.strip_prefix("SWAYSOCK=") {
+                            if !v.is_empty() {
+                                found_swaysock = Some(v.to_string());
+                            }
+                        }
+                    }
                 }
-                if found_display.is_some() && found_wayland.is_some() && found_xdg.is_some() {
+                if found_display.is_some()
+                    && found_wayland.is_some()
+                    && found_xdg.is_some()
+                    && found_desktop.is_some()
+                {
                     break;
                 }
             }
@@ -154,6 +204,26 @@ pub fn recover_display_env() {
                 "[vietc] Recovered WAYLAND_DISPLAY={} from /proc",
                 w
             ));
+        }
+    }
+    if std::env::var_os("XDG_CURRENT_DESKTOP").is_none() {
+        if let Some(ref d) = found_desktop {
+            std::env::set_var("XDG_CURRENT_DESKTOP", d);
+        }
+    }
+    if std::env::var_os("XDG_SESSION_TYPE").is_none() {
+        if let Some(ref s) = found_session_type {
+            std::env::set_var("XDG_SESSION_TYPE", s);
+        }
+    }
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        if let Some(ref h) = found_hyprland {
+            std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", h);
+        }
+    }
+    if std::env::var_os("SWAYSOCK").is_none() {
+        if let Some(ref s) = found_swaysock {
+            std::env::set_var("SWAYSOCK", s);
         }
     }
 

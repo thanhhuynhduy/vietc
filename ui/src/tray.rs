@@ -41,6 +41,20 @@ fn write_ipc_file(name: &str, value: &str) {
                 .mode(0o700)
                 .create(parent);
         }
+        let tmp_path = parent.join(format!(".{}.tray.tmp.{}", name, unsafe { libc::getpid() }));
+        let _ = std::fs::remove_file(&tmp_path);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp_path)
+        {
+            if f.write_all(value.as_bytes()).is_ok() && std::fs::rename(&tmp_path, &path).is_ok() {
+                return;
+            }
+        }
+        let _ = std::fs::remove_file(&tmp_path);
     }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)

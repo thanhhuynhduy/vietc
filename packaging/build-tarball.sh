@@ -7,11 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$PROJECT_ROOT/Cargo.toml" | head -1)
 
-PACKAGE_NAME="vietc_${VERSION}_linux_amd64"
+case "$(uname -m)" in
+    aarch64|arm64) TAR_ARCH="arm64" ;;
+    *) TAR_ARCH="amd64" ;;
+esac
+PACKAGE_NAME="vietc_${VERSION}_linux_${TAR_ARCH}"
 DIST_DIR="$PROJECT_ROOT/target/dist"
 STAGING="$DIST_DIR/$PACKAGE_NAME"
 
-echo "=== Building VietC release tarball v${VERSION} ==="
+echo "=== Building VietC release tarball v${VERSION} (${TAR_ARCH}) ==="
 
 echo "[1/4] Compiling components in release mode..."
 cargo build --release --manifest-path "$PROJECT_ROOT/Cargo.toml"

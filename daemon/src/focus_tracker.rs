@@ -52,7 +52,7 @@ fn observe_atspi_focus_with_path(
         None => format!("atspi:{application_identity}"),
     };
 
-    let mut focus = shared_focus.lock().unwrap();
+    let mut focus = shared_focus.lock().unwrap_or_else(|p| p.into_inner());
     let class = focus.class.clone();
     focus.observe(Some(identity), class);
 }
@@ -207,7 +207,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                 if !s_str.is_empty() && !p_str.is_empty() {
                     pending_focus
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|p| p.into_inner())
                         .push(PendingAtspiEvent::Focused(s_str, p_str));
                 }
             }
@@ -225,7 +225,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
             if !s_str.is_empty() && !p_str.is_empty() {
                 pending_sel
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|p| p.into_inner())
                     .push(PendingAtspiEvent::SelectionChanged(s_str, p_str));
             }
         }
@@ -235,8 +235,15 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
     let mut active_omnibox: Option<(String, String)> = None;
     log_info("[vietc] AT-SPI focus, password & omnibox selection watcher active");
     loop {
+        if crate::signal::SIGNAL_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
         connection.process(PROCESS_TIMEOUT)?;
-        let drained: Vec<PendingAtspiEvent> = pending.lock().unwrap().drain(..).collect();
+        let drained: Vec<PendingAtspiEvent> = pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .drain(..)
+            .collect();
         for ev in drained {
             match ev {
                 PendingAtspiEvent::Focused(sender, path) => {
@@ -252,7 +259,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                         let inline = query_has_inline_selection(&connection, &sender, &path);
                         shared_focus
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|p| p.into_inner())
                             .set_omnibox_inline_selection(inline);
                         active_omnibox = Some((sender, path));
                     } else {
@@ -268,7 +275,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                         let inline = query_has_inline_selection(&connection, &sender, &path);
                         shared_focus
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|p| p.into_inner())
                             .set_omnibox_inline_selection(inline);
                     }
                 }
@@ -279,6 +286,9 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
 
 pub fn spawn_atspi_focus_watcher(shared_focus: SharedFocusSnapshot) {
     thread::spawn(move || loop {
+        if crate::signal::SIGNAL_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         if let Err(error) = watch_once(shared_focus.clone()) {
             crate::password_detector::reset_atspi_focus_state();
             crate::focus::clear_omnibox_inline_selection(&shared_focus);

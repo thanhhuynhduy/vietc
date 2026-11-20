@@ -435,25 +435,9 @@ impl X11Injector {
     }
 
     fn write_external_clipboard(text: &str) -> bool {
-        use std::io::Write;
-
-        let mut child = match std::process::Command::new("xclip")
-            .args(["-selection", "clipboard", "-i"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(_) => return false,
-        };
-
-        let written = child
-            .stdin
-            .take()
-            .map(|mut stdin| stdin.write_all(text.as_bytes()).is_ok())
-            .unwrap_or(false);
-        written && child.wait().map(|status| status.success()).unwrap_or(false)
+        let mut cmd = std::process::Command::new("xclip");
+        cmd.args(["-selection", "clipboard", "-i"]);
+        crate::clipboard_command::run_copy(cmd, text.as_bytes(), SELECTION_REQUEST_TIMEOUT)
     }
 
     fn restore_clipboard_if_unchanged(&self) {

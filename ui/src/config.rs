@@ -211,7 +211,7 @@ fn config_paths() -> Vec<PathBuf> {
 }
 
 pub fn is_autostart_installed() -> bool {
-    if let Some(config_dir) = dirs::config_dir() {
+    if let Some(config_dir) = config_base_dir() {
         config_dir
             .join("autostart")
             .join("vietc-tray.desktop")
@@ -222,7 +222,7 @@ pub fn is_autostart_installed() -> bool {
 }
 
 pub fn uninstall_autostart() {
-    if let Some(config_dir) = dirs::config_dir() {
+    if let Some(config_dir) = config_base_dir() {
         let desktop_file = config_dir.join("autostart").join("vietc-tray.desktop");
         if desktop_file.exists() {
             let _ = fs::remove_file(desktop_file);
@@ -232,25 +232,23 @@ pub fn uninstall_autostart() {
 }
 
 pub fn install_autostart() {
-    if let Some(config_dir) = dirs::config_dir() {
+    if let Some(config_dir) = config_base_dir() {
         let autostart_dir = config_dir.join("autostart");
         let desktop_file = autostart_dir.join("vietc-tray.desktop");
         let _ = fs::create_dir_all(&autostart_dir);
 
-        let exec_path = std::env::var("APPIMAGE").ok().unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap_or_else(|_| PathBuf::from("vietc-tray"))
-                .to_string_lossy()
-                .into_owned()
-        });
+        let exec_path = std::env::current_exe()
+            .unwrap_or_else(|_| PathBuf::from("/usr/bin/vietc-tray"))
+            .to_string_lossy()
+            .into_owned();
 
         let content = format!(
             "[Desktop Entry]\n\
              Type=Application\n\
-             Name=Viet+\n\
+             Name=VietC\n\
              Comment=Vietnamese Input Method\n\
-             Exec={}\n\
-             Icon=input-keyboard\n\
+             Exec=\"{}\"\n\
+             Icon=vietc\n\
              Terminal=false\n\
              Categories=Utility;System;\n\
              X-GNOME-Autostart-enabled=true\n\

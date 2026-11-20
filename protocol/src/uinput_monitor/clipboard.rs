@@ -808,6 +808,9 @@ impl UinputInjector {
             return false;
         };
         cmd.args(args);
+        if !is_wayland {
+            return crate::clipboard_command::run_copy(cmd, s.as_bytes(), CLIPBOARD_READY_TIMEOUT);
+        }
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
@@ -818,17 +821,10 @@ impl UinputInjector {
                 if let Some(mut stdin) = child.stdin.take() {
                     let _ = stdin.write_all(s.as_bytes());
                 }
-                if is_wayland {
-                    // wl-copy may retain clipboard ownership after its launcher
-                    // exits. Reap asynchronously while readiness and restoration
-                    // are verified independently by bounded read-back polling.
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                    return true;
-                }
-                // X11: wait for xclip to finish writing
-                child.wait().map(|s| s.success()).unwrap_or(false)
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                true
             }
             Err(e) => {
                 eprintln!("[vietc] copy_to_clipboard: {} spawn failed: {}", prog, e);

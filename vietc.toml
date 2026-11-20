@@ -52,8 +52,17 @@ terminal_apps = [
     "st",
     "urxvt",
     "xterm",
+    "termite",
     "terminator",
     "tilix",
+    "deepin-terminal",
+    "pantheon-terminal",
+    "blackbox",
+    "contour",
+    "cool-retro-term",
+    "rio",
+    "warp",
+    "tabby",
 ]
 bypass_apps = [
     "steam",
@@ -89,7 +98,6 @@ terminal_input_method = "vni"
 
 [macros]
 bt = "biết"
-vs = "với"
 kc = "không có"
 dc = "được"
 ko = "không"

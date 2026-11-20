@@ -90,7 +90,7 @@ fn supervise_daemon(child: std::process::Child) {
 }
 
 fn launch_unprivileged(binary: &str) {
-    let _launch = LAUNCH_LOCK.lock().unwrap();
+    let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if !STOPPING.load(Ordering::SeqCst) {
         match std::process::Command::new(binary).spawn() {
             Ok(child) => supervise_daemon(child),
@@ -128,7 +128,7 @@ fn start_daemon() {
 
 pub fn stop_daemon() {
     STOPPING.store(true, Ordering::SeqCst);
-    let _launch = LAUNCH_LOCK.lock().unwrap();
+    let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let pid = DAEMON_PID.load(Ordering::SeqCst);
     // Only stop a daemon directly spawned by this tray process (`DAEMON_PID > 0`).
     // Never `pkill` a `vietc.service` instance managed by systemd.
@@ -157,11 +157,13 @@ fn ensure_single_instance(name: &str) {
         .filter(|dir| !dir.is_empty() && std::path::Path::new(dir).is_dir())
         .map(|dir| format!("{}/{}.lock", dir, name))
         .unwrap_or_else(|| format!("/tmp/{}-{}.lock", name, uid));
-    let path_c = std::ffi::CString::new(path).unwrap();
+    let Ok(path_c) = std::ffi::CString::new(path) else {
+        std::process::exit(1);
+    };
     let fd = unsafe {
         libc::open(
             path_c.as_ptr(),
-            libc::O_CREAT | libc::O_RDWR | libc::O_NOFOLLOW,
+            libc::O_CREAT | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0o600,
         )
     };

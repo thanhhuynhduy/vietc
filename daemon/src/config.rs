@@ -351,7 +351,7 @@ impl Default for Config {
             debug: false,
             log_file: None,
             log_level: None,
-            deduplicate_keys: true,
+            deduplicate_keys: false,
             deduplicate_two_back: false,
             deduplicate_window_ms: default_dedup_window_ms(),
         }

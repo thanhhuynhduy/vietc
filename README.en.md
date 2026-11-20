@@ -79,6 +79,10 @@ make lint
 make test-ci-smoke
 ```
 
+## Credits & Acknowledgments
+
+This project builds upon the original [**vietc**](https://github.com/vndangkhoa/vietc) project created by [**Võ Nguyễn Đăng Khoa (@vndangkhoa)**](https://github.com/vndangkhoa). Special thanks to the original author for laying the foundation for a native Linux Vietnamese input method.
+
 ## License
 
 Released under the [MIT License](LICENSE).

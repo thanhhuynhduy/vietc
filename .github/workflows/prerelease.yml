@@ -71,6 +71,7 @@ jobs:
             echo "source_branch=${GITHUB_REF_NAME}"
             echo "workflow_run=${GITHUB_RUN_ID}"
           } > dist/BUILD-METADATA
+          rm -f dist/SHA256SUMS
           (cd dist && sha256sum -- * > SHA256SUMS)
 
       - name: Generate release evidence
@@ -79,6 +80,7 @@ jobs:
           RELEASE_TAG: ${{ env.CANDIDATE_TAG }}
         run: |
           bash scripts/generate-release-evidence.sh dist/RELEASE-EVIDENCE.md
+          rm -f dist/SHA256SUMS
           (cd dist && sha256sum -- * > SHA256SUMS)
 
       - name: Upload candidate artifacts

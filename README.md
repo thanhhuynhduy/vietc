@@ -100,7 +100,7 @@ bypass_apps = ["steam", "dota", "csgo", "cs2", "minecraft", "remmina", "rustdesk
 [macros]
 ko = "không"
 dc = "được"
-vs = "với"
+bt = "biết"
 ```
 
 ---
@@ -126,6 +126,10 @@ make lint
 # Chạy toàn bộ bộ kiểm thử khói CI ở chế độ headless an toàn
 make test-ci-smoke
 ```
+
+## Ghi nhận & Tác giả gốc (Credits)
+
+Dự án được phát triển dựa trên nền tảng và cảm hứng từ dự án gốc [**vietc**](https://github.com/vndangkhoa/vietc) của tác giả [**Võ Nguyễn Đăng Khoa (@vndangkhoa)**](https://github.com/vndangkhoa). Xin gửi lời cảm ơn chân thành tới tác giả gốc vì những đóng góp đặt nền móng cho bộ gõ tiếng Việt trên Linux.
 
 ## Giấy phép
 

@@ -182,7 +182,7 @@ impl Engine {
             return String::new();
         }
         if self.uses_recomposition() {
-            crate::telex::resolve_and_render(raw)
+            match_casing(raw, &crate::telex::resolve_and_render(raw))
         } else {
             let mut tmp = BambooEngine::new(self.method);
             let mut replayed = String::new();
@@ -219,7 +219,10 @@ impl Engine {
             return self.raw_buffer.clone();
         }
         if self.uses_recomposition() {
-            crate::telex::resolve_and_render(&self.raw_buffer)
+            match_casing(
+                &self.raw_buffer,
+                &crate::telex::resolve_and_render(&self.raw_buffer),
+            )
         } else {
             match_casing(&self.raw_buffer, &self.bamboo.get_output())
         }
@@ -299,13 +302,17 @@ impl Engine {
     }
 
     pub fn recover_composition(&mut self) {
-        self.visible_revision = self.visible_revision.saturating_sub(1);
         if let Some(prev_len) = self.previous_screen_len.take() {
-            self.recovered_screen_len = Some(prev_len);
-        }
-        if self.last_transition == Some(TransitionKind::Commit) {
-            self.ring_buffer.clear();
-            self.pending_restore_undo = None;
+            self.visible_revision = self.visible_revision.saturating_sub(1);
+            if self.last_transition == Some(TransitionKind::Commit) {
+                self.recovered_screen_len = None;
+                self.ring_buffer.clear();
+                self.pending_restore_undo = None;
+            } else {
+                self.recovered_screen_len = Some(prev_len);
+            }
+        } else if self.last_transition != Some(TransitionKind::Recover) {
+            self.visible_revision = self.visible_revision.saturating_sub(1);
         }
         self.last_transition = Some(TransitionKind::Recover);
     }
@@ -831,10 +838,12 @@ impl Engine {
 
         if self.raw_buffer.chars().count() >= 64 {
             self.clear_word_only();
+            self.ring_buffer.clear();
             return None;
         }
 
         let previous = self.composed_tail();
+        let had_recovered_screen_len = self.recovered_screen_len.is_some();
         let prev_len = self
             .recovered_screen_len
             .take()
@@ -892,7 +901,10 @@ impl Engine {
         if self.bamboo.process_key(ch).is_some() {
             let expected = format!("{}{}", previous, ch);
             let cased = match_casing(&self.raw_buffer, &self.composed_tail());
-            if cased != expected || (self.active_transform.is_some() && cased != previous) {
+            if cased != expected
+                || had_recovered_screen_len
+                || (self.active_transform.is_some() && cased != previous)
+            {
                 if cased != previous {
                     if let Some((kind, trigger, policy)) =
                         active_telex_transform(&self.raw_buffer, ch, &cased)

@@ -63,9 +63,18 @@ pub fn run_stdin_mode(
     }
 
     let injector = create_injector(display)?;
-    injector.bind_focus_generation(shared_focus.lock().unwrap().generation_signal.clone());
+    injector.bind_focus_generation(
+        shared_focus
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .generation_signal
+            .clone(),
+    );
     let mut buffer = [0u8; 1];
-    let mut last_focus_generation = shared_focus.lock().unwrap().generation;
+    let mut last_focus_generation = shared_focus
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .generation;
 
     log_info("[vietc] Type to test, Ctrl+C to exit");
 
@@ -78,7 +87,10 @@ pub fn run_stdin_mode(
         }
 
         {
-            let generation = shared_focus.lock().unwrap().generation;
+            let generation = shared_focus
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .generation;
             if generation != last_focus_generation {
                 log_info(&format!(
                     "[vietc] Focus generation changed: {} -> {}",
@@ -93,7 +105,7 @@ pub fn run_stdin_mode(
         if daemon.config.app_state.enabled {
             let active_window = shared_focus
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|p| p.into_inner())
                 .identity
                 .clone()
                 .unwrap_or_default();

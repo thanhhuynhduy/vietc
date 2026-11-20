@@ -40,3 +40,14 @@
   - Allowed open digraph-coda prefix edits and `z`/`0` tone stripping on words rehydrated across `Space` (`dduowngf ` + `Backspace*2` + `sg` → `đướng`, `tieengs ` + `Backspace` + `z` → `tiêng`).
   - Preserved digit-prefixed Vietnamese words on `Space` (`9nhuw ` → `9như `) and bounded active composition at 64 characters.
 - **Tray/Daemon IPC & Supply-Chain Hardening (`ui/`, `daemon/src/main.rs`, `packaging/deb/build-deb.sh`, `.github/workflows/supply-chain.yml`):** Initialized `~/.config/vietc/method` on daemon boot, probed `vietc-daemon.lock` via `flock`, aligned `.deb` `postinst`/`postrm` ACL & `udevadm` cleanup with `install.sh`/`uninstall.sh`, and added `ui/Cargo.lock` to CI vulnerability/license/SBOM checks.
+- **Production Stability & Real-Time `evdev` Hardening (`daemon/`, `engine/`, `protocol/`, `ui/`, `packaging/`, `.github/workflows/`):**
+  - Guaranteed physical keyboard `EVIOCGRAB` release prior to `injector` teardown via `GrabReleaseGuard`, offloaded `notify-send` OSD spawning off the real-time `evdev_loop` thread, and eliminated all synchronous subprocess fallbacks on keystrokes.
+  - Enabled `O(1)` cached password detection on every key press (`value == 1`) so terminal `sudo`/`ssh`/`passwd` prompts are protected from the very first character, expanded `/proc/<pid>/task/*/children` BFS inspection to 512 processes, and redacted sensitive window titles from logs.
+  - Synchronized `match_casing` in `TelexBackend::Recomposition` (`composed_tail` / `compose_candidate`), cleared `ring_buffer` on 64-character buffer overflow, and preserved `recovered_screen_len` across VNI `ReplacementFailed` recovery.
+  - Added `O_CLOEXEC` to `vietc-tray.lock`, converted `write_ipc_file` in both `daemon` and `ui` to atomic temp-file-and-rename, bounded X11 clipboard copy waits via `clipboard_command::run_copy`, auto-detected `amd64`/`arm64` in packaging scripts, and fixed `SHA256SUMS` generation in release workflows.
+
+---
+
+### Credits
+
+Based on the original [**vietc**](https://github.com/vndangkhoa/vietc) project by [**Võ Nguyễn Đăng Khoa (@vndangkhoa)**](https://github.com/vndangkhoa).

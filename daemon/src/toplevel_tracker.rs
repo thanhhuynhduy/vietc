@@ -112,12 +112,15 @@ impl Tracker {
                 log_info(&format!(
                     "[vietc] toplevel activated: serial={serial} app_id={app_id:?}"
                 ));
-                let mut focus = self.focus.lock().unwrap();
+                let mut focus = self.focus.lock().unwrap_or_else(|p| p.into_inner());
                 focus.observe(Some(format!("toplevel:{serial}")), app_id);
                 focus.mark_class_from_compositor();
             }
             Publish::ClassOnly(app_id) => {
-                self.focus.lock().unwrap().set_class(app_id);
+                self.focus
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .set_class(app_id);
             }
         }
     }

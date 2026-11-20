@@ -867,15 +867,11 @@ impl AppStateManager {
 
         // Layer 3: Window title heuristic (for sudo prompts, browser dialogs)
         if self.check_window_title {
-            let title_opt = match crate::password_detector::cached_window_title() {
-                Some((_, cached)) => cached,
-                None => get_active_window_title(),
-            };
-            if let Some(title) = title_opt {
+            if let Some((_, Some(title))) = crate::password_detector::cached_window_title() {
                 for keyword in &self.title_keywords {
                     if title.contains(keyword.as_str()) {
                         self.is_password_field = true;
-                        log_password_detection("window-title", &title);
+                        log_password_detection("window-title", keyword);
                         return true;
                     }
                 }
@@ -883,8 +879,7 @@ impl AppStateManager {
         }
 
         // Layer 4: Process-based detection (for terminal sudo/passwd prompts)
-        let is_sudo = crate::password_detector::cached_window_is_sudo()
-            .unwrap_or_else(|| get_active_window_pid().is_some_and(is_sudo_process));
+        let is_sudo = crate::password_detector::cached_window_is_sudo().unwrap_or(false);
         if is_sudo {
             self.is_password_field = true;
             log_password_detection("process-sudo", &self.current_app);
@@ -977,12 +972,24 @@ impl AppStateManager {
     /// Save overrides to config file
     #[allow(dead_code)]
     pub fn save_overrides(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         let path = override_path();
         let content = toml::to_string(&self.overrides)?;
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+            let _ = fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent);
         }
-        fs::write(&path, content)?;
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)?;
+        f.write_all(content.as_bytes())?;
         Ok(())
     }
 
@@ -1047,7 +1054,7 @@ fn is_sudo_process(pid: u32) -> bool {
     let daemon_ancestors = get_ancestor_pids(daemon_pid);
     let mut queue = vec![pid];
     let mut index = 0;
-    while index < queue.len() && queue.len() < 128 {
+    while index < queue.len() && queue.len() < 512 {
         let cur = queue[index];
         index += 1;
         if cur != pid && !daemon_ancestors.contains(&cur) {
@@ -1060,13 +1067,19 @@ fn is_sudo_process(pid: u32) -> bool {
                 }
             }
         }
-        if let Ok(children) = std::fs::read_to_string(format!("/proc/{cur}/task/{cur}/children")) {
-            for child in children
-                .split_whitespace()
-                .filter_map(|s| s.parse::<u32>().ok())
-            {
-                if child > 0 && !queue.contains(&child) {
-                    queue.push(child);
+        let task_dir = format!("/proc/{cur}/task");
+        if let Ok(tasks) = std::fs::read_dir(&task_dir) {
+            for task_entry in tasks.flatten() {
+                let children_path = task_entry.path().join("children");
+                if let Ok(children) = std::fs::read_to_string(children_path) {
+                    for child in children
+                        .split_whitespace()
+                        .filter_map(|s| s.parse::<u32>().ok())
+                    {
+                        if child > 0 && !queue.contains(&child) {
+                            queue.push(child);
+                        }
+                    }
                 }
             }
         }

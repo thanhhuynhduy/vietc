@@ -405,10 +405,42 @@ fn qa_audit_tone_overwrite_undo_rehydrated_prefix_digit_space_and_buffer_bound()
         Some(vietc_engine::TransformKind::Tone('s'))
     );
 
-    // 5. Unbounded key hold (>64 chars) is bounded in O(1) without freeze or panic
+    // 5. Unbounded key hold (>64 chars) is bounded in O(1) without freeze or panic,
+    // and pressing Backspace at char 65+ does not rehydrate an earlier committed word.
     let mut engine6 = Engine::new(InputMethod::Telex);
-    for _ in 0..200 {
-        let _ = engine6.process_key('a');
+    let mut screen6 = String::new();
+    for ch in "xin ".chars() {
+        type_key(&mut engine6, &mut screen6, ch);
+    }
+    for _ in 0..65 {
+        type_key(&mut engine6, &mut screen6, 'k');
     }
     assert!(engine6.buffer().chars().count() <= 64);
+    type_key(&mut engine6, &mut screen6, '\x08');
+    assert_eq!(engine6.buffer(), "");
+    assert_eq!(screen6.len(), 4 + 64);
+
+    // 6. Accidental interior Shift on Vietnamese syllable ("vIeetj" -> "việt") keeps buffer() and screen identical
+    let mut engine7 = Engine::new(InputMethod::Telex);
+    let mut screen7 = String::new();
+    for ch in "vIeetj".chars() {
+        type_key(&mut engine7, &mut screen7, ch);
+    }
+    assert_eq!(screen7, "việt");
+    assert_eq!(engine7.buffer(), "việt");
+
+    // 7. VNI ReplacementFailed recovery preserves recovered_screen_len on next non-trigger key
+    let mut engine8 = Engine::new(InputMethod::Vni);
+    assert_eq!(engine8.process_key('a'), None);
+    let rep1 = engine8.process_key('1');
+    assert!(matches!(rep1, Some(EngineEvent::Replace(_))));
+    engine8.recover_composition();
+    let rep2 = engine8.process_key('n');
+    match rep2 {
+        Some(EngineEvent::Replace(rep)) => {
+            assert_eq!(rep.delete_before_cursor, 1);
+            assert_eq!(rep.insert, "án");
+        }
+        other => panic!("expected Replace(1, \"án\"), got {other:?}"),
+    }
 }

@@ -401,7 +401,11 @@ impl KeyInjector for UinputInjector {
     }
 
     fn bind_focus_generation(&self, generation: Arc<AtomicU64>) -> InjectResult {
-        *self.clip.focus_generation.lock().unwrap() = Some(generation);
+        *self
+            .clip
+            .focus_generation
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(generation);
         InjectResult::Success
     }
 
@@ -417,12 +421,15 @@ impl KeyInjector for UinputInjector {
             .store(false, Ordering::Release);
         #[cfg(feature = "wayland-protocol")]
         {
-            let mut uncertain = self.uncertain_focus.lock().unwrap();
+            let mut uncertain = self
+                .uncertain_focus
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             if uncertain.is_some_and(|previous| previous != focus_generation) {
                 *uncertain = None;
             }
         }
-        let mut state = self.clip.inner.lock().unwrap();
+        let mut state = self.clip.inner.lock().unwrap_or_else(|p| p.into_inner());
         if state.burst.cancel_for_focus_change(focus_generation) {
             state.restore_due = None;
             trace_clipboard(
@@ -456,7 +463,7 @@ impl KeyInjector for UinputInjector {
     }
 
     fn set_active_window(&self, window_class: &str) -> InjectResult {
-        let mut st = self.clip.inner.lock().unwrap();
+        let mut st = self.clip.inner.lock().unwrap_or_else(|p| p.into_inner());
         st.active_window = window_class.to_lowercase();
         InjectResult::Success
     }
@@ -505,7 +512,7 @@ impl UinputInjector {
         self.clip
             .focus_generation
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map_or(0, |generation| generation.load(Ordering::Acquire))
     }

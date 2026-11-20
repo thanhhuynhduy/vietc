@@ -30,11 +30,11 @@ echo -e "${YELLOW}[3/5] Cloning and building...${NC}"
 if [ ! -d vietc ]; then
   git clone https://github.com/thanhhuynhduy/vietc.git
 fi
-cd vietc && cargo build --release
+cd vietc
 
-# 4. Install
+# 4. Install from source
 echo -e "${YELLOW}[4/5] Installing...${NC}"
-sudo ./install.sh
+sudo bash ./install.sh --from-source
 
 # 5. Done
 echo -e "${YELLOW}[5/5] Setup complete!${NC}"
@@ -73,7 +73,7 @@ echo "  ba5n        -> bạn"
 echo "  to6i te6n la2 Khoa3 -> tôi tên là Khỏa"
 echo "  d9o7i       -> đời"
 echo ""
-echo "Telex (Ctrl+LeftShift to switch):"
+echo "Telex (Ctrl+Space to switch):"
 echo "  chaof       -> chào"
 echo "  banj        -> bạn"
 echo "  tooi teen laf Khoar -> tôi tên là Khỏa"
@@ -82,4 +82,4 @@ echo ""
 echo "Macros:"
 echo "  ko[space]   -> không"
 echo "  dc[space]   -> được"
-echo "  vs[space]   -> với"
+echo "  bt[space]   -> biết"

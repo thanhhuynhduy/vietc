@@ -114,7 +114,11 @@ if [ -n "$INSTALLING_USER" ] && [ -n "$U_UID" ]; then
         systemctl --user disable vietc.service vietc-tray.service 2>/dev/null || true
 fi
 
-# Kill all running processes
+# Gracefully stop all running processes first so evdev devices are cleanly ungrabbed
+pkill -TERM -x vietc 2>/dev/null || true
+pkill -TERM -x vietc-daemon 2>/dev/null || true
+pkill -TERM -x vietc-tray 2>/dev/null || true
+sleep 0.2
 pkill -9 -x vietc 2>/dev/null || true
 pkill -9 -x vietc-daemon 2>/dev/null || true
 pkill -9 -x vietc-tray 2>/dev/null || true
@@ -146,15 +150,18 @@ if [ -n "$USER_HOME" ]; then
 fi
 
 # Remove systemd service files
-rm -f /usr/lib/systemd/user/vietc.service /usr/lib/systemd/user/vietc-tray.service
+rm -f /usr/lib/systemd/user/vietc.service /usr/lib/systemd/user/vietc-tray.service \
+      /usr/lib/systemd/user/graphical-session.target.wants/vietc.service
 rm -f /etc/systemd/user/vietc.service /etc/systemd/user/vietc-tray.service
 if [ -n "$USER_HOME" ]; then
-    rm -f "$USER_HOME/.config/systemd/user/vietc.service" "$USER_HOME/.config/systemd/user/vietc-tray.service"
+    rm -f "$USER_HOME/.config/systemd/user/vietc.service" \
+          "$USER_HOME/.config/systemd/user/vietc-tray.service" \
+          "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service"
 fi
 
 # Remove udev rules and kernel module load drop-in
 rm -f /etc/udev/rules.d/70-vietc.rules /etc/udev/rules.d/99-vietc.rules /etc/udev/rules.d/99-uinput.rules
-rm -f /etc/modules-load.d/vietc.conf /etc/default/vietc
+rm -f /etc/modules-load.d/vietc.conf /usr/lib/modules-load.d/vietc.conf /etc/default/vietc
 
 # Remove legacy component XML if present from older versions
 rm -f /usr/share/ibus/component/vietc.xml
@@ -167,16 +174,19 @@ gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 # Remove user configs, user autostart & icons
 rm -rf /etc/vietc
 if [ -n "$USER_HOME" ]; then
-    rm -rf "$USER_HOME/.config/vietc"
+    rm -rf "$USER_HOME/.config/vietc" "$USER_HOME/.local/state/vietc"
     rm -f "$USER_HOME/.config/autostart/vietc*.desktop"
     rm -f "$USER_HOME/.local/share/icons/vietc*.svg"
     rm -f "$USER_HOME/.local/share/icons/hicolor/*/apps/vietc*.svg"
 fi
 
 # Clean up status, lock, and socket files
-rm -f /tmp/vietc* /tmp/vietc-status*
 if [ -n "$U_UID" ]; then
-    rm -f "/run/user/$U_UID/vietc-daemon.lock"
+    rm -f "/tmp/vietc-daemon-$U_UID.lock" "/tmp/vietc-tray-$U_UID.lock" \
+          "/tmp/vietc-status-$U_UID" "/tmp/vietc-method-$U_UID" \
+          "/tmp/vietc-$U_UID.log" "/tmp/vietc-$U_UID.log.old"
+    rm -f "/run/user/$U_UID/vietc-daemon.lock" "/run/user/$U_UID/vietc-tray.lock"
+    rm -rf "/run/user/$U_UID/vietc"
 fi
 
 # Revoke legacy world and named-user access before restoring distro policy.

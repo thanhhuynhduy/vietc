@@ -286,6 +286,19 @@ pub fn run_with_evdev(
         }
     }
 
+    struct GrabReleaseGuard<'a> {
+        devices: &'a mut Vec<(evdev::Device, String)>,
+    }
+    impl<'a> Drop for GrabReleaseGuard<'a> {
+        fn drop(&mut self) {
+            for (dev, _name) in self.devices.iter_mut() {
+                let _ = dev.ungrab();
+            }
+        }
+    }
+    let grab_guard = GrabReleaseGuard { devices };
+    let devices = &mut *grab_guard.devices;
+
     let mut dedup = crate::key_dedup::DedupState::new();
     let initial_focus = shared_focus
         .lock()
@@ -295,7 +308,7 @@ pub fn run_with_evdev(
     let mut last_focus_target = initial_focus.target;
     let mut last_window_class = String::new();
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
-    let mut password_check_counter: u32 = 0;
+    let mut hotplug_poll_ticks: u32 = 0;
     let mut last_key_time = std::time::Instant::now();
 
     log_info("[vietc] Event loop started");
@@ -355,22 +368,26 @@ pub fn run_with_evdev(
 
         if poll_ret == 0 {
             sync_app_class(daemon, &*injector, &shared_focus, &mut last_window_class);
-            // Hotplug: dynamically attach keyboards connected after startup
-            let new_devs = discover_new_keyboards(&known_paths, &mut known_phys_ids);
-            for (mut dev, name) in new_devs {
-                known_paths.insert(dev_path_of(&name));
-                let grabbed = daemon.grab_enabled && dev.grab().is_ok();
-                if grabbed {
-                    log_info(&format!("[vietc] Hotplug grabbed keyboard: {}", name));
+            // Hotplug: scan /dev/input every 2 seconds (20 * 100ms idle ticks) instead of 10 Hz
+            hotplug_poll_ticks += 1;
+            if hotplug_poll_ticks >= 20 {
+                hotplug_poll_ticks = 0;
+                let new_devs = discover_new_keyboards(&known_paths, &mut known_phys_ids);
+                for (mut dev, name) in new_devs {
+                    known_paths.insert(dev_path_of(&name));
+                    let grabbed = daemon.grab_enabled && dev.grab().is_ok();
+                    if grabbed {
+                        log_info(&format!("[vietc] Hotplug grabbed keyboard: {}", name));
+                    }
+                    let caps = is_caps_lock_on(&dev);
+                    if caps != global_caps_lock {
+                        global_caps_lock = caps;
+                        injector.set_caps_lock(global_caps_lock);
+                    }
+                    log_info(&format!("[vietc] Hotplug connected keyboard: {}", name));
+                    devices.push((dev, name.clone()));
+                    device_states.push(KeyboardState::new(caps, grabbed));
                 }
-                let caps = is_caps_lock_on(&dev);
-                if caps != global_caps_lock {
-                    global_caps_lock = caps;
-                    injector.set_caps_lock(global_caps_lock);
-                }
-                log_info(&format!("[vietc] Hotplug connected keyboard: {}", name));
-                devices.push((dev, name.clone()));
-                device_states.push(KeyboardState::new(caps, grabbed));
             }
             continue;
         }
@@ -526,6 +543,7 @@ pub fn run_with_evdev(
                 // BEFORE checking !daemon.engine.is_enabled() or Backspace, so that:
                 // 1) Backspace after a focus switch does not delete characters in the new field (A14)
                 // 2) Leaving a password field in the same window re-enables the engine (A07)
+                // 3) Entering a terminal sudo/ssh/passwd prompt disables the engine on the very 1st keystroke
                 if value == 1 {
                     let gap = last_key_time.elapsed();
                     last_key_time = std::time::Instant::now();
@@ -567,34 +585,10 @@ pub fn run_with_evdev(
                                 .class
                                 .clone()
                                 .unwrap_or_default();
-                            let class = if class.is_empty() {
-                                crate::app_state::get_focused_window_class().unwrap_or_default()
-                            } else {
-                                class
-                            };
                             injector.set_active_window(&class);
                             daemon.check_app_change_with(class);
                             injector.set_terminal_app(daemon.app_state.is_terminal_app());
                             injector.set_bypass_mode(daemon.is_current_app_bypassed());
-                        }
-
-                        if daemon.config.password_detection.enabled {
-                            let is_pw = daemon.app_state.check_password_field();
-                            let currently_enabled = daemon.engine.is_enabled();
-                            if is_pw && currently_enabled {
-                                daemon.engine.set_enabled(false);
-                                daemon.engine.reset();
-                                daemon.replay_reset();
-                                daemon.write_status();
-                            } else if !is_pw
-                                && !currently_enabled
-                                && daemon.app_state.get_default_state()
-                            {
-                                daemon.engine.set_enabled(true);
-                                daemon.engine.reset();
-                                daemon.replay_reset();
-                                daemon.write_status();
-                            }
                         }
                     } else if daemon.config.app_state.enabled {
                         let class = shared_focus
@@ -615,28 +609,21 @@ pub fn run_with_evdev(
                     }
 
                     if daemon.config.password_detection.enabled {
-                        password_check_counter += 1;
-                        if password_check_counter >= 30 {
-                            password_check_counter = 0;
-                            let is_pw = daemon.app_state.check_password_field();
-                            let currently_enabled = daemon.engine.is_enabled();
-                            if is_pw && currently_enabled {
-                                daemon.engine.set_enabled(false);
-                                daemon.engine.reset();
-                                daemon.replay_reset();
-                                daemon.write_status();
-                                log_info(
-                                    "[vietc] Password field detected (periodic) — engine disabled",
-                                );
-                            } else if !is_pw
-                                && !currently_enabled
-                                && daemon.app_state.get_default_state()
-                            {
-                                daemon.engine.set_enabled(true);
-                                daemon.engine.reset();
-                                daemon.replay_reset();
-                                daemon.write_status();
-                            }
+                        let is_pw = daemon.app_state.check_password_field();
+                        let currently_enabled = daemon.engine.is_enabled();
+                        if is_pw && currently_enabled {
+                            daemon.engine.set_enabled(false);
+                            daemon.engine.reset();
+                            daemon.replay_reset();
+                            daemon.write_status();
+                        } else if !is_pw
+                            && !currently_enabled
+                            && daemon.app_state.get_default_state()
+                        {
+                            daemon.engine.set_enabled(true);
+                            daemon.engine.reset();
+                            daemon.replay_reset();
+                            daemon.write_status();
                         }
                     }
                 }

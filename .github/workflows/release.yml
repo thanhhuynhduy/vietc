@@ -51,6 +51,13 @@ jobs:
       - name: Run headless CI smoke suite
         run: make test-ci-smoke CARGO_FLAGS=--locked
 
+      - name: Verify tag matches Cargo.toml and ui/Cargo.toml version
+        run: |
+          EXPECTED="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          UI_EXPECTED="v$(sed -n 's/^version = "\(.*\)"/\1/p' ui/Cargo.toml | head -1)"
+          test "${GITHUB_REF_NAME}" = "${EXPECTED}"
+          test "${GITHUB_REF_NAME}" = "${UI_EXPECTED}"
+
       - name: Build release artifacts
         run: make release
 
@@ -74,8 +81,10 @@ jobs:
           RELEASE_CHANNEL: stable
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          rm -f dist/SHA256SUMS
           (cd dist && sha256sum -- * > SHA256SUMS)
           bash scripts/generate-release-evidence.sh dist/RELEASE-EVIDENCE.md
+          rm -f dist/SHA256SUMS
           (cd dist && sha256sum -- * > SHA256SUMS)
 
       - name: Publish GitHub release

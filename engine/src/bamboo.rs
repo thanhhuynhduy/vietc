@@ -536,14 +536,6 @@ impl BambooEngine {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn debug_composition(&self) -> Vec<(char, Option<char>, Option<char>)> {
-        self.composition
-            .iter()
-            .map(|t| (t.base_char, t.mark_applied, t.tone_applied))
-            .collect()
-    }
-
     pub fn get_output(&self) -> String {
         self.flatten()
     }

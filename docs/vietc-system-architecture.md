@@ -107,7 +107,7 @@ Hệ thống VietC được module hóa nghiêm ngặt thành các crate độc 
 1. [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine): Thuần túy tính toán logic tiếng Việt, không chứa bất kỳ lời gọi hệ thống hay giao thức I/O nào. Có thể chạy độc lập trong môi trường WebAssembly hoặc Unit Test.
 2. [`vietc-daemon`](file:///home/thanhhd/Git-projects/vietc/daemon): Tiến trình chạy nền (daemon service), điều phối việc bắt phím phần cứng `evdev`, đồng bộ tiêu điểm AT-SPI, bảo vệ mật khẩu và điều khiển State Machine.
 3. [`vietc-protocol`](file:///home/thanhhd/Git-projects/vietc/protocol): Tầng trừu tượng hóa giao thức xuất phím, chứa bộ nạp Wayland Virtual Keyboard, cấu hình Keymap XKB 8 cấp độ và Linux Uinput.
-4. [`vietc-ui`](file:///home/thanhhd/Git-projects/vietc/ui): Giao diện khay hệ thống (System Tray `ksni`), giao tiếp hai chiều với daemon qua tệp trạng thái IPC nguyên tử `~/.config/vietc/status` (`vn`/`en`) và `~/.config/vietc/method` (`telex`/`vni`) kết hợp `inotify`.
+4. [`vietc-tray`](file:///home/thanhhd/Git-projects/vietc/ui) (`ui/`): Giao diện khay hệ thống (System Tray `ksni`), giao tiếp hai chiều với daemon qua tệp trạng thái IPC nguyên tử `~/.config/vietc/status` (`vn`/`en`) và `~/.config/vietc/method` (`telex`/`vni`) kết hợp `inotify`.
 5. [`vietc-cli`](file:///home/thanhhd/Git-projects/vietc/cli): Công cụ dòng lệnh (Interactive REPL Test Harness) kiểm thử trực tiếp máy trạng thái [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine).
 
 ---
@@ -234,12 +234,13 @@ Vị trí mã nguồn: [`engine/src/ring_buffer.rs`](file:///home/thanhhd/Git-pr
          │             Phím xóa Backspace            │               Phát sự kiện         │
          └───────────────────────────────────────────┴────────────────────────────────────┘
 ```
-- Khi ở trạng thái `COMPOSING`, mỗi phím biến đổi dấu sẽ sinh ra một cấu trúc:
+- Khi ở trạng thái `COMPOSING`, mỗi phím biến đổi dấu sẽ sinh ra một cấu trúc [`Replacement`](file:///home/thanhhd/Git-projects/vietc/engine/src/event.rs#L17-L23):
   ```rust
   pub struct Replacement {
-      pub delete_before_cursor: usize, // Số ký tự cần xóa lùi
+      pub delete_before_cursor: usize, // Số ký tự Unicode scalar cần xóa lùi
       pub insert: String,              // Chuỗi ký tự mới cần chèn vào
-      pub cursor_offset: isize,        // Vị trí con trỏ sau chèn
+      pub reason: ReplacementReason,   // Lý do biến đổi (ApplyTransform, ReplaceTransform, UndoTransform, AutoRestore, Macro, Edit)
+      pub revision: u64,               // Phiên bản hiển thị đơn điệu
   }
   ```
 
@@ -346,6 +347,8 @@ Bất kỳ lập trình viên nào khi chỉnh sửa mã nguồn VietC đều ph
 - Để tránh việc mã nguồn phình to mất kiểm soát dẫn đến code bẩn khó bảo trì, hệ thống duy trì công cụ kiểm tra tự động `scripts/check_source_size.py`:
   - [`daemon/src/app_state.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/app_state.rs) $\le$ 1,239 dòng.
   - [`daemon/src/evdev_loop.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/evdev_loop.rs) $\le$ 1,402 dòng.
+  - [`protocol/src/uinput_monitor/clipboard.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/uinput_monitor/clipboard.rs) $\le$ 1,229 dòng.
+  - [`protocol/src/wayland_clipboard.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/wayland_clipboard.rs) $\le$ 1,791 dòng.
   - Mọi module/file Rust khác $\le$ 1,000 dòng.
 - Khi cần bổ sung logic phức tạp, phải tách module chức năng độc lập thay vì nhồi nhét vào các file điều phối chính.
 
@@ -365,21 +368,21 @@ Chạy lần lượt các lệnh sau từ thư mục gốc của repository:
 # 1. Kiểm tra giới hạn kích thước dòng code
 python3 scripts/check_source_size.py
 
-# 2. Kiểm tra định dạng chuẩn Rust
-cargo fmt --check
+# 2. Kiểm tra định dạng chuẩn Rust (cho cả workspace và ui/)
+cargo fmt --all -- --check
+cargo fmt --manifest-path ui/Cargo.toml --all -- --check
 
 # 3. Kiểm tra cảnh báo linter Clippy nghiêm ngặt
-cargo clippy --all-targets -- -D warnings
+make lint
 ```
-Yêu cầu: Cả 3 lệnh phải trả về exit code `0` mà không có bất kỳ warning hay violation nào.
+Yêu cầu: Toàn bộ lệnh phải trả về exit code `0` mà không có bất kỳ warning hay violation nào.
 
 ### 7.2. Kiểm thử Tách biệt Môi trường Đồ họa (Headless Sandbox Testing)
-Để ngăn các test case mở kết nối tới Wayland/X11 thật của máy phát triển gây nhiễu, bắt buộc phải unset toàn bộ biến môi trường đồ họa:
+Để ngăn các test case mở kết nối tới Wayland/X11 thật của máy phát triển gây nhiễu, bắt buộc phải chạy bộ kiểm thử khói CI ở chế độ headless:
 ```bash
-env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY \
-  cargo test --workspace
+make test-ci-smoke
 ```
-Yêu cầu: Toàn bộ Unit Test và Integration Test của tất cả các crate (`vietc-engine`, `vietc-protocol`, `vietc-daemon`) phải vượt qua 100%.
+Yêu cầu: Toàn bộ Unit Test, Property Test và Deterministic Integration Test của tất cả các crate (`vietc-engine`, `vietc-protocol`, `vietc-daemon`, `vietc-cli`, `vietc-tray`) phải vượt qua 100%.
 
 ### 7.3. Kịch bản Kiểm thử Áp lực Người dùng Văn phòng (Office Stress Test Suite)
 Bộ test case giả lập hành vi gõ thực tế của người dùng văn phòng với tốc độ cao và sửa lỗi liên tục:
@@ -394,8 +397,9 @@ Bộ test case giả lập hành vi gõ thực tế của người dùng văn ph
    - Chuỗi gõ: `open windows ` $\rightarrow$ Kết quả: `open windows ` (Không bị thành `ưindoưs`).
    - Chuỗi gõ: `git push origin main ` $\rightarrow$ Kết quả: `git push origin main ` (Không bị thành `púh`).
 4. **Kịch bản Sửa Lỗi Typo và Xóa Lùi (Backspace Cascade):**
-   - Gõ `vieetj`, nhấn Backspace 1 lần $\rightarrow$ `việt` biến thành `việ`, gõ tiếp `c` $\rightarrow$ `việc`.
+   - Gõ `vieetj`, nhấn Backspace 1 lần $\rightarrow$ `việt` biến thành `viêt` (lưu ứng viên gốc `việ`), gõ tiếp `c` $\rightarrow$ `việc`.
    - Gõ từ hoàn chỉnh, gõ Space, nhấn Backspace xóa Space, gõ tiếp ký tự $\rightarrow$ Chữ cái được nối mượt mà hoặc bắt đầu từ mới độc lập mà không làm hỏng dữ liệu hiển thị.
 
 ---
+*Dự án kế thừa và phát triển trên nền tảng dự án gốc [vietc](https://github.com/vndangkhoa/vietc) của tác giả Võ Nguyễn Đăng Khoa (@vndangkhoa).*
 *(Hết tài liệu kiến trúc hệ thống VietC)*

@@ -110,16 +110,6 @@ pub fn log_trace(msg: &str) {
     tracing::trace!("{msg}");
 }
 
-#[allow(dead_code)]
-pub fn log_warn(msg: &str) {
-    tracing::warn!("{msg}");
-}
-
-#[allow(dead_code)]
-pub fn log_error(msg: &str) {
-    tracing::error!("{msg}");
-}
-
 pub fn is_debug_active(config_debug: bool) -> bool {
     config_debug || tracing::enabled!(tracing::Level::DEBUG)
 }

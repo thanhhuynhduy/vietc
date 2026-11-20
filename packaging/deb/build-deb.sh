@@ -6,10 +6,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULT_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$PROJECT_ROOT/Cargo.toml" | head -1)
 VERSION="${1:-$DEFAULT_VERSION}"
-PACKAGE="vietc_${VERSION}-1_amd64"
+if command -v dpkg >/dev/null 2>&1; then
+    DEB_ARCH="$(dpkg --print-architecture)"
+else
+    case "$(uname -m)" in
+        aarch64|arm64) DEB_ARCH="arm64" ;;
+        *) DEB_ARCH="amd64" ;;
+    esac
+fi
+PACKAGE="vietc_${VERSION}-1_${DEB_ARCH}"
 STAGING="$SCRIPT_DIR/$PACKAGE"
 
-echo "=== Building VietC .deb package v${VERSION} ==="
+echo "=== Building VietC .deb package v${VERSION} (${DEB_ARCH}) ==="
 
 echo "[1/5] Building binaries..."
 cargo build --release --manifest-path "$PROJECT_ROOT/Cargo.toml"
@@ -78,7 +86,7 @@ Package: vietc
 Version: VERSION_PLACEHOLDER
 Section: utils
 Priority: optional
-Architecture: amd64
+Architecture: ARCH_PLACEHOLDER
 Depends: libc6 (>= 2.31), libevdev2 (>= 1.9.0), libdbus-1-3, libwayland-client0 (>= 1.20), libx11-6, libxtst6
 Recommends: wl-clipboard, xclip, wtype, libnotify-bin
 Homepage: https://github.com/thanhhuynhduy/vietc
@@ -89,6 +97,7 @@ Description: VietC — Pure evdev/uinput Vietnamese Input Method for Linux
  Uses systemd-logind uaccess ACLs for rootless active-seat evdev/uinput.
 CONTROL
 sed -i "s/VERSION_PLACEHOLDER/$VERSION/" "$STAGING/DEBIAN/control"
+sed -i "s/ARCH_PLACEHOLDER/$DEB_ARCH/" "$STAGING/DEBIAN/control"
 
 echo "/etc/vietc/config.toml" > "$STAGING/DEBIAN/conffiles"
 
@@ -138,6 +147,9 @@ cat > "$STAGING/DEBIAN/prerm" << 'PRERM'
 set -e
 case "$1" in
   remove|upgrade|deconfigure)
+    pkill -TERM -x vietc-tray 2>/dev/null || true
+    pkill -TERM -x vietc-daemon 2>/dev/null || true
+    pkill -TERM -x vietc 2>/dev/null || true
     if command -v systemctl >/dev/null 2>&1; then
       systemctl --global daemon-reload >/dev/null 2>&1 || true
     fi
@@ -169,7 +181,7 @@ POSTRM
 chmod 755 "$STAGING/DEBIAN/postrm"
 
 echo "[5/5] Building .deb package..."
-fakeroot dpkg-deb --build "$STAGING" "$SCRIPT_DIR/vietc_${VERSION}-1_amd64.deb"
+fakeroot dpkg-deb --build "$STAGING" "$SCRIPT_DIR/vietc_${VERSION}-1_${DEB_ARCH}.deb"
 rm -rf "$STAGING"
 echo ""
-echo "=== Package built: packaging/deb/vietc_${VERSION}-1_amd64.deb ==="
+echo "=== Package built: packaging/deb/vietc_${VERSION}-1_${DEB_ARCH}.deb ==="
