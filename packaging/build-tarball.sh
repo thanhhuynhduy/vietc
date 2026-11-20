@@ -18,8 +18,8 @@ STAGING="$DIST_DIR/$PACKAGE_NAME"
 echo "=== Building VietC release tarball v${VERSION} (${TAR_ARCH}) ==="
 
 echo "[1/4] Compiling components in release mode..."
-cargo build --release --manifest-path "$PROJECT_ROOT/Cargo.toml"
-(cd "$PROJECT_ROOT/ui" && cargo build --release)
+cargo build --release --locked --manifest-path "$PROJECT_ROOT/Cargo.toml"
+(cd "$PROJECT_ROOT/ui" && cargo build --release --locked)
 
 echo "[2/4] Assembling package structure..."
 rm -rf "$DIST_DIR"

@@ -109,6 +109,7 @@ impl Tracker {
         match action {
             Publish::Nothing => {}
             Publish::NewWindow { serial, app_id } => {
+                crate::password_detector::clear_atspi_password_flag();
                 log_info(&format!(
                     "[vietc] toplevel activated: serial={serial} app_id={app_id:?}"
                 ));

@@ -48,8 +48,10 @@ Log out and log back in once after initial installation so `systemd-logind` appl
 
 ```bash
 make deb
-sudo apt install ./packaging/deb/vietc_0.2.0-1_amd64.deb
+sudo apt install ./packaging/deb/vietc_*.deb
 ```
+
+*(You can also install offline from an extracted release tarball via `sudo bash ./install.sh`, or pass `--prebuilt` to download and verify the latest release against `SHA256SUMS`.)*
 
 ### Uninstall
 

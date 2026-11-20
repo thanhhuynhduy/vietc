@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Viet+ — Linux Mint / Ubuntu test VM setup script
+# VietC — Linux Mint / Ubuntu test VM setup script
 # Usage: curl -fsSL <url> | bash
 #   or: bash scripts/setup-test-vm.sh
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
-echo -e "${GREEN}=== Viet+ Test VM Setup ===${NC}"
+echo -e "${GREEN}=== VietC Test VM Setup ===${NC}"
 
 # 1. Install system deps
 echo -e "${YELLOW}[1/5] Installing system dependencies...${NC}"
@@ -71,13 +71,13 @@ echo "Terminal typing (VNI mode auto-enabled in terminals):"
 echo "  cha2o       -> chào"
 echo "  ba5n        -> bạn"
 echo "  to6i te6n la2 Khoa3 -> tôi tên là Khỏa"
-echo "  d9o7i       -> đời"
+echo "  d9o72i      -> đời"
 echo ""
 echo "Telex (Ctrl+Space to switch):"
 echo "  chaof       -> chào"
 echo "  banj        -> bạn"
 echo "  tooi teen laf Khoar -> tôi tên là Khỏa"
-echo "  ddoi        -> đời"
+echo "  ddowif      -> đời"
 echo ""
 echo "Macros:"
 echo "  ko[space]   -> không"

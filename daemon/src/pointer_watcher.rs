@@ -63,13 +63,13 @@ pub fn spawn_pointer_watcher() -> Arc<AtomicU64> {
     std::thread::spawn(move || {
         let mut open_paths: HashSet<std::path::PathBuf> = HashSet::new();
         let mut devices: Vec<(std::path::PathBuf, evdev::Device)> = Vec::new();
-        let mut last_scan = Instant::now() - RESCAN_INTERVAL;
+        let mut last_scan: Option<Instant> = None;
         loop {
             if crate::signal::SIGNAL_EXIT.load(Ordering::SeqCst) {
                 break;
             }
-            if last_scan.elapsed() >= RESCAN_INTERVAL {
-                last_scan = Instant::now();
+            if last_scan.is_none_or(|t| t.elapsed() >= RESCAN_INTERVAL) {
+                last_scan = Some(Instant::now());
                 devices.extend(scan_new(&mut open_paths));
             }
             if devices.is_empty() {

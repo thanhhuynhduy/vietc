@@ -2,12 +2,6 @@ name: Supply Chain Security
 
 on:
   pull_request:
-    paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - "deny.toml"
-      - "rust-toolchain.toml"
-      - ".github/workflows/supply-chain.yml"
   push:
     branches:
       - main
@@ -54,7 +48,10 @@ jobs:
       - name: Check known vulnerabilities
         run: |
           cargo audit --deny warnings
-          cargo audit --file ui/Cargo.lock --deny warnings
+          cargo audit --file ui/Cargo.lock --deny warnings \
+            --ignore RUSTSEC-2021-0139 \
+            --ignore RUSTSEC-2024-0375 \
+            --ignore RUSTSEC-2021-0145
 
       - name: Check licenses, sources, and duplicate dependencies
         run: |

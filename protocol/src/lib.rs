@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-#[cfg(feature = "wayland-protocol")]
 mod clipboard_command;
 #[cfg(feature = "wayland-protocol")]
 mod clipboard_transaction;

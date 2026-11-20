@@ -121,22 +121,22 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
                     if let Ok(real_path) = fs::canonicalize(entry.path()) {
                         let p = real_path.to_string_lossy().to_string();
                         let phys_opt = get_device_phys_id(&real_path);
-                        if let Some(phys_id) = &phys_opt {
-                            if !seen_phys_ids.insert(phys_id.clone()) {
-                                continue;
-                            }
+                        if phys_opt
+                            .as_ref()
+                            .is_some_and(|pid| seen_phys_ids.contains(pid))
+                        {
+                            continue;
                         }
-                        if !seen_paths.insert(p.clone()) {
-                            // Roll back phys insert if path was duplicate
-                            if let Some(pid) = phys_opt {
-                                seen_phys_ids.remove(&pid);
-                            }
+                        if !seen_paths.insert(p) {
                             continue;
                         }
                         match evdev::Device::open(&real_path) {
                             Ok(device) => {
                                 let dev_name = device.name().unwrap_or("unknown").to_string();
                                 if is_valid_keyboard(&device) {
+                                    if let Some(pid) = phys_opt {
+                                        seen_phys_ids.insert(pid);
+                                    }
                                     log_info(&format!(
                                         "[vietc] Found keyboard (by-path): {} ({})",
                                         real_path.display(),
@@ -170,21 +170,22 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
                     if let Ok(real_path) = fs::canonicalize(entry.path()) {
                         let p = real_path.to_string_lossy().to_string();
                         let phys_opt = get_device_phys_id(&real_path);
-                        if let Some(phys_id) = &phys_opt {
-                            if !seen_phys_ids.insert(phys_id.clone()) {
-                                continue;
-                            }
+                        if phys_opt
+                            .as_ref()
+                            .is_some_and(|pid| seen_phys_ids.contains(pid))
+                        {
+                            continue;
                         }
-                        if !seen_paths.insert(p.clone()) {
-                            if let Some(pid) = phys_opt {
-                                seen_phys_ids.remove(&pid);
-                            }
+                        if !seen_paths.insert(p) {
                             continue;
                         }
                         match evdev::Device::open(&real_path) {
                             Ok(device) => {
                                 let dev_name = device.name().unwrap_or("unknown").to_string();
                                 if is_valid_keyboard(&device) {
+                                    if let Some(pid) = phys_opt {
+                                        seen_phys_ids.insert(pid);
+                                    }
                                     log_info(&format!(
                                         "[vietc] Found keyboard (by-id): {} ({})",
                                         real_path.display(),
@@ -219,21 +220,22 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
                     if let Ok(real_path) = fs::canonicalize(entry.path()) {
                         let p = real_path.to_string_lossy().to_string();
                         let phys_opt = get_device_phys_id(&real_path);
-                        if let Some(phys_id) = &phys_opt {
-                            if !seen_phys_ids.insert(phys_id.clone()) {
-                                continue;
-                            }
+                        if phys_opt
+                            .as_ref()
+                            .is_some_and(|pid| seen_phys_ids.contains(pid))
+                        {
+                            continue;
                         }
-                        if !seen_paths.insert(p.clone()) {
-                            if let Some(pid) = phys_opt {
-                                seen_phys_ids.remove(&pid);
-                            }
+                        if !seen_paths.insert(p) {
                             continue;
                         }
                         match evdev::Device::open(&real_path) {
                             Ok(device) => {
                                 let dev_name = device.name().unwrap_or("unknown").to_string();
                                 if is_valid_keyboard(&device) {
+                                    if let Some(pid) = phys_opt {
+                                        seen_phys_ids.insert(pid);
+                                    }
                                     log_info(&format!(
                                         "[vietc] Found keyboard (bluetooth/direct): {} ({})",
                                         real_path.display(),

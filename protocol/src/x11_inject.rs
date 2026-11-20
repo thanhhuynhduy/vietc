@@ -198,10 +198,9 @@ struct X11Lib {
         Atom,
         Atom,
     ) -> Window,
-    x_map_window: unsafe extern "C" fn(*mut Display, Window) -> c_int,
     x_destroy_window: unsafe extern "C" fn(*mut Display, Window) -> c_int,
     x_pending: unsafe extern "C" fn(*mut Display) -> c_int,
-    x_next_event: unsafe extern "C" fn(*mut Display, *mut XEvent),
+    x_next_event: unsafe extern "C" fn(*mut Display, *mut XEvent) -> c_int,
     x_query_keymap: unsafe extern "C" fn(*mut Display, *mut c_char) -> c_int,
     x_lookup_string: unsafe extern "C" fn(
         *const XKeyEvent,
@@ -228,7 +227,6 @@ impl X11Lib {
             let x_change_property = x11_library.symbol(c"XChangeProperty")?;
             let x_send_event = x11_library.symbol(c"XSendEvent")?;
             let x_create_simple_window = x11_library.symbol(c"XCreateSimpleWindow")?;
-            let x_map_window = x11_library.symbol(c"XMapWindow")?;
             let x_destroy_window = x11_library.symbol(c"XDestroyWindow")?;
             let x_pending = x11_library.symbol(c"XPending")?;
             let x_next_event = x11_library.symbol(c"XNextEvent")?;
@@ -250,7 +248,6 @@ impl X11Lib {
                 x_change_property,
                 x_send_event,
                 x_create_simple_window,
-                x_map_window,
                 x_destroy_window,
                 x_pending,
                 x_next_event,
@@ -333,7 +330,7 @@ struct XSelectionRequestEvent {
     time: Time,
 }
 
-#[repr(C)]
+#[repr(C, align(8))]
 struct XEvent {
     _bytes: [u8; 192],
 }
@@ -382,7 +379,7 @@ impl X11Injector {
             let atom_targets = (lib.x_intern_atom)(display, c"TARGETS".as_ptr(), 0);
             let atom_string = (lib.x_intern_atom)(display, c"STRING".as_ptr(), 0);
 
-            // Create a small hidden window for clipboard ownership
+            // Create a small unmapped window for clipboard ownership
             let clipboard_window = (lib.x_create_simple_window)(
                 display,
                 root,
@@ -394,7 +391,10 @@ impl X11Injector {
                 COPY_FROM_PARENT,
                 COPY_FROM_PARENT,
             );
-            (lib.x_map_window)(display, clipboard_window);
+            if clipboard_window == 0 {
+                (lib.x_close_display)(display);
+                return Err("Cannot create X11 clipboard ownership window".into());
+            }
 
             Ok(Self {
                 lib,
@@ -506,6 +506,7 @@ impl X11Injector {
 
     fn handle_selection_request(&self, req: &XSelectionRequestEvent) {
         // Silently handle — SelectionRequest floods the log on X11
+        const XA_ATOM: Atom = 4;
 
         // Determine what property to use for the response
         let property = if req.property == 0 {
@@ -513,22 +514,29 @@ impl X11Injector {
         } else {
             req.property
         };
+        let is_clipboard = req.selection == self.atom_clipboard;
+        let supported = is_clipboard
+            && (req.target == self.atom_targets
+                || req.target == self.atom_utf8
+                || req.target == self.atom_string);
 
         unsafe {
-            if req.target == self.atom_targets {
+            if is_clipboard && req.target == self.atom_targets {
                 // Respond with supported targets: TARGETS, UTF8_STRING, STRING
                 let targets: [Atom; 3] = [self.atom_targets, self.atom_utf8, self.atom_string];
                 (self.lib.x_change_property)(
                     self.display,
                     req.requestor,
                     property,
-                    self.atom_targets,
+                    XA_ATOM,
                     32, // 32-bit format
                     PROP_MODE_REPLACE,
                     targets.as_ptr() as *const c_void,
                     targets.len() as c_int,
                 );
-            } else if req.target == self.atom_utf8 || req.target == self.atom_string {
+            } else if is_clipboard
+                && (req.target == self.atom_utf8 || req.target == self.atom_string)
+            {
                 // Respond with the actual clipboard text
                 (self.lib.x_change_property)(
                     self.display,
@@ -550,13 +558,10 @@ impl X11Injector {
             notify.requestor = req.requestor;
             notify.selection = req.selection;
             notify.target = req.target;
-            notify.property = if req.target == self.atom_targets
-                || req.target == self.atom_utf8
-                || req.target == self.atom_string
-            {
+            notify.property = if supported {
                 property
             } else {
-                0 // PropertyNone = unsupported target
+                0 // PropertyNone = unsupported target or selection
             };
             notify.time = req.time;
 
@@ -572,8 +577,6 @@ impl X11Injector {
     }
 
     fn paste_via_clipboard(&self, backspaces: usize, text: &str) -> bool {
-        self.selection_served.set(false);
-
         let previous_clipboard = self.read_clipboard();
         self.clipboard_state
             .borrow_mut()
@@ -582,9 +585,10 @@ impl X11Injector {
         // Set clipboard text directly via X11
         self.set_clipboard_text(text);
 
-        // Handle any pending SelectionRequest events that may have queued
-        // (unlikely at this point, but be safe)
+        // Drain any immediate SelectionRequest events (e.g., clipboard manager)
+        // BEFORE arming `selection_served` for the actual target paste.
         self.handle_pending_events();
+        self.selection_served.set(false);
 
         // Send backspaces via XTest (evdev 14 = KEY_BACKSPACE → X11 22)
         if backspaces > 0 {
@@ -607,7 +611,9 @@ impl X11Injector {
             self.handle_pending_events();
             self.selection_served.get()
         });
-        self.restore_clipboard_if_unchanged();
+        if pasted {
+            self.restore_clipboard_if_unchanged();
+        }
         pasted
     }
 

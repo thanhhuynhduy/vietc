@@ -36,8 +36,8 @@ docker run --rm \
         test -f /lib/udev/rules.d/70-vietc.rules
         test -f /etc/vietc/config.toml
 
-        ldd /usr/bin/vietc-daemon >/dev/null
-        ldd /usr/bin/vietc-tray >/dev/null
+        ! ldd /usr/bin/vietc-daemon | grep -q "not found"
+        ! ldd /usr/bin/vietc-tray | grep -q "not found"
 
         dpkg --remove vietc
         test ! -e /usr/bin/vietc-daemon

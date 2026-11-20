@@ -34,6 +34,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Install system dependencies
         run: |
@@ -42,6 +44,16 @@ jobs:
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: |
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path ui/Cargo.toml --all -- --check
+
+      - name: Run Clippy
+        run: |
+          env -u DISPLAY -u WAYLAND_DISPLAY cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          env -u DISPLAY -u WAYLAND_DISPLAY cargo clippy --manifest-path ui/Cargo.toml --all-targets --locked -- -D warnings
 
       - name: Run headless CI smoke suite
         run: make test-ci-smoke CARGO_FLAGS=--locked
@@ -53,13 +65,19 @@ jobs:
         run: |
           mkdir -p dist
           find . -maxdepth 3 -type f \( -name '*.tar.gz' -o -name '*.deb' \) -exec cp {} dist/ \;
+          cp install.sh uninstall.sh dist/
           test -n "$(find dist -maxdepth 1 -type f -print -quit)"
 
       - name: Generate candidate metadata and checksums
+        env:
+          INPUT_LABEL: ${{ inputs.label }}
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          LABEL="${{ inputs.label }}"
-          LABEL="${LABEL:-next}"
+          LABEL="${INPUT_LABEL:-next}"
+          if ! [[ "$LABEL" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            echo "Invalid candidate label: $LABEL" >&2
+            exit 1
+          fi
           SHORT_SHA=$(git rev-parse --short=8 HEAD)
           TAG="v${VERSION}-${LABEL}.${GITHUB_RUN_NUMBER}"
           echo "CANDIDATE_TAG=${TAG}" >> "$GITHUB_ENV"

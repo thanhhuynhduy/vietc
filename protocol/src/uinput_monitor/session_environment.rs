@@ -48,10 +48,11 @@ struct PreparedDesktopCommand {
 }
 
 fn validate_display(display: &str) -> std::io::Result<()> {
-    let valid = display.starts_with(':')
-        && display
+    let rest = display.strip_prefix(':').unwrap_or("");
+    let valid = !rest.is_empty()
+        && rest.chars().any(|c| c.is_ascii_digit())
+        && rest
             .chars()
-            .skip(1)
             .all(|character| character.is_ascii_digit() || character == '.');
     if valid {
         Ok(())
@@ -102,8 +103,12 @@ fn validate_xauthority(
     session: &DesktopSession,
     metadata: impl FnOnce(&Path) -> std::io::Result<SessionPathMetadata>,
 ) -> std::io::Result<()> {
+    let has_parent_dir = path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
     let details = metadata(path)?;
     if !path.is_absolute()
+        || has_parent_dir
         || !path.starts_with(&session.home)
         || details.owner_uid != session.uid
         || !details.is_regular_file
@@ -218,107 +223,70 @@ fn build_desktop_command_with(
     Ok(command)
 }
 
+/// Thread-safe passwd lookup via `libc::getpwuid_r` returning `(gid, username, home_dir)`.
+fn lookup_passwd_entry(uid: u32) -> Option<(u32, String, String)> {
+    let mut buf_len = 4096usize;
+    loop {
+        let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let mut buf = vec![0u8; buf_len];
+        let rc = unsafe {
+            libc::getpwuid_r(
+                uid,
+                pwd.as_mut_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
+                buf.len(),
+                &mut result,
+            )
+        };
+        if rc == libc::ERANGE && buf_len < 65536 {
+            buf_len *= 2;
+            continue;
+        }
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        let pwd = unsafe { pwd.assume_init() };
+        if pwd.pw_name.is_null() || pwd.pw_dir.is_null() {
+            return None;
+        }
+        let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) }
+            .to_string_lossy()
+            .into_owned();
+        let dir = unsafe { std::ffi::CStr::from_ptr(pwd.pw_dir) }
+            .to_string_lossy()
+            .into_owned();
+        if name.is_empty() || dir.is_empty() {
+            return None;
+        }
+        return Some((pwd.pw_gid, name, dir));
+    }
+}
+
 impl UinputInjector {
-    /// Get the original non-root username when running as root.
-    /// Checks SUDO_USER (sudo), PKEXEC_UID (pkexec), /proc/self/loginuid,
-    /// and falls back to `logname`.
-    fn get_original_username() -> Option<String> {
-        let is_root = unsafe { libc::getuid() == 0 };
+    /// Get original non-root UID when running as root.
+    fn get_original_uid() -> Option<u32> {
+        let is_root = unsafe { libc::geteuid() == 0 };
         if !is_root {
             return None;
         }
 
-        if let Ok(user) = std::env::var("SUDO_USER") {
-            if !user.is_empty() {
-                return Some(user);
+        if let Ok(uid_str) = std::env::var("SUDO_UID") {
+            if let Ok(uid) = uid_str.parse::<u32>() {
+                return Some(uid);
             }
         }
 
         if let Ok(uid_str) = std::env::var("PKEXEC_UID") {
             if let Ok(uid) = uid_str.parse::<u32>() {
-                unsafe {
-                    let pw = libc::getpwuid(uid);
-                    if !pw.is_null() {
-                        let name = std::ffi::CStr::from_ptr((*pw).pw_name)
-                            .to_string_lossy()
-                            .into_owned();
-                        if !name.is_empty() {
-                            return Some(name);
-                        }
-                    }
-                }
+                return Some(uid);
             }
         }
 
         if let Ok(content) = std::fs::read_to_string("/proc/self/loginuid") {
             if let Ok(uid) = content.trim().parse::<u32>() {
                 if uid != 4294967295 {
-                    unsafe {
-                        let pw = libc::getpwuid(uid);
-                        if !pw.is_null() {
-                            let name = std::ffi::CStr::from_ptr((*pw).pw_name)
-                                .to_string_lossy()
-                                .into_owned();
-                            if !name.is_empty() {
-                                return Some(name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Ok(output) = std::process::Command::new("logname").output() {
-            if output.status.success() {
-                let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !name.is_empty() {
-                    return Some(name);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Get original non-root UID and GID when running as root.
-    fn get_original_uid_gid() -> Option<(u32, u32)> {
-        let is_root = unsafe { libc::getuid() == 0 };
-        if !is_root {
-            return None;
-        }
-
-        let mut target_uid = None;
-
-        if let Ok(uid_str) = std::env::var("SUDO_UID") {
-            if let Ok(uid) = uid_str.parse::<u32>() {
-                target_uid = Some(uid);
-            }
-        }
-
-        if target_uid.is_none() {
-            if let Ok(uid_str) = std::env::var("PKEXEC_UID") {
-                if let Ok(uid) = uid_str.parse::<u32>() {
-                    target_uid = Some(uid);
-                }
-            }
-        }
-
-        if target_uid.is_none() {
-            if let Ok(content) = std::fs::read_to_string("/proc/self/loginuid") {
-                if let Ok(uid) = content.trim().parse::<u32>() {
-                    if uid != 4294967295 {
-                        target_uid = Some(uid);
-                    }
-                }
-            }
-        }
-
-        if let Some(uid) = target_uid {
-            unsafe {
-                let pw = libc::getpwuid(uid);
-                if !pw.is_null() {
-                    let gid = (*pw).pw_gid;
-                    return Some((uid, gid));
+                    return Some(uid);
                 }
             }
         }
@@ -329,7 +297,7 @@ impl UinputInjector {
     fn session_path_metadata(path: &Path) -> std::io::Result<SessionPathMetadata> {
         use std::os::unix::fs::MetadataExt;
 
-        let metadata = std::fs::metadata(path)?;
+        let metadata = std::fs::symlink_metadata(path)?;
         Ok(SessionPathMetadata {
             owner_uid: metadata.uid(),
             is_directory: metadata.is_dir(),
@@ -338,22 +306,12 @@ impl UinputInjector {
     }
 
     fn desktop_session() -> Option<DesktopSession> {
-        let (uid, gid) = Self::get_original_uid_gid()?;
-        if uid == 0 || gid == 0 {
+        let uid = Self::get_original_uid()?;
+        if uid == 0 {
             return None;
         }
-
-        let username = Self::get_original_username()?;
-        let password_entry = unsafe { libc::getpwuid(uid) };
-        if password_entry.is_null() {
-            return None;
-        }
-        let home = unsafe {
-            std::ffi::CStr::from_ptr((*password_entry).pw_dir)
-                .to_string_lossy()
-                .into_owned()
-        };
-        if home.is_empty() {
+        let (gid, username, home) = lookup_passwd_entry(uid)?;
+        if gid == 0 {
             return None;
         }
 
@@ -376,7 +334,7 @@ impl UinputInjector {
     /// Build a desktop command under the owning user session. Root callers
     /// must have a validated non-root identity; no root fallback is allowed.
     pub(super) fn user_cmd(program: &str) -> std::io::Result<std::process::Command> {
-        let is_root = unsafe { libc::getuid() == 0 };
+        let is_root = unsafe { libc::geteuid() == 0 };
         build_desktop_command_with(
             program,
             is_root,

@@ -70,6 +70,7 @@ fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
 
         let mut output = String::new();
         let mut events = Vec::new();
+        let mut word_screen_len: usize = 0;
 
         for ch in input.chars() {
             state.events.push(InputEvent::KeyTyped(ch));
@@ -77,15 +78,22 @@ fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
             match state.engine.process_key(ch) {
                 None => {
                     output.push(ch);
+                    if is_flush_char(ch) {
+                        word_screen_len = 0;
+                    } else {
+                        word_screen_len += 1;
+                    }
                 }
                 Some(event) => {
                     events.push((ch, event.clone()));
                     match &event {
                         EngineEvent::Insert(text) | EngineEvent::Flush(text) => {
                             output.push_str(text);
+                            word_screen_len = 0;
                         }
                         EngineEvent::Paste(text) => {
                             output.push_str(text);
+                            word_screen_len = 0;
                         }
                         EngineEvent::Replace(replacement) => {
                             for _ in 0..replacement.delete_before_cursor {
@@ -94,6 +102,11 @@ fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
                             output.push_str(&replacement.insert);
                             if is_flush_char(ch) {
                                 output.push(ch);
+                                word_screen_len = 0;
+                            } else {
+                                word_screen_len = word_screen_len
+                                    .saturating_sub(replacement.delete_before_cursor)
+                                    + replacement.insert.chars().count();
                             }
                         }
                         EngineEvent::UndoTones {
@@ -104,12 +117,20 @@ fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
                                 output.push('\x08');
                             }
                             output.push_str(restored);
+                            word_screen_len = word_screen_len.saturating_sub(*backspaces)
+                                + restored.chars().count();
                         }
                         EngineEvent::AutoRestore(word) => {
-                            for _ in 0..word.chars().count() {
+                            let del = if word_screen_len > 0 {
+                                word_screen_len
+                            } else {
+                                word.chars().count()
+                            };
+                            for _ in 0..del {
                                 output.push('\x08');
                             }
                             output.push_str(word);
+                            word_screen_len = 0;
                         }
                     }
                 }

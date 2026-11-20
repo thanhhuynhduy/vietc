@@ -374,6 +374,11 @@ cargo fmt --manifest-path ui/Cargo.toml --all -- --check
 
 # 3. Kiểm tra cảnh báo linter Clippy nghiêm ngặt
 make lint
+
+# 4. Kiểm tra lỗ hổng & giấy phép chuỗi cung ứng (workspace và ui/)
+cargo audit --deny warnings
+cargo deny check
+cargo deny --manifest-path ui/Cargo.toml check
 ```
 Yêu cầu: Toàn bộ lệnh phải trả về exit code `0` mà không có bất kỳ warning hay violation nào.
 

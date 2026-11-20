@@ -181,10 +181,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app_state::refresh_background_window_security();
 
                 if let Ok(content) = std::fs::read_to_string(&status_path) {
-                    let is_vn = content.trim() == "vn";
-                    let current_enabled = engine_enabled.load(Ordering::SeqCst);
-                    if is_vn != current_enabled {
-                        status_changed.store(true, Ordering::SeqCst);
+                    let s = content.trim();
+                    if s == "vn" || s == "en" {
+                        let is_vn = s == "vn";
+                        let current_enabled = engine_enabled.load(Ordering::SeqCst);
+                        if is_vn != current_enabled {
+                            status_changed.store(true, Ordering::SeqCst);
+                        }
                     }
                 }
 

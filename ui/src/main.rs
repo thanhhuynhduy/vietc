@@ -178,9 +178,25 @@ fn ensure_single_instance(name: &str) {
     }
 }
 
+pub fn should_exit() -> bool {
+    STOPPING.load(Ordering::SeqCst)
+}
+
+extern "C" fn handle_termination_signal(_sig: libc::c_int) {
+    STOPPING.store(true, Ordering::SeqCst);
+}
+
 fn main() {
     unsafe {
         let _ = libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        let _ = libc::signal(
+            libc::SIGINT,
+            handle_termination_signal as *const () as libc::sighandler_t,
+        );
+        let _ = libc::signal(
+            libc::SIGTERM,
+            handle_termination_signal as *const () as libc::sighandler_t,
+        );
     }
     ensure_single_instance("vietc-tray");
 

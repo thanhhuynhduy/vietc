@@ -269,11 +269,12 @@ pub(crate) fn visible_to_canonical_raw(visible: &str, method: InputMethod) -> Op
                 VnShape::Circumflex => raw.push('6'),
                 VnShape::Breve => raw.push('8'),
                 VnShape::Horn => {
+                    let has_tail_after_next = i + 2 < chars.len();
                     let next_is_o_horn = i + 1 < chars.len() && {
                         let (nb, ns, _, _) = decompose_vn_char(chars[i + 1]);
                         base == 'u' && nb == 'o' && ns == VnShape::Horn
                     };
-                    if !next_is_o_horn {
+                    if !next_is_o_horn || !has_tail_after_next {
                         raw.push('7');
                     }
                 }

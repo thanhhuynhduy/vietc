@@ -444,3 +444,60 @@ fn qa_audit_tone_overwrite_undo_rehydrated_prefix_digit_space_and_buffer_bound()
         other => panic!("expected Replace(1, \"án\"), got {other:?}"),
     }
 }
+
+#[test]
+fn qa_audit_wave2_engine_stability_regressions() {
+    // 1. Non-flushed Unicode whitespace before 'w'/'7' must never panic on slice bounds
+    for (method, trigger) in [(InputMethod::Telex, 'w'), (InputMethod::Vni, '7')] {
+        let mut engine = Engine::new(method);
+        let mut screen = String::new();
+        for ch in ['u', 'o', '\u{3000}', trigger] {
+            type_key(&mut engine, &mut screen, ch);
+        }
+        assert!(screen.contains('\u{3000}'));
+    }
+
+    // 2. Telex adjacent non-identical tone keys in OOV words (`kerson`, `varset`, `corsair`)
+    // must not drop 'r' into ASCII `"keson"`/`"vaset"` and must restore cleanly on Space
+    for word in ["kerson", "varset", "corsair"] {
+        let mut engine = Engine::new(InputMethod::Telex);
+        let mut screen = String::new();
+        for ch in word.chars() {
+            type_key(&mut engine, &mut screen, ch);
+        }
+        type_key(&mut engine, &mut screen, ' ');
+        assert_eq!(
+            screen.trim_end(),
+            word,
+            "Telex corrupted OOV word {word} on space"
+        );
+    }
+
+    // 3. VNI free-order `-ươi` / `-ươu` triphthongs (`nguoi72` -> `người`, `tuoi7` -> `tươi`, `huou7` -> `hươu`)
+    for (input, expected) in [
+        ("nguoi72", "người"),
+        ("tuoi7", "tươi"),
+        ("cuoi72", "cười"),
+        ("huou7", "hươu"),
+    ] {
+        let mut engine = Engine::new(InputMethod::Vni);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            type_key(&mut engine, &mut screen, ch);
+        }
+        assert_eq!(screen, expected, "VNI triphthong failed for {input}");
+    }
+
+    // 4. VNI repeated mark key after consonant undoes mark instead of swallowing digit forever
+    for (input, expected) in [("ban66", "ban6"), ("bon77", "bon7"), ("chua77", "chua7")] {
+        let mut engine = Engine::new(InputMethod::Vni);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            type_key(&mut engine, &mut screen, ch);
+        }
+        assert_eq!(
+            screen, expected,
+            "VNI repeated mark undo failed for {input}"
+        );
+    }
+}

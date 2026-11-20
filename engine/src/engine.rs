@@ -324,6 +324,7 @@ impl Engine {
                 let word = self.raw_buffer.clone();
                 self.raw_buffer.clear();
                 self.pasted_prefix.clear();
+                self.bamboo.reset();
                 self.paste_mode = false;
                 return Some(EngineEvent::Flush(word));
             }

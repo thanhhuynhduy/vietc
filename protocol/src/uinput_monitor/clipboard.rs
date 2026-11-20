@@ -104,28 +104,10 @@ pub(super) struct RetainedWaylandPaste {
 
 impl UinputInjector {
     fn run_cmd_with_timeout(
-        mut cmd: std::process::Command,
+        cmd: std::process::Command,
         timeout: Duration,
     ) -> Option<std::process::Output> {
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        let mut child = cmd.spawn().ok()?;
-        let deadline = Instant::now() + timeout;
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => return child.wait_with_output().ok(),
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return None;
-                    }
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(_) => return None,
-            }
-        }
+        crate::clipboard_command::run_capture(cmd, timeout, MAX_BINARY_CLIPBOARD_BYTES)
     }
 
     fn read_clipboard() -> Option<String> {
@@ -464,7 +446,7 @@ impl UinputInjector {
                     self.clip
                         .inner
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .burst
                         .complete_restore(sequence_id);
                     trace_clipboard(sequence_id, "verified-read-back", "state=restored");

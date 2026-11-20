@@ -84,10 +84,10 @@ fn read_method(fallback: &str) -> String {
         return fallback.to_string();
     }
     let cfg = config::Config::load();
-    if cfg.input_method == "telex" {
-        "telex".into()
-    } else {
+    if cfg.input_method.eq_ignore_ascii_case("vni") {
         "vni".into()
+    } else {
+        "telex".into()
     }
 }
 
@@ -181,15 +181,17 @@ impl Tray for VietTray {
     }
 
     fn icon_theme_path(&self) -> String {
+        if is_flatpak() {
+            let flatpak_path = std::path::Path::new("/app/share/icons");
+            if flatpak_path.exists() {
+                return "/app/share/icons".into();
+            }
+        }
         if let Some(home) = dirs::home_dir() {
             let user_path = home.join(".local/share/icons");
             if user_path.exists() {
                 return user_path.to_string_lossy().into_owned();
             }
-        }
-        let flatpak_path = std::path::Path::new("/app/share/icons");
-        if flatpak_path.exists() {
-            return "/app/share/icons".into();
         }
         dirs::data_dir()
             .map(|d| d.join("icons").to_string_lossy().into_owned())
@@ -339,6 +341,7 @@ pub fn run() {
 
     let service = ksni::TrayService::new(tray);
     let handle = service.handle();
+    let shutdown_handle = service.handle();
     service.spawn();
 
     std::thread::spawn(move || {
@@ -371,7 +374,7 @@ pub fn run() {
         let mut last_autostart = initial_autostart;
         let mut buffer = [0u8; 4096];
 
-        loop {
+        while !crate::should_exit() {
             if inotify_fd >= 0 && wd >= 0 {
                 let mut pfd = libc::pollfd {
                     fd: inotify_fd,
@@ -394,20 +397,19 @@ pub fn run() {
                 if inotify_fd < 0 {
                     inotify_fd =
                         unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-                    if inotify_fd >= 0 {
-                        if let Ok(c_path) = std::ffi::CString::new(dir.to_string_lossy().as_bytes())
-                        {
-                            wd = unsafe {
-                                libc::inotify_add_watch(
-                                    inotify_fd,
-                                    c_path.as_ptr(),
-                                    libc::IN_CLOSE_WRITE
-                                        | libc::IN_MOVED_TO
-                                        | libc::IN_MODIFY
-                                        | libc::IN_CREATE,
-                                )
-                            };
-                        }
+                }
+                if inotify_fd >= 0 && wd < 0 {
+                    if let Ok(c_path) = std::ffi::CString::new(dir.to_string_lossy().as_bytes()) {
+                        wd = unsafe {
+                            libc::inotify_add_watch(
+                                inotify_fd,
+                                c_path.as_ptr(),
+                                libc::IN_CLOSE_WRITE
+                                    | libc::IN_MOVED_TO
+                                    | libc::IN_MODIFY
+                                    | libc::IN_CREATE,
+                            )
+                        };
                     }
                 }
             }
@@ -426,9 +428,15 @@ pub fn run() {
                 });
             }
         }
+        if inotify_fd >= 0 {
+            unsafe {
+                libc::close(inotify_fd);
+            }
+        }
     });
 
-    loop {
-        std::thread::park();
+    while !crate::should_exit() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    shutdown_handle.shutdown();
 }

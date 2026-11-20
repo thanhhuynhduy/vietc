@@ -247,8 +247,8 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
             }
             if let Some((prev_idx, prev_tone)) = active_trigger {
                 if prev_idx + 1 == i {
-                    consumed[prev_idx] = true;
                     if prev_tone == tone {
+                        consumed[prev_idx] = true;
                         for idx in prior_triggers {
                             consumed[idx] = true;
                         }
@@ -258,6 +258,9 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
                             target: None,
                             consumed,
                         };
+                    }
+                    if is_valid_tone_trigger(raw, marks, &consumed, &vowels, i) {
+                        consumed[prev_idx] = true;
                     }
                 }
             }

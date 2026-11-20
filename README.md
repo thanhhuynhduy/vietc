@@ -49,8 +49,10 @@ Sau khi cài đặt lần đầu, đăng xuất rồi đăng nhập lại để 
 
 ```bash
 make deb
-sudo apt install ./packaging/deb/vietc_0.2.0-1_amd64.deb
+sudo apt install ./packaging/deb/vietc_*.deb
 ```
+
+*(Ngoài ra có thể cài từ gói release tarball đã giải nén bằng `sudo bash ./install.sh` — script tự nhận diện binary cục bộ `./bin/vietc-daemon` để cài offline, hoặc truyền `--prebuilt` để tải bản phát hành mới nhất có kiểm tra `SHA256SUMS`.)*
 
 ### Gỡ cài đặt
 

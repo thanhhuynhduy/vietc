@@ -20,8 +20,8 @@ STAGING="$SCRIPT_DIR/$PACKAGE"
 echo "=== Building VietC .deb package v${VERSION} (${DEB_ARCH}) ==="
 
 echo "[1/5] Building binaries..."
-cargo build --release --manifest-path "$PROJECT_ROOT/Cargo.toml"
-(cd "$PROJECT_ROOT/ui" && cargo build --release)
+cargo build --release --locked --manifest-path "$PROJECT_ROOT/Cargo.toml"
+(cd "$PROJECT_ROOT/ui" && cargo build --release --locked)
 echo "  Done."
 
 echo "[2/5] Creating staging directory..."
@@ -129,7 +129,7 @@ case "$1" in
     fi
 
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-      gtk-update-icon-cache -f /usr/share/icons/hicolor/ >/dev/null 2>&1 || true
+      gtk-update-icon-cache -f -t /usr/share/icons/hicolor/ >/dev/null 2>&1 || true
     fi
 
     if command -v udevadm >/dev/null 2>&1; then
@@ -150,9 +150,6 @@ case "$1" in
     pkill -TERM -x vietc-tray 2>/dev/null || true
     pkill -TERM -x vietc-daemon 2>/dev/null || true
     pkill -TERM -x vietc 2>/dev/null || true
-    if command -v systemctl >/dev/null 2>&1; then
-      systemctl --global daemon-reload >/dev/null 2>&1 || true
-    fi
     ;;
 esac
 PRERM
@@ -165,6 +162,9 @@ case "$1" in
   remove|purge)
     if [ "$1" = "purge" ]; then
       rm -rf /etc/vietc 2>/dev/null || true
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl --global daemon-reload >/dev/null 2>&1 || true
     fi
     if command -v setfacl >/dev/null 2>&1; then
       setfacl -b /dev/uinput /dev/input/event* >/dev/null 2>&1 || true

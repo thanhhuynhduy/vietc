@@ -194,7 +194,7 @@ impl Daemon {
         } else {
             "TELEX (Vietnamese)"
         };
-        show_osd("Viet+", &format!("Mode: {}", label));
+        show_osd("VietC", &format!("Mode: {}", label));
         log_info(&format!(
             "[vietc] Mode rotated (Ctrl+Space): enabled={}, method={}, effective={}",
             new_enabled, new_method, effective
@@ -202,6 +202,7 @@ impl Daemon {
     }
 
     pub fn sync_status_file(&mut self) {
+        let mut changed = false;
         let status_path = self.status_file_path();
         if let Ok(content) = fs::read_to_string(&status_path) {
             let s = content.trim();
@@ -211,24 +212,33 @@ impl Daemon {
                     self.engine.set_enabled(expect_enabled);
                     self.engine_enabled.store(expect_enabled, Ordering::SeqCst);
                     self.app_state.set_global_enabled(expect_enabled);
+                    changed = true;
                 }
             }
         }
         let method_path = self.method_file_path();
         if let Ok(content) = fs::read_to_string(&method_path) {
-            let expect_method = content.trim();
+            let expect_method = content.trim().to_ascii_lowercase();
             if (expect_method == "vni" || expect_method == "telex")
-                && self.config.input_method != expect_method
+                && !self
+                    .config
+                    .input_method
+                    .eq_ignore_ascii_case(&expect_method)
             {
-                self.config.input_method = expect_method.to_string();
-                self.app_state.set_global_method(expect_method);
+                self.config.input_method = expect_method.clone();
+                self.app_state.set_global_method(&expect_method);
                 let effective = self.app_state.effective_method();
-                let engine_method = match effective {
-                    "vni" => InputMethod::Vni,
-                    _ => InputMethod::Telex,
+                let engine_method = if effective.eq_ignore_ascii_case("vni") {
+                    InputMethod::Vni
+                } else {
+                    InputMethod::Telex
                 };
                 self.engine.set_method(engine_method);
+                changed = true;
             }
+        }
+        if changed {
+            self.reset_composition_state();
         }
     }
 

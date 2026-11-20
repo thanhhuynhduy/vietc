@@ -49,7 +49,7 @@ pub(super) struct ClipboardOffer {
 
 impl ClipboardOffer {
     pub(super) fn publish(text: &str, timeout: Duration) -> io::Result<Self> {
-        if unsafe { libc::getuid() } == 0 {
+        if unsafe { libc::geteuid() } == 0 {
             return Err(err(
                 io::ErrorKind::PermissionDenied,
                 "clipboard source refuses root",
@@ -146,7 +146,7 @@ impl ClipboardOffer {
                 self.shared
                     .changed
                     .wait_timeout(s, TICK.min(until.saturating_duration_since(now)))
-                    .unwrap(),
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
         }
     }
@@ -219,7 +219,7 @@ impl ClipboardOffer {
                 .shared
                 .changed
                 .wait_timeout(s, left.min(TICK))
-                .unwrap()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
     }

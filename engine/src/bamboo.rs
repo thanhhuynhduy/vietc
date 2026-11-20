@@ -181,18 +181,24 @@ impl BambooEngine {
                     }
                 }
 
+                let last_syllable = self.last_syllable_range();
                 for offset in 0..5usize.min(self.composition.len() - 1) {
                     let o_idx = self.composition.len() - 1 - offset;
+                    if o_idx <= last_syllable.start {
+                        break;
+                    }
                     let o_ch = self.composition[o_idx].base_char.to_ascii_lowercase();
                     if o_ch == 'o' && o_idx > 0 {
                         let u_idx = o_idx - 1;
+                        if u_idx < last_syllable.start {
+                            break;
+                        }
                         let u_ch = self.composition[u_idx].base_char.to_ascii_lowercase();
                         let preceded_by_q = u_idx > 0
                             && self.composition[u_idx - 1]
                                 .base_char
                                 .eq_ignore_ascii_case(&'q');
                         if u_ch == 'u' && !preceded_by_q {
-                            let last_syllable = self.last_syllable_range();
                             let onset: String = self.composition[last_syllable.start..u_idx]
                                 .iter()
                                 .map(|t| t.mark_applied.unwrap_or(t.base_char).to_ascii_lowercase())
@@ -229,7 +235,11 @@ impl BambooEngine {
                             return Some(self.flatten());
                         }
                     }
-                    if o_ch == 'u' || is_vowel(o_ch) {
+                    // Allow scanning past trailing 'i'/'u' glide for free-order `-ươi`/`-ươu`
+                    // (e.g. VNI `nguoi72` -> `người`, `tuoi7` -> `tươi`, `huou7` -> `hươu`).
+                    if (o_ch == 'u' || is_vowel(o_ch))
+                        && !(offset == 0 && matches!(o_ch, 'i' | 'u'))
+                    {
                         break;
                     }
                 }
@@ -293,6 +303,17 @@ impl BambooEngine {
                             _ => None,
                         };
                         if let Some(target_mark) = next_mark {
+                            if target_mark == marked {
+                                self.composition[idx].base_char = base;
+                                self.composition[idx].mark_applied = None;
+                                self.composition.push(Transformation {
+                                    base_char: ch,
+                                    mark_applied: None,
+                                    tone_applied: None,
+                                    is_upper: ch.is_uppercase(),
+                                });
+                                return Some(self.flatten());
+                            }
                             self.composition[idx].base_char = target_mark;
                             self.composition[idx].mark_applied = Some(target_mark);
                             return Some(self.flatten());

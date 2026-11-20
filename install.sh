@@ -249,7 +249,7 @@ if [ "$FROM_SOURCE" = true ]; then
             if command -v runuser >/dev/null 2>&1; then
                 runuser -u "$REAL_USER" -- env PATH="$CARGO_HOME/bin:$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" "$@"
             elif command -v su >/dev/null 2>&1; then
-                su "$REAL_USER" -s /bin/bash -c "env PATH=\"$CARGO_HOME/bin:\$PATH\" CARGO_HOME=\"$CARGO_HOME\" RUSTUP_HOME=\"$RUSTUP_HOME\" \"\$0\" \"\$@\"" -- "$@"
+                su "$REAL_USER" -s /bin/bash -c 'env PATH="$1/bin:$PATH" CARGO_HOME="$1" RUSTUP_HOME="$2" "${@:3}"' -- "$CARGO_HOME" "$RUSTUP_HOME" "$@"
             else
                 sudo -u "$REAL_USER" env PATH="$CARGO_HOME/bin:$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" "$@"
             fi
@@ -307,9 +307,11 @@ if [ "$FROM_SOURCE" = true ]; then
     fi
     run_as_build_user cargo build --release
     (cd ui && run_as_build_user cargo build --release)
+elif [ -f "./bin/vietc-daemon" ]; then
+    INSTALL_DIR="$(pwd)"
 else
     t fetching_release
-    RELEASE_JSON=$(curl -sSfL "https://api.github.com/repos/thanhhuynhduy/vietc/releases/latest" 2>/dev/null || echo "")
+    RELEASE_JSON=$(curl --proto '=https' --tlsv1.2 -sSfL "https://api.github.com/repos/thanhhuynhduy/vietc/releases/latest" 2>/dev/null || echo "")
     TAG=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed 's/.*"v\(.*\)",/\1/')
     if [ -z "$TAG" ]; then
         t fetch_failed

@@ -195,10 +195,11 @@ fn config_base_dir() -> Option<PathBuf> {
 }
 
 fn user_config_path() -> PathBuf {
-    config_base_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("vietc")
-        .join("config.toml")
+    if let Some(base) = config_base_dir() {
+        return base.join("vietc").join("config.toml");
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/tmp/vietc-{uid}")).join("config.toml")
 }
 
 fn config_paths() -> Vec<PathBuf> {

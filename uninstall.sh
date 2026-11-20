@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Viet+ — Vietnamese Input Method Uninstaller
+# VietC — Vietnamese Input Method Uninstaller
 # Usage: verify the release checksum, then run sudo bash ./uninstall.sh
 set -euo pipefail
 
@@ -54,19 +54,19 @@ t() {
     if [ "$LANG_CODE" = "vi" ]; then
         case "$key" in
             sudo) echo -e "${RED}Vui lòng chạy với quyền sudo.${NC}" ;;
-            uninstaller_header) echo -e "${YELLOW}=== Bắt đầu gỡ cài đặt Viet+ (VietC) ===${NC}" ;;
-            stopping_services) echo -e "Đang dừng các dịch vụ và tiến trình Viet+..." ;;
+            uninstaller_header) echo -e "${YELLOW}=== Bắt đầu gỡ cài đặt VietC ===${NC}" ;;
+            stopping_services) echo -e "Đang dừng các dịch vụ và tiến trình VietC..." ;;
             removing_files) echo -e "Đang xóa các tệp nhị phân, cấu hình và icon..." ;;
-            removed) echo -e "${GREEN}=== Đã gỡ cài đặt hoàn toàn Viet+ khỏi hệ thống! ===${NC}" ;;
+            removed) echo -e "${GREEN}=== Đã gỡ cài đặt hoàn toàn VietC khỏi hệ thống! ===${NC}" ;;
             *) echo -e "$key" ;;
         esac
     else
         case "$key" in
             sudo) echo -e "${RED}Please run with sudo.${NC}" ;;
-            uninstaller_header) echo -e "${YELLOW}=== Starting Viet+ (VietC) Uninstaller ===${NC}" ;;
-            stopping_services) echo -e "Stopping Viet+ services and processes..." ;;
+            uninstaller_header) echo -e "${YELLOW}=== Starting VietC Uninstaller ===${NC}" ;;
+            stopping_services) echo -e "Stopping VietC services and processes..." ;;
             removing_files) echo -e "Removing binaries, configuration, and icons..." ;;
-            removed) echo -e "${GREEN}=== Viet+ has been completely removed from your system! ===${NC}" ;;
+            removed) echo -e "${GREEN}=== VietC has been completely removed from your system! ===${NC}" ;;
             *) echo -e "$key" ;;
         esac
     fi
@@ -75,7 +75,7 @@ t() {
 # Auto-elevate with sudo if not root
 if [ "$EUID" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then
-        echo -e "${YELLOW}Viet+ uninstaller requires sudo permissions.${NC}"
+        echo -e "${YELLOW}VietC uninstaller requires sudo permissions.${NC}"
         if [ ! -f "$0" ]; then
             echo "Refusing to re-download and execute a mutable remote script as root." >&2
             echo "Download uninstall.sh from a GitHub release, verify it with that release's SHA256SUMS, then run: sudo bash ./uninstall.sh" >&2
@@ -156,11 +156,13 @@ rm -f /etc/systemd/user/vietc.service /etc/systemd/user/vietc-tray.service
 if [ -n "$USER_HOME" ]; then
     rm -f "$USER_HOME/.config/systemd/user/vietc.service" \
           "$USER_HOME/.config/systemd/user/vietc-tray.service" \
-          "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service"
+          "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service" \
+          "$USER_HOME/.config/systemd/user/default.target.wants/vietc.service"
 fi
 
 # Remove udev rules and kernel module load drop-in
-rm -f /etc/udev/rules.d/70-vietc.rules /etc/udev/rules.d/99-vietc.rules /etc/udev/rules.d/99-uinput.rules
+rm -f /etc/udev/rules.d/70-vietc.rules /etc/udev/rules.d/99-vietc.rules /etc/udev/rules.d/99-uinput.rules \
+      /lib/udev/rules.d/70-vietc.rules /usr/lib/udev/rules.d/70-vietc.rules
 rm -f /etc/modules-load.d/vietc.conf /usr/lib/modules-load.d/vietc.conf /etc/default/vietc
 
 # Remove legacy component XML if present from older versions

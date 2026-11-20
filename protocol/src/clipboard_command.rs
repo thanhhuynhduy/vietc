@@ -62,13 +62,111 @@ pub(crate) fn run_copy(mut command: Command, bytes: &[u8], timeout: Duration) ->
     false
 }
 
+/// Captures child stdout with a bounded timeout and byte limit without deadlocking
+/// when stdout exceeds the OS pipe buffer (~64 KiB).
+pub(crate) fn run_capture(
+    mut command: Command,
+    timeout: Duration,
+    max_bytes: usize,
+) -> Option<std::process::Output> {
+    use std::io::Read;
+    let deadline = Instant::now().checked_add(timeout)?;
+    if Instant::now() >= deadline {
+        return None;
+    }
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let fd = stdout.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
+
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut eof = false;
+    while !eof {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match stdout.read(&mut chunk) {
+            Ok(0) => eof = true,
+            Ok(n) => {
+                if out.len().saturating_add(n) > max_bytes {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                out.extend_from_slice(&chunk[..n]);
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if pause_events(fd, libc::POLLIN, deadline).is_err() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    drop(stdout);
+
+    loop {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Some(std::process::Output {
+                    status,
+                    stdout: out,
+                    stderr: Vec::new(),
+                });
+            }
+            Ok(None) => {
+                if pause_events(-1, 0, deadline).is_err() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 fn pause(fd: i32, deadline: Instant) -> io::Result<()> {
+    pause_events(fd, libc::POLLOUT, deadline)
+}
+
+fn pause_events(fd: i32, events: i16, deadline: Instant) -> io::Result<()> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     // Round up to milliseconds; short ticks also bound launcher-exit latency.
     let millis = remaining.as_millis().saturating_add(1).min(10) as i32;
     let mut pollfd = libc::pollfd {
         fd,
-        events: libc::POLLOUT,
+        events,
         revents: 0,
     };
     // poll ignores negative descriptors, allowing the same bounded wait after EOF.
@@ -78,7 +176,12 @@ fn pause(fd: i32, deadline: Instant) -> io::Result<()> {
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
-    } else if pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+    } else if fd >= 0
+        && (((events & libc::POLLOUT) != 0
+            && pollfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0)
+            || ((events & libc::POLLIN) != 0
+                && pollfd.revents & (libc::POLLERR | libc::POLLNVAL) != 0))
+    {
         return Err(io::ErrorKind::BrokenPipe.into());
     }
     Ok(())
@@ -113,6 +216,18 @@ mod tests {
             &bytes,
             Duration::from_secs(3)
         ));
+    }
+
+    #[test]
+    fn captures_payload_larger_than_pipe_buffer_without_deadlock() {
+        let output = run_capture(
+            shell("dd if=/dev/zero bs=1024 count=256 2>/dev/null"),
+            Duration::from_secs(2),
+            1024 * 1024,
+        )
+        .expect("256 KiB stdout must drain without pipe buffer deadlock");
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 256 * 1024);
     }
 
     #[test]

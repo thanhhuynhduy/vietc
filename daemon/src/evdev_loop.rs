@@ -227,7 +227,7 @@ pub fn run_with_evdev(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .generation_signal
         .clone();
-    injector.bind_focus_generation(focus_generation_signal);
+    injector.bind_focus_generation(focus_generation_signal.clone());
 
     let mut global_caps_lock = devices.iter().any(|(device, _)| is_caps_lock_on(device));
     injector.set_caps_lock(global_caps_lock);
@@ -281,6 +281,8 @@ pub fn run_with_evdev(
         if display != DisplayServer::Wayland {
             if let Ok(x11_inj) = vietc_protocol::x11_inject::X11Injector::new() {
                 injector = Box::new(x11_inj);
+                injector.bind_focus_generation(focus_generation_signal.clone());
+                injector.set_caps_lock(global_caps_lock);
                 log_info("[vietc] Non-grabbed: using X11 injection (faster than uinput)");
             }
         }
@@ -353,16 +355,15 @@ pub fn run_with_evdev(
             return Err(err.into());
         }
         // Check for status changes instantly (including during idle poll timeouts)
-        if status_changed.load(Ordering::SeqCst) {
+        if status_changed.swap(false, Ordering::SeqCst) {
             daemon.sync_status_file();
-            status_changed.store(false, Ordering::SeqCst);
         }
 
         // Check for config reload instantly (including during idle poll timeouts)
-        if config_changed.load(Ordering::SeqCst) {
+        if config_changed.swap(false, Ordering::SeqCst) {
             daemon.reload_config();
-            config_changed.store(false, Ordering::SeqCst);
             debug_logging = crate::log::is_debug_active(daemon.config.debug);
+            injector.set_terminal_app(daemon.app_state.is_terminal_app());
             injector.set_bypass_mode(daemon.is_current_app_bypassed());
         }
 
@@ -512,7 +513,13 @@ pub fn run_with_evdev(
                 }
 
                 if value == 1 && daemon.config.deduplicate_keys && !injector.has_uncertain_edit() {
-                    let dedupable = keycode < 256 && !is_modifier_pressed(&key_state);
+                    let is_nav_or_mod = matches!(
+                        keycode,
+                        1 | 14 | 15 | 28 | 29 | 42 | 54 | 56 | 58 | 96 | 97 | 100 | 102
+                            ..=111 | 125 | 126
+                    );
+                    let dedupable =
+                        keycode < 256 && !is_nav_or_mod && !is_modifier_pressed(&key_state);
                     if dedup.observe(
                         keycode as u32,
                         dedupable,
@@ -573,39 +580,29 @@ pub fn run_with_evdev(
                             new_target,
                         ));
                         last_focus_target = new_target;
-                        if !active_window_class.is_empty() {
+                        if !active_window_class.is_empty()
+                            && active_window_class != last_window_class
+                        {
+                            crate::password_detector::clear_atspi_password_flag();
                             last_window_class = active_window_class.clone();
                         }
                         daemon.reset_composition_state();
 
-                        if daemon.config.app_state.enabled {
-                            let class = shared_focus
-                                .lock()
-                                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                                .class
-                                .clone()
-                                .unwrap_or_default();
-                            injector.set_active_window(&class);
-                            daemon.check_app_change_with(class);
+                        if daemon.config.app_state.enabled && !active_window_class.is_empty() {
+                            injector.set_active_window(&active_window_class);
+                            daemon.check_app_change_with(active_window_class);
                             injector.set_terminal_app(daemon.app_state.is_terminal_app());
                             injector.set_bypass_mode(daemon.is_current_app_bypassed());
                         }
-                    } else if daemon.config.app_state.enabled {
-                        let class = shared_focus
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .class
-                            .clone()
-                            .unwrap_or_default();
-                        if !class.is_empty() {
-                            injector.set_active_window(&class);
-                            if class != last_window_class {
-                                last_window_class = class.clone();
-                                daemon.check_app_change_with(class);
-                            }
-                            injector.set_terminal_app(daemon.app_state.is_terminal_app());
-                            injector.set_bypass_mode(daemon.is_current_app_bypassed());
+                    } else if daemon.config.app_state.enabled && !active_window_class.is_empty() {
+                        injector.set_active_window(&active_window_class);
+                        if active_window_class != last_window_class {
+                            crate::password_detector::clear_atspi_password_flag();
+                            last_window_class = active_window_class.clone();
+                            daemon.check_app_change_with(active_window_class);
                         }
+                        injector.set_terminal_app(daemon.app_state.is_terminal_app());
+                        injector.set_bypass_mode(daemon.is_current_app_bypassed());
                     }
 
                     if daemon.config.password_detection.enabled {
@@ -613,16 +610,14 @@ pub fn run_with_evdev(
                         let currently_enabled = daemon.engine.is_enabled();
                         if is_pw && currently_enabled {
                             daemon.engine.set_enabled(false);
-                            daemon.engine.reset();
-                            daemon.replay_reset();
+                            daemon.reset_composition_state();
                             daemon.write_status();
                         } else if !is_pw
                             && !currently_enabled
                             && daemon.app_state.get_default_state()
                         {
                             daemon.engine.set_enabled(true);
-                            daemon.engine.reset();
-                            daemon.replay_reset();
+                            daemon.reset_composition_state();
                             daemon.write_status();
                         }
                     }

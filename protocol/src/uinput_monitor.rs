@@ -8,10 +8,13 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+#[cfg(feature = "wayland-protocol")]
 use std::time::Duration;
 
 use super::inject::{InjectResult, KeyInjector};
-use clipboard::{trace_clipboard, ClipInner, ClipState, ClipboardRestorer, RetainedWaylandPaste};
+#[cfg(feature = "wayland-protocol")]
+use clipboard::RetainedWaylandPaste;
+use clipboard::{trace_clipboard, ClipInner, ClipState, ClipboardRestorer};
 use key_injection::{
     char_to_linux_keycode, ioctl, serialize_transaction, strip_vn_diacritic, uinput_setup, EV_KEY,
     KEYBOARD_KEY_MAX, UINPUT_MAX_NAME_SIZE, UI_DEV_CREATE, UI_DEV_SETUP, UI_SET_EVBIT,
@@ -269,10 +272,9 @@ impl KeyInjector for UinputInjector {
 
         if let Some(bit) = system_modifier_bit(keycode) {
             if value == 0 {
-                let prev = self.uinput_mod_mask.fetch_and(!bit, Ordering::AcqRel);
-                let now_zero = (prev & !bit) == 0;
+                let _prev = self.uinput_mod_mask.fetch_and(!bit, Ordering::AcqRel);
                 #[cfg(feature = "wayland-protocol")]
-                if prev != 0 && now_zero && !bypassed {
+                if _prev != 0 && (_prev & !bit) == 0 && !bypassed {
                     let result = serialize_transaction(&self.transaction_lock, || {
                         self.send_uinput_event_unlocked(EV_KEY, keycode, 0)?;
                         self.send_uinput_event_unlocked(0, 0, 0)
@@ -285,9 +287,9 @@ impl KeyInjector for UinputInjector {
                     };
                 }
             } else {
-                let prev = self.uinput_mod_mask.fetch_or(bit, Ordering::AcqRel);
+                let _prev = self.uinput_mod_mask.fetch_or(bit, Ordering::AcqRel);
                 #[cfg(feature = "wayland-protocol")]
-                if prev == 0 && value == 1 {
+                if _prev == 0 && value == 1 {
                     self.transfer_vk_shift_to_uinput();
                 }
             }
@@ -483,11 +485,11 @@ impl KeyInjector for UinputInjector {
     }
 
     fn set_bypass_mode(&self, bypass: bool) -> InjectResult {
-        let was_bypass = self.bypass_mode.swap(bypass, Ordering::AcqRel);
+        let _was_bypass = self.bypass_mode.swap(bypass, Ordering::AcqRel);
         #[cfg(feature = "wayland-protocol")]
-        if bypass && !was_bypass {
+        if bypass && !_was_bypass {
             self.transfer_vk_shift_to_uinput();
-        } else if !bypass && was_bypass && self.uinput_mod_mask.load(Ordering::Acquire) == 0 {
+        } else if !bypass && _was_bypass && self.uinput_mod_mask.load(Ordering::Acquire) == 0 {
             self.transfer_uinput_shift_to_vk();
         }
         InjectResult::Success

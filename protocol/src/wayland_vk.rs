@@ -109,7 +109,7 @@ pub(crate) struct WaylandVirtualKeyboard {
 
 impl WaylandVirtualKeyboard {
     pub(crate) fn connect() -> io::Result<Self> {
-        if unsafe { libc::getuid() } == 0 {
+        if unsafe { libc::geteuid() } == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "virtual keyboard refuses root connection",
@@ -574,9 +574,13 @@ impl VkSession {
                 ));
             }
             if ready > 0 {
-                if let Err(wayland_client::backend::WaylandError::Io(e)) = guard.read() {
-                    if e.kind() != io::ErrorKind::WouldBlock {
-                        return Err(e);
+                match guard.read() {
+                    Ok(_) => {}
+                    Err(wayland_client::backend::WaylandError::Io(e))
+                        if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(wayland_client::backend::WaylandError::Io(e)) => return Err(e),
+                    Err(wayland_client::backend::WaylandError::Protocol(e)) => {
+                        return Err(io::Error::other(e));
                     }
                 }
             }

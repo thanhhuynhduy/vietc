@@ -38,12 +38,14 @@ fn get_active_window_x11_dlopen() -> Option<String> {
         type FnCloseDisplay = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
 
         macro_rules! dlsym_fn {
-            ($lib:expr, $name:literal) => {
-                std::mem::transmute::<*mut libc::c_void, _>(libc::dlsym(
-                    $lib,
-                    concat!($name, "\0").as_ptr() as *const libc::c_char,
-                ))
-            };
+            ($lib:expr, $name:literal) => {{
+                let ptr = libc::dlsym($lib, concat!($name, "\0").as_ptr() as *const libc::c_char);
+                if ptr.is_null() {
+                    libc::dlclose($lib);
+                    return None;
+                }
+                std::mem::transmute::<*mut libc::c_void, _>(ptr)
+            }};
         }
 
         let xopen: FnOpenDisplay = dlsym_fn!(lib, "XOpenDisplay");
@@ -61,22 +63,18 @@ fn get_active_window_x11_dlopen() -> Option<String> {
 
         let root = xroot(dpy);
         let net_active = xatom(dpy, c"_NET_ACTIVE_WINDOW".as_ptr(), 0);
-
-        // XA_WINDOW = 33 (the standard X11 atom for Window type)
         let xa_window: u64 = 33;
-        let mut actual_type: u64 = 0;
-        let mut actual_format: libc::c_int = 0;
-        let mut nitems: u64 = 0;
-        let mut bytes_after: u64 = 0;
+        let (mut actual_type, mut actual_format, mut nitems, mut bytes_after) =
+            (0u64, 0, 0u64, 0u64);
         let mut data: *mut u8 = std::ptr::null_mut();
 
         let status = xgetprop(
             dpy,
             root,
             net_active,
-            0, // offset
-            1, // length
-            0, // delete
+            0,
+            1,
+            0,
             xa_window,
             &mut actual_type,
             &mut actual_format,
@@ -85,14 +83,9 @@ fn get_active_window_x11_dlopen() -> Option<String> {
             &mut data,
         );
 
-        let result = if status != 0 && !data.is_null() && nitems > 0 && actual_format == 32 {
-            // Format=32 elements are returned as unsigned long arrays
-            let id = *(data as *const u64);
-            if id != 0 {
-                Some(format!("0x{:x}", id))
-            } else {
-                None
-            }
+        let result = if status == 0 && !data.is_null() && nitems > 0 && actual_format == 32 {
+            let id = *(data as *const libc::c_ulong);
+            (id != 0).then(|| format!("0x{:x}", id))
         } else {
             None
         };
