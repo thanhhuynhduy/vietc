@@ -15,5 +15,5 @@ path = "src/main.rs"
 ksni = "0.2"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-dirs = "5"
+dirs = "7"
 libc = "0.2.186"
