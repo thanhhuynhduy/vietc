@@ -18,8 +18,8 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use dboard_protocol::inject::{InjectResult, KeyInjector};
 use evdev::KeyCode;
-use vietc_protocol::inject::{InjectResult, KeyInjector};
 
 use crate::commands::TransactionOutcome;
 use crate::config::Config;
@@ -378,7 +378,7 @@ impl OfficeDesktopRig {
         };
         let daemon = Daemon::new(
             config,
-            PathBuf::from("/tmp/vietc-office-stress-nonexistent.toml"),
+            PathBuf::from("/tmp/dboard-office-stress-nonexistent.toml"),
             Arc::new(AtomicBool::new(true)),
         );
         let mut editors = HashMap::new();

@@ -107,10 +107,15 @@ pub fn update_keyboard_state(
         key_state.remove(key);
     }
 
-    if key == evdev::KeyCode::KEY_CAPSLOCK && value == 1 {
-        *caps_lock = !*caps_lock;
-    } else if key == evdev::KeyCode::KEY_NUMLOCK && value == 1 {
-        *num_lock = !*num_lock;
+    // Only bare (or Shift-modified) lock key presses toggle desktop lock state;
+    // Ctrl/Alt/Super chords (such as Ctrl+CapsLock toggle shortcuts) must never
+    // flip tracked CapsLock/NumLock state.
+    if value == 1 && !is_modifier_pressed(key_state) {
+        if key == evdev::KeyCode::KEY_CAPSLOCK {
+            *caps_lock = !*caps_lock;
+        } else if key == evdev::KeyCode::KEY_NUMLOCK {
+            *num_lock = !*num_lock;
+        }
     }
 }
 
@@ -200,102 +205,7 @@ pub fn consume_released_or_repeated_key(
 }
 
 pub fn key_to_char_with_case(key: evdev::KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
-    key_to_char(key).map(|ch| {
-        if ch.is_ascii_alphabetic() {
-            if shift ^ caps_lock {
-                ch.to_ascii_uppercase()
-            } else {
-                ch
-            }
-        } else if shift {
-            match ch {
-                '1' => '!',
-                '2' => '@',
-                '3' => '#',
-                '4' => '$',
-                '5' => '%',
-                '6' => '^',
-                '7' => '&',
-                '8' => '*',
-                '9' => '(',
-                '0' => ')',
-                '-' => '_',
-                '=' => '+',
-                '[' => '{',
-                ']' => '}',
-                '\\' => '|',
-                ';' => ':',
-                '\'' => '"',
-                '`' => '~',
-                ',' => '<',
-                '.' => '>',
-                '/' => '?',
-                other => other,
-            }
-        } else {
-            ch
-        }
-    })
-}
-
-pub fn key_to_char(key: evdev::KeyCode) -> Option<char> {
-    match key {
-        evdev::KeyCode::KEY_A => Some('a'),
-        evdev::KeyCode::KEY_B => Some('b'),
-        evdev::KeyCode::KEY_C => Some('c'),
-        evdev::KeyCode::KEY_D => Some('d'),
-        evdev::KeyCode::KEY_E => Some('e'),
-        evdev::KeyCode::KEY_F => Some('f'),
-        evdev::KeyCode::KEY_G => Some('g'),
-        evdev::KeyCode::KEY_H => Some('h'),
-        evdev::KeyCode::KEY_I => Some('i'),
-        evdev::KeyCode::KEY_J => Some('j'),
-        evdev::KeyCode::KEY_K => Some('k'),
-        evdev::KeyCode::KEY_L => Some('l'),
-        evdev::KeyCode::KEY_M => Some('m'),
-        evdev::KeyCode::KEY_N => Some('n'),
-        evdev::KeyCode::KEY_O => Some('o'),
-        evdev::KeyCode::KEY_P => Some('p'),
-        evdev::KeyCode::KEY_Q => Some('q'),
-        evdev::KeyCode::KEY_R => Some('r'),
-        evdev::KeyCode::KEY_S => Some('s'),
-        evdev::KeyCode::KEY_T => Some('t'),
-        evdev::KeyCode::KEY_U => Some('u'),
-        evdev::KeyCode::KEY_V => Some('v'),
-        evdev::KeyCode::KEY_W => Some('w'),
-        evdev::KeyCode::KEY_X => Some('x'),
-        evdev::KeyCode::KEY_Y => Some('y'),
-        evdev::KeyCode::KEY_Z => Some('z'),
-        evdev::KeyCode::KEY_0 => Some('0'),
-        evdev::KeyCode::KEY_1 => Some('1'),
-        evdev::KeyCode::KEY_2 => Some('2'),
-        evdev::KeyCode::KEY_3 => Some('3'),
-        evdev::KeyCode::KEY_4 => Some('4'),
-        evdev::KeyCode::KEY_5 => Some('5'),
-        evdev::KeyCode::KEY_6 => Some('6'),
-        evdev::KeyCode::KEY_7 => Some('7'),
-        evdev::KeyCode::KEY_8 => Some('8'),
-        evdev::KeyCode::KEY_9 => Some('9'),
-        evdev::KeyCode::KEY_SPACE => Some(' '),
-        evdev::KeyCode::KEY_TAB => Some('\t'),
-        evdev::KeyCode::KEY_DOT => Some('.'),
-        evdev::KeyCode::KEY_COMMA => Some(','),
-        evdev::KeyCode::KEY_MINUS => Some('-'),
-        evdev::KeyCode::KEY_EQUAL => Some('='),
-        evdev::KeyCode::KEY_LEFTBRACE => Some('['),
-        evdev::KeyCode::KEY_RIGHTBRACE => Some(']'),
-        evdev::KeyCode::KEY_BACKSLASH => Some('\\'),
-        evdev::KeyCode::KEY_SEMICOLON => Some(';'),
-        evdev::KeyCode::KEY_APOSTROPHE => Some('\''),
-        evdev::KeyCode::KEY_GRAVE => Some('`'),
-        evdev::KeyCode::KEY_SLASH | evdev::KeyCode::KEY_KPSLASH => Some('/'),
-        evdev::KeyCode::KEY_KPASTERISK => Some('*'),
-        evdev::KeyCode::KEY_KPPLUS => Some('+'),
-        evdev::KeyCode::KEY_BACKSPACE => Some('\x08'),
-        evdev::KeyCode::KEY_ENTER | evdev::KeyCode::KEY_KPENTER => Some('\n'),
-        evdev::KeyCode::KEY_KPMINUS => Some('-'),
-        _ => None,
-    }
+    dboard_protocol::layout::keycode_to_char(key.code(), shift, caps_lock)
 }
 
 /// Keys that move the caret, toggle Insert/Overwrite mode, invoke function/menu
@@ -346,7 +256,7 @@ pub fn is_navigation_or_control_key(key: evdev::KeyCode) -> bool {
 mod tests {
     use super::*;
     use crate::commands::OutputCommand;
-    use vietc_engine::{Engine, EngineEvent, InputMethod};
+    use dboard_engine::{Engine, EngineEvent, InputMethod};
 
     fn event_to_commands(event: Option<EngineEvent>) -> Vec<OutputCommand> {
         let mut commands = Vec::new();
@@ -559,5 +469,62 @@ mod tests {
         assert!(!consume_released_or_repeated_key(&mut consumed, 31, 0));
         assert!(consume_released_or_repeated_key(&mut consumed, 57, 0));
         assert!(consumed.is_empty());
+    }
+
+    #[test]
+    fn lock_keys_do_not_flip_under_ctrl_alt_meta_chords() {
+        let mut ks = evdev::AttributeSet::new();
+        let mut caps = false;
+        let mut num = false;
+
+        // Ctrl+CapsLock (e.g. toggle_key = "capslock") must not flip CapsLock
+        update_keyboard_state(
+            &mut ks,
+            &mut caps,
+            &mut num,
+            evdev::KeyCode::KEY_LEFTCTRL,
+            1,
+        );
+        update_keyboard_state(
+            &mut ks,
+            &mut caps,
+            &mut num,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            1,
+        );
+        assert!(!caps);
+        update_keyboard_state(
+            &mut ks,
+            &mut caps,
+            &mut num,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            0,
+        );
+        update_keyboard_state(
+            &mut ks,
+            &mut caps,
+            &mut num,
+            evdev::KeyCode::KEY_LEFTCTRL,
+            0,
+        );
+
+        // Alt+NumLock must not flip NumLock
+        update_keyboard_state(&mut ks, &mut caps, &mut num, evdev::KeyCode::KEY_LEFTALT, 1);
+        update_keyboard_state(&mut ks, &mut caps, &mut num, evdev::KeyCode::KEY_NUMLOCK, 1);
+        assert!(!num);
+        update_keyboard_state(&mut ks, &mut caps, &mut num, evdev::KeyCode::KEY_NUMLOCK, 0);
+        update_keyboard_state(&mut ks, &mut caps, &mut num, evdev::KeyCode::KEY_LEFTALT, 0);
+
+        // Bare CapsLock and NumLock DO flip
+        update_keyboard_state(
+            &mut ks,
+            &mut caps,
+            &mut num,
+            evdev::KeyCode::KEY_CAPSLOCK,
+            1,
+        );
+        assert!(caps);
+        update_keyboard_state(&mut ks, &mut caps, &mut num, evdev::KeyCode::KEY_NUMLOCK, 1);
+        assert!(num);
     }
 }

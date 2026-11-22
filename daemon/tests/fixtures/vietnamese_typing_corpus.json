@@ -67,8 +67,8 @@
   },
   {
     "case_id": "VN-URL-001",
-    "raw_keystrokes": "https://vietc.example/path?q=telex",
-    "expected_unicode": "https://vietc.example/path?q=telex",
+    "raw_keystrokes": "https://dboard.example/path?q=telex",
+    "expected_unicode": "https://dboard.example/path?q=telex",
     "allowed_fallback": "literal",
     "application": "deterministic-engine",
     "key_delay_ms": 15,

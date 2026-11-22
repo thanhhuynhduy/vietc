@@ -22,14 +22,14 @@ pub fn run_stdin_mode(
     use std::io::{self, IsTerminal, Read};
 
     if !io::stdin().is_terminal() {
-        log_info("[vietc] Warning: No keyboard device and no terminal.");
-        log_info("[vietc] Retrying keyboard access every 5 seconds...");
-        log_info("[vietc] Ensure active-seat uaccess rules are installed (sudo ./install.sh).");
+        log_info("[dboard] Warning: No keyboard device and no terminal.");
+        log_info("[dboard] Retrying keyboard access every 5 seconds...");
+        log_info("[dboard] Ensure active-seat uaccess rules are installed (sudo ./install.sh).");
 
         loop {
             for _ in 0..10 {
                 if SIGNAL_EXIT.load(Ordering::SeqCst) {
-                    log_info("[vietc] Exiting on signal");
+                    log_info("[dboard] Exiting on signal");
                     return Ok(());
                 }
                 thread::sleep(std::time::Duration::from_millis(200));
@@ -46,7 +46,7 @@ pub fn run_stdin_mode(
 
             if let Ok(mut devices) = open_keyboard_devices() {
                 log_info(&format!(
-                    "[vietc] Keyboard device(s) found: {}",
+                    "[dboard] Keyboard device(s) found: {}",
                     devices.len()
                 ));
                 return crate::evdev_loop::run_with_evdev(
@@ -78,7 +78,7 @@ pub fn run_stdin_mode(
         .unwrap_or_else(|p| p.into_inner())
         .generation;
 
-    log_info("[vietc] Type to test, Ctrl+C to exit");
+    log_info("[dboard] Type to test, Ctrl+C to exit");
 
     let stdin = io::stdin();
     let mut handle = stdin.lock();
@@ -95,7 +95,7 @@ pub fn run_stdin_mode(
                 .generation;
             if generation != last_focus_generation {
                 log_info(&format!(
-                    "[vietc] Focus generation changed: {} -> {}",
+                    "[dboard] Focus generation changed: {} -> {}",
                     last_focus_generation, generation
                 ));
                 last_focus_generation = generation;
@@ -132,11 +132,11 @@ pub fn run_stdin_mode(
                     last_focus_generation,
                 );
                 if !daemon.handle_transaction_outcome(outcome) {
-                    log_info("[vietc] stdin injection failed");
+                    log_info("[dboard] stdin injection failed");
                 }
             }
             Err(e) => {
-                log_info(&format!("[vietc] Read error: {}", e));
+                log_info(&format!("[dboard] Read error: {}", e));
                 break;
             }
         }

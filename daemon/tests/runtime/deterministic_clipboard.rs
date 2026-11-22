@@ -74,7 +74,7 @@ fn deterministic_clipboard_preserves_previous_value_on_x11_and_wayland() {
     for display_server in [FakeDisplayServer::X11, FakeDisplayServer::Wayland] {
         let mut clipboard = FakeClipboardSession::new(display_server, "clipboard A");
 
-        clipboard.inject_and_restore("vietc A");
+        clipboard.inject_and_restore("dboard A");
 
         assert_eq!(
             clipboard.current(),
@@ -85,7 +85,7 @@ fn deterministic_clipboard_preserves_previous_value_on_x11_and_wayland() {
             clipboard.events(),
             [
                 ClipboardEvent::Snapshot("clipboard A".to_string()),
-                ClipboardEvent::WriteInjected("vietc A".to_string()),
+                ClipboardEvent::WriteInjected("dboard A".to_string()),
                 ClipboardEvent::Restore("clipboard A".to_string()),
             ]
         );
@@ -97,7 +97,7 @@ fn deterministic_clipboard_user_change_during_debounce_is_not_overwritten() {
     for display_server in [FakeDisplayServer::X11, FakeDisplayServer::Wayland] {
         let mut clipboard = FakeClipboardSession::new(display_server, "clipboard A");
 
-        clipboard.begin_injection("vietc A");
+        clipboard.begin_injection("dboard A");
         clipboard.user_copy("clipboard B");
         clipboard.finish_debounced_restore();
 

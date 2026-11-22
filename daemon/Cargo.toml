@@ -1,22 +1,21 @@
 [package]
-name = "vietc-daemon"
+name = "dboard-daemon"
 version.workspace = true
 edition.workspace = true
-description = "VietC pure evdev background daemon"
+description = "Dboard pure evdev background daemon"
 license.workspace = true
 
 [[bin]]
-name = "vietc"
+name = "dboard"
 path = "src/main.rs"
 
 [features]
-default = ["x11", "wayland"]
-x11 = ["vietc-protocol/x11"]
-wayland = ["vietc-protocol/wayland-protocol", "dep:wayland-client", "dep:cosmic-protocols", "dep:wayland-protocols"]
+default = ["wayland"]
+wayland = ["dboard-protocol/wayland-protocol", "dep:wayland-client", "dep:cosmic-protocols", "dep:wayland-protocols", "dep:wayland-protocols-wlr"]
 
 [dependencies]
-vietc-engine.workspace = true
-vietc-protocol.workspace = true
+dboard-engine.workspace = true
+dboard-protocol.workspace = true
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -27,6 +26,7 @@ dbus = "0.9"
 wayland-client = { version = "0.31", optional = true }
 cosmic-protocols = { version = "0.2", default-features = false, features = ["client"], optional = true }
 wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
+wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-journald = "0.3"

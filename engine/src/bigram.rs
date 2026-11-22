@@ -59,6 +59,15 @@ pub(crate) fn evaluate_forward_bigram(
                     | "vừa"
                     | "thử"
                     | "dụng"
+                    | "rồi"
+                    | "và"
+                    | "xong"
+                    | "vào"
+                    | "lại"
+                    | "khi"
+                    | "mới"
+                    | "chưa"
+                    | "đã"
             ) =>
         {
             return Some(true);
@@ -171,8 +180,9 @@ pub(crate) fn evaluate_forward_bigram(
     }
 
     // 3. Strong Vietnamese compound bigrams when Word 1 is already Vietnamese
-    //    (e.g. `"bánh tét"`, `"cảm ơn"`).
-    if is_vietnamese_lexical_compound(&prev, &comp_lower) {
+    //    (e.g. `"bánh tét"`, `"cảm ơn"`) or a sentence-start double-homograph (`"Low mow"` -> `"Lơ mơ"`).
+    if is_vietnamese_lexical_compound(&prev, &comp_lower) || (prev == "low" && comp_lower == "mơ")
+    {
         return Some(false);
     }
 
@@ -370,6 +380,8 @@ pub(crate) fn is_vietnamese_lexical_compound(w1_vn_lower: &str, w2_vn_lower: &st
                 | "gọn"
                 | "ngắn"
                 | "lui"
+                | "khỏi"
+                | "cuộc"
                 | "kinh"
                 | "đơn"
                 | "bớt"
@@ -380,6 +392,21 @@ pub(crate) fn is_vietnamese_lexical_compound(w1_vn_lower: &str, w2_vn_lower: &st
                 | "lời"
                 | "vốn"
         ),
+        "rét" => matches!(
+            w2_vn_lower,
+            "đậm" | "hại" | "buốt" | "mướt" | "quá" | "run" | "căm" | "nàng"
+        ),
+        "lơ" => matches!(w2_vn_lower, "mơ" | "là" | "đãng" | "ngơ" | "lửng"),
+        "nơ" => matches!(
+            w2_vn_lower,
+            "đỏ" | "hồng" | "trắng" | "đen" | "bướm" | "xinh"
+        ),
+        "mốt" => matches!(w2_vn_lower, "mới" | "cũ" | "thời" | "hiện"),
+        "hót" => matches!(w2_vn_lower, "líu" | "vang" | "hay" | "rộn"),
+        "bú" => matches!(w2_vn_lower, "sữa" | "mẹ" | "bình" | "mớm"),
+        "á" => matches!(w2_vn_lower, "hậu" | "quân" | "đông" | "âu" | "khôi"),
+        "ú" => matches!(w2_vn_lower, "òa" | "oà" | "tim" | "ớ" | "nụ"),
+        "ì" => matches!(w2_vn_lower, "ạch" | "xèo" | "ầm"),
         "thí" => matches!(
             w2_vn_lower,
             "sinh" | "điểm" | "nghiệm" | "dụ" | "chủ" | "mạng"

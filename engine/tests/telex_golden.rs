@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
+use dboard_engine::{telex::resolve_and_render, Engine, EngineEvent, InputMethod};
 use std::collections::HashMap;
-use vietc_engine::{telex::resolve_and_render, Engine, EngineEvent, InputMethod};
 
 #[derive(Debug)]
 struct GoldenCase {

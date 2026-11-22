@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-use std::collections::HashMap;
-use vietc_engine::{
+use dboard_engine::{
     BoundaryState, Engine, EngineEvent, EventStore, InputEvent, InputMethod, PhysicalEvent,
     ReplacementReason,
 };
+use std::collections::HashMap;
 
 fn replay(input: &str) -> String {
     Engine::replay_keystrokes(

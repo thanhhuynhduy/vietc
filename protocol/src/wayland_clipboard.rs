@@ -23,7 +23,7 @@ use wayland_protocols::ext::data_control::v1::client::*;
 use wayland_protocols_wlr::data_control::v1::client::*;
 
 const TICK: Duration = Duration::from_millis(20);
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
 const SECRET_HINT_MIME: &str = "x-kde-passwordManagerHint";
 const MIMES: [&str; 4] = [
     "text/plain;charset=utf-8",
@@ -950,7 +950,10 @@ mod tests {
                 }
             }
             drop(t); // Completion is not observable until the writer is closed.
-            reader.read_to_end(&mut received).unwrap();
+            while let Err(e) = reader.read_to_end(&mut received) {
+                assert_eq!(e.kind(), io::ErrorKind::WouldBlock);
+                std::thread::yield_now();
+            }
             assert_eq!(received, large);
         }
         assert_eq!(&*payload, b"immutable text");

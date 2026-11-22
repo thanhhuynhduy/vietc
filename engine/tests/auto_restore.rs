@@ -4,8 +4,8 @@
 //!   `six`/`sĩ`, `tree`/`trê`, `list`/`lít`, `host`/`hót`) disambiguate using
 //!   unigram frequency + preceding-word Bigram context!
 
+use dboard_engine::{Engine, EngineEvent, InputMethod};
 use std::collections::HashMap;
-use vietc_engine::{Engine, EngineEvent, InputMethod};
 
 fn telex(keys: &str) -> String {
     Engine::replay_keystrokes(
@@ -260,5 +260,49 @@ fn auto_restore_can_be_disabled() {
     assert!(
         event.is_none(),
         "with auto-restore off the composed VN word stays untouched on flush, got {event:?}"
+    );
+}
+
+#[test]
+fn p0_vni_uppercase_alphanumeric_and_code_tokens_restore_safely() {
+    let type_line = |method: InputMethod, input: &str| -> String {
+        let mut engine = Engine::new(method);
+        engine.set_enabled(true);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            match engine.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(rep.delete_before_cursor);
+                    screen = screen.chars().take(keep).collect();
+                    screen.push_str(&rep.insert);
+                    if matches!(ch, ' ' | '_' | '/' | '.' | '-') {
+                        screen.push(ch);
+                    }
+                }
+                None => screen.push(ch),
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        screen
+    };
+
+    // VNI uppercase 2-char standards stay ASCII while lowercase VNI typing stays Vietnamese
+    assert_eq!(type_line(InputMethod::Vni, "A4 I7 O2 "), "A4 I7 O2 ");
+    assert_eq!(type_line(InputMethod::Vni, "no1 to2 a1 "), "nó tò á ");
+
+    // Dev/code snake_case & path tokens restore cleanly without harming Vietnamese prose
+    assert_eq!(
+        type_line(
+            InputMethod::Telex,
+            "raw_buf idx_cur app_ver sub_dir config_ddi "
+        ),
+        "raw_buf idx_cur app_ver sub_dir config_ddi "
+    );
+    assert_eq!(
+        type_line(InputMethod::Telex, "cur khoai ver ddepj QDD-TTg "),
+        "củ khoai vẻ đẹp QĐ-TTg "
     );
 }

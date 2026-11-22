@@ -110,7 +110,7 @@ pub(crate) struct WaylandVirtualKeyboard {
 }
 
 impl WaylandVirtualKeyboard {
-    pub(crate) fn connect() -> io::Result<Self> {
+    pub(crate) fn connect(initial_caps_lock: bool, initial_num_lock: bool) -> io::Result<Self> {
         if unsafe { libc::geteuid() } == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -120,10 +120,14 @@ impl WaylandVirtualKeyboard {
         let socket_path = resolve_wayland_socket_path()?;
         let stream = connect_unix_nonblocking(&socket_path)?;
         let connection = Connection::from_socket(stream).map_err(io::Error::other)?;
-        Self::from_connection(connection)
+        Self::from_connection(connection, initial_caps_lock, initial_num_lock)
     }
 
-    fn from_connection(connection: Connection) -> io::Result<Self> {
+    fn from_connection(
+        connection: Connection,
+        initial_caps_lock: bool,
+        initial_num_lock: bool,
+    ) -> io::Result<Self> {
         let mut queue = connection.new_event_queue::<VkDiscovery>();
         let qh = queue.handle();
         let _registry = connection.display().get_registry(&qh, ());
@@ -154,7 +158,9 @@ impl WaylandVirtualKeyboard {
             keymap_fd.as_fd(),
             keymap_size,
         );
-        vk.modifiers(0, 0, 0, 0);
+        let initial_locked = (if initial_caps_lock { XKB_MOD_LOCK } else { 0 })
+            | (if initial_num_lock { XKB_MOD_MOD2 } else { 0 });
+        vk.modifiers(0, 0, initial_locked, 0);
 
         queue
             .roundtrip(&mut discovery)
@@ -173,8 +179,8 @@ impl WaylandVirtualKeyboard {
                 early_released_bitmap: [0; 4],
                 left_shift: false,
                 right_shift: false,
-                caps_lock: false,
-                num_lock: false,
+                caps_lock: initial_caps_lock,
+                num_lock: initial_num_lock,
             }),
             healthy: AtomicBool::new(true),
         })
@@ -190,6 +196,10 @@ impl WaylandVirtualKeyboard {
         text.chars().all(|ch| char_to_vk_stroke(ch).is_some())
     }
 
+    /// Record the desktop's tracked CapsLock state in memory without emitting a
+    /// standalone `vk.modifiers` message: physical `KEY_CAPSLOCK` is forwarded
+    /// via `/dev/uinput` so the compositor toggles it natively once, and future
+    /// virtual-keyboard modifier updates preserve `XKB_MOD_LOCK` without racing.
     pub(crate) fn set_caps_lock(&self, enabled: bool) {
         if !self.is_healthy() {
             return;
@@ -198,18 +208,14 @@ impl WaylandVirtualKeyboard {
             .session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if sess.caps_lock == enabled {
-            return;
-        }
         sess.caps_lock = enabled;
-        let depressed = sess.phys_depressed();
-        let locked = sess.phys_locked();
-        sess.vk.modifiers(depressed, 0, locked, 0);
-        if sess.flush_and_drain().is_err() {
-            self.healthy.store(false, Ordering::Relaxed);
-        }
     }
 
+    /// Record the desktop's tracked NumLock state in memory without emitting a
+    /// standalone `vk.modifiers` message: physical `KEY_NUMLOCK` is forwarded
+    /// via `/dev/uinput` so the compositor toggles it natively once, and future
+    /// virtual-keyboard modifier updates preserve `XKB_MOD_MOD2` without racing
+    /// or double-toggling NumLock back off.
     pub(crate) fn set_num_lock(&self, enabled: bool) {
         if !self.is_healthy() {
             return;
@@ -218,16 +224,7 @@ impl WaylandVirtualKeyboard {
             .session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if sess.num_lock == enabled {
-            return;
-        }
         sess.num_lock = enabled;
-        let depressed = sess.phys_depressed();
-        let locked = sess.phys_locked();
-        sess.vk.modifiers(depressed, 0, locked, 0);
-        if sess.flush_and_drain().is_err() {
-            self.healthy.store(false, Ordering::Relaxed);
-        }
     }
 
     /// Returns `true` if the key event was handled by `WaylandVirtualKeyboard`,
@@ -425,7 +422,7 @@ impl WaylandVirtualKeyboard {
             let Some(stroke) = char_to_vk_stroke(ch) else {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "character outside static virtual-keyboard keymap",
+                    "character outside virtual-keyboard keymap",
                 ));
             };
             strokes.push(stroke);
@@ -514,7 +511,15 @@ impl VkSession {
     #[inline]
     fn next_timestamp_ms(&mut self) -> u32 {
         let wall = self.started.elapsed().as_millis() as u32;
-        self.last_timestamp_ms = self.last_timestamp_ms.max(wall).wrapping_add(1);
+        // Wrap-safe monotonic advance across the 49.7-day u32::MAX boundary (Invariant 2):
+        // treat `wall` as ahead of `last_timestamp_ms` only when their modular delta < 2^31.
+        let ahead = wall.wrapping_sub(self.last_timestamp_ms);
+        let base = if ahead > 0 && ahead < 0x8000_0000 {
+            wall
+        } else {
+            self.last_timestamp_ms
+        };
+        self.last_timestamp_ms = base.wrapping_add(1);
         self.last_timestamp_ms
     }
 
@@ -638,7 +643,7 @@ impl Drop for VkSession {
 }
 
 fn create_keymap_memfd(keymap_bytes: &[u8]) -> io::Result<(OwnedFd, u32)> {
-    let raw = unsafe { libc::memfd_create(c"vietc-vk-keymap".as_ptr(), libc::MFD_CLOEXEC) };
+    let raw = unsafe { libc::memfd_create(c"dboard-vk-keymap".as_ptr(), libc::MFD_CLOEXEC) };
     if raw < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -871,7 +876,7 @@ mod tests {
         });
 
         let conn = Connection::from_socket(client).unwrap();
-        let vk = WaylandVirtualKeyboard::from_connection(conn).unwrap();
+        let vk = WaylandVirtualKeyboard::from_connection(conn, false, true).unwrap();
         assert!(vk.is_healthy());
         assert!(WaylandVirtualKeyboard::can_encode_str(
             "Xin chào Việt Nam! Đỗ Ước 2026"

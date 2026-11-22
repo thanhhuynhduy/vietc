@@ -74,7 +74,7 @@ impl DaemonProcess {
         );
 
         let child = Command::new(&bin_path)
-            .env("VIETC_CONFIG", config_path.to_str().unwrap())
+            .env("DBOARD_CONFIG", config_path.to_str().unwrap())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -171,18 +171,18 @@ impl Drop for DaemonProcess {
 }
 
 fn daemon_binary_path() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_vietc") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_dboard") {
         return PathBuf::from(path);
     }
     let mut path = std::env::current_dir().unwrap_or_default();
     if path.ends_with("daemon") {
         path.pop();
     }
-    let debug = path.join("target").join("debug").join("vietc");
+    let debug = path.join("target").join("debug").join("dboard");
     if debug.exists() {
         return debug;
     }
-    let release = path.join("target").join("release").join("vietc");
+    let release = path.join("target").join("release").join("dboard");
     if release.exists() {
         return release;
     }

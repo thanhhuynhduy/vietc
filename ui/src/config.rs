@@ -59,6 +59,9 @@ pub struct Config {
     #[serde(default = "default_toggle_key")]
     pub toggle_key: String,
 
+    #[serde(default = "default_toggle_modes")]
+    pub toggle_modes: Vec<String>,
+
     #[serde(default = "default_start_enabled")]
     pub start_enabled: bool,
 
@@ -87,6 +90,9 @@ fn default_input_method() -> String {
 fn default_toggle_key() -> String {
     "space".into()
 }
+fn default_toggle_modes() -> Vec<String> {
+    vec!["vn".into(), "en".into()]
+}
 fn default_start_enabled() -> bool {
     true
 }
@@ -108,6 +114,7 @@ impl Default for Config {
         Self {
             input_method: default_input_method(),
             toggle_key: default_toggle_key(),
+            toggle_modes: default_toggle_modes(),
             start_enabled: default_start_enabled(),
             auto_restore: AutoRestoreConfig::default(),
             app_state: AppStateConfig::default(),
@@ -154,7 +161,7 @@ impl Config {
         static NEXT_SAVE: AtomicU64 = AtomicU64::new(0);
         let content = toml::to_string_pretty(self)?;
         let temporary = path.with_file_name(format!(
-            ".vietc-config-{}-{}.tmp",
+            ".dboard-config-{}-{}.tmp",
             std::process::id(),
             NEXT_SAVE.fetch_add(1, Ordering::Relaxed)
         ));
@@ -196,18 +203,18 @@ fn config_base_dir() -> Option<PathBuf> {
 
 fn user_config_path() -> PathBuf {
     if let Some(base) = config_base_dir() {
-        return base.join("vietc").join("config.toml");
+        return base.join("dboard").join("config.toml");
     }
     let uid = unsafe { libc::getuid() };
-    PathBuf::from(format!("/tmp/vietc-{uid}")).join("config.toml")
+    PathBuf::from(format!("/tmp/dboard-{uid}")).join("config.toml")
 }
 
 fn config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(config_dir) = config_base_dir() {
-        paths.push(config_dir.join("vietc").join("config.toml"));
+        paths.push(config_dir.join("dboard").join("config.toml"));
     }
-    paths.push(PathBuf::from("/etc/vietc/config.toml"));
+    paths.push(PathBuf::from("/etc/dboard/config.toml"));
     paths
 }
 
@@ -215,7 +222,7 @@ pub fn is_autostart_installed() -> bool {
     if let Some(config_dir) = config_base_dir() {
         config_dir
             .join("autostart")
-            .join("vietc-tray.desktop")
+            .join("dboard-tray.desktop")
             .exists()
     } else {
         false
@@ -224,10 +231,10 @@ pub fn is_autostart_installed() -> bool {
 
 pub fn uninstall_autostart() {
     if let Some(config_dir) = config_base_dir() {
-        let desktop_file = config_dir.join("autostart").join("vietc-tray.desktop");
+        let desktop_file = config_dir.join("autostart").join("dboard-tray.desktop");
         if desktop_file.exists() {
             let _ = fs::remove_file(desktop_file);
-            eprintln!("[vietc] Removed autostart entry");
+            eprintln!("[dboard] Removed autostart entry");
         }
     }
 }
@@ -235,21 +242,21 @@ pub fn uninstall_autostart() {
 pub fn install_autostart() {
     if let Some(config_dir) = config_base_dir() {
         let autostart_dir = config_dir.join("autostart");
-        let desktop_file = autostart_dir.join("vietc-tray.desktop");
+        let desktop_file = autostart_dir.join("dboard-tray.desktop");
         let _ = fs::create_dir_all(&autostart_dir);
 
         let exec_path = std::env::current_exe()
-            .unwrap_or_else(|_| PathBuf::from("/usr/bin/vietc-tray"))
+            .unwrap_or_else(|_| PathBuf::from("/usr/bin/dboard-tray"))
             .to_string_lossy()
             .into_owned();
 
         let content = format!(
             "[Desktop Entry]\n\
              Type=Application\n\
-             Name=VietC\n\
+             Name=Dboard\n\
              Comment=Vietnamese Input Method\n\
              Exec=\"{}\"\n\
-             Icon=vietc\n\
+             Icon=dboard\n\
              Terminal=false\n\
              Categories=Utility;System;\n\
              X-GNOME-Autostart-enabled=true\n\
@@ -258,7 +265,7 @@ pub fn install_autostart() {
         );
 
         let _ = fs::write(desktop_file, content);
-        eprintln!("[vietc] Installed autostart entry");
+        eprintln!("[dboard] Installed autostart entry");
     }
 }
 
@@ -270,7 +277,7 @@ mod tests {
     fn atomic_save_preserves_config_and_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let directory =
-            std::env::temp_dir().join(format!("vietc-ui-config-{}", std::process::id()));
+            std::env::temp_dir().join(format!("dboard-ui-config-{}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("config.toml");
         fs::write(&path, "deduplicate_keys = true\n").unwrap();
@@ -289,7 +296,7 @@ mod tests {
 
     #[test]
     fn mode_changes_preserve_all_unrelated_daemon_config() {
-        let source = include_str!("../../vietc.toml").to_string()
+        let source = include_str!("../../dboard.toml").to_string()
             + "\n[password_detection]\nenabled = true\ncheck_atspi2 = false\n";
         let before: toml::Value = toml::from_str(&source).unwrap();
         let mut config: Config = toml::from_str(&source).unwrap();

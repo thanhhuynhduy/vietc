@@ -1,21 +1,23 @@
-# VietC
+# Dboard
 
 <p align="center">
-  <strong>Pure <code>evdev</code>/<code>uinput</code> Bilingual Vietnamese–English Input Method for Linux (Wayland &amp; X11)</strong><br/>
+  <strong>Pure <code>evdev</code>/<code>uinput</code> Bilingual Vietnamese–English Input Method for Linux Wayland (COSMIC, Hyprland, Sway — US QWERTY)</strong><br/>
   <a href="README.md">Tài liệu Tiếng Việt</a>
 </p>
 
-**VietC** is a standalone Linux Vietnamese input method operating directly at the kernel input layer (`evdev` + `uinput`), **with zero dependency on IBus or Fcitx5**. It delivers zero-underline typing across Wayland (GNOME, KDE Plasma, COSMIC, Hyprland, Sway) and X11.
+**Dboard** is a standalone Linux Vietnamese input method operating directly at the kernel input layer (`evdev` + `zwp_virtual_keyboard_v1` / `uinput`), **with zero dependency on IBus or Fcitx5**. It delivers zero-underline typing on Wayland compositors supporting `zwp_virtual_keyboard_v1` (**COSMIC Desktop, Hyprland, Sway, and wlroots compositors**) with **US QWERTY** keyboards.
 
-Its [`vietc-engine`](engine/) core implements an Android **Gboard-inspired Dual-Hypothesis Bilingual Decoder** paired with traditional **old-style Vietnamese tone placement (`hòa`, `khỏe`, `thủy`)**.
+> **Supported Scope:** Wayland (`COSMIC`, `Hyprland`, `Sway` / `wlroots`) + `US QWERTY` only. GNOME Wayland, KDE Plasma Wayland, X11, and non-US keyboard layouts are not supported.
+
+Its [`dboard-engine`](engine/) core implements an Android **Gboard-inspired Dual-Hypothesis Bilingual Decoder** paired with traditional **old-style Vietnamese tone placement (`hòa`, `khỏe`, `thủy`)**.
 
 ---
 
 ## Highlights
 
 - **Pure `evdev` + `zwp_virtual_keyboard_v1` / `uinput` Architecture (Rootless via `uaccess`):**
-  - Captures hardware keystrokes via `/dev/input/event*` and commits Unicode text directly on Wayland via `zwp_virtual_keyboard_v1` (8-level XKB keymap, zero-clipboard, zero-underline), with automatic `/dev/uinput` and atomic clipboard fallback for X11/TTY.
-  - Uses active-seat `systemd-logind` ACLs (`TAG+="uaccess", GROUP="root", MODE="0600"` in [`70-vietc.rules`](packaging/70-vietc.rules)) — runs as an unprivileged user service without `root`, Linux capabilities, or `input` group membership.
+  - Captures hardware keystrokes via `/dev/input/event*` and commits Unicode text directly on Wayland via `zwp_virtual_keyboard_v1` (8-level US QWERTY XKB keymap, zero-clipboard, zero-underline), using Wayland atomic clipboard only for out-of-keymap symbols/emoji in user macros.
+  - Uses active-seat `systemd-logind` ACLs (`TAG+="uaccess"` scoped to keyboard/mouse/touchpad `/dev/input/event*` devices, and `TAG+="uaccess", GROUP="root", MODE="0600"` for `/dev/uinput` in [`70-dboard.rules`](packaging/70-dboard.rules)) — runs as an unprivileged user service without `root`, Linux capabilities, or `input` group membership.
 - **Gboard-Inspired Bilingual Vietnamese–English Engine:**
   - **Dual-Hypothesis Tracking:** Maintains the exact `raw_buffer` alongside the composed Vietnamese syllable on every keystroke.
   - **Bigram Language Context (`prev_context`) + Unigram Frequency Tiers:** Resolves valid Telex collisions between English and Vietnamese using preceding-word context:
@@ -37,8 +39,8 @@ Its [`vietc-engine`](engine/) core implements an Android **Gboard-inspired Dual-
 ### From Source (Recommended)
 
 ```bash
-git clone https://github.com/thanhhuynhduy/vietc.git
-cd vietc
+git clone https://github.com/thanhhuynhduy/vietc.git dboard
+cd dboard
 sudo bash ./install.sh --from-source
 ```
 
@@ -48,7 +50,7 @@ Log out and log back in once after initial installation so `systemd-logind` appl
 
 ```bash
 make deb
-sudo apt install ./packaging/deb/vietc_*.deb
+sudo apt install ./packaging/deb/dboard_*.deb
 ```
 
 *(You can also install offline from an extracted release tarball via `sudo bash ./install.sh`, or pass `--prebuilt` to download and verify the latest release against `SHA256SUMS`.)*
@@ -65,11 +67,12 @@ sudo bash ./uninstall.sh
 
 | Action | Default | Notes |
 |---|---|---|
-| Cycle Mode (`Telex` → `EN` → `VNI` → `Telex`) | `Ctrl + Space` | Configurable via `toggle_key` in `config.toml`; exact modifier matching (never hijacks `Ctrl+Shift+Space` or `Ctrl+Alt+Space`) |
+| Toggle Mode (`VN` ↔ `EN`) | `Ctrl + Space` | Defaults to `toggle_modes = ["vn", "en"]` (configurable to 3-way `["en", "vni", "telex"]` and custom `toggle_key` in `config.toml`); exact modifier matching |
 | Strip Active Tone | `z` (Telex) / `0` (VNI) | e.g. `toansz` → `toan`, `toan10` → `toan` |
-| Undo Auto-Restore | `Backspace` right after `Space` | e.g. `"test "` + `Backspace` → `"tét"` |
-| System Tray UI (optional) | `vietc-tray` | StatusNotifierItem tray icon for quick toggles |
-| Interactive CLI Harness | `vietc-cli` | Test engine behavior directly in terminal |
+| Undo Auto-Restore / Autocorrect | `Backspace` right after `Space` | e.g. `"test "` + `Backspace` → `"tét"` |
+| System Tray UI (optional) | `dboard-tray` | StatusNotifierItem tray icon for quick VN/EN and Telex/VNI toggles |
+| Environment Diagnostics | `dboard-daemon doctor` | Checks Wayland socket, `uaccess` ACLs, `/dev/uinput`, config & user dictionary |
+| Interactive CLI Harness | `dboard-cli` | Test engine behavior directly in terminal |
 
 ---
 

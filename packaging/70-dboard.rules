@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Grant active physical desktop seat access to /dev/uinput and keyboard/pointer
+# /dev/input/event* devices via systemd-logind uaccess ACLs (no input group needed).
+# Preserve distro GROUP/MODE on event* and exclude unrelated input devices (gamepads, sensors).
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", GROUP="root", MODE="0600"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", TAG+="uaccess"

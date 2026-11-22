@@ -1,9 +1,9 @@
 [package]
-name = "vietc-cli"
+name = "dboard-cli"
 version.workspace = true
 edition.workspace = true
-description = "VietC CLI Test Harness"
+description = "Dboard CLI Test Harness"
 license.workspace = true
 
 [dependencies]
-vietc-engine.workspace = true
+dboard-engine.workspace = true

@@ -24,8 +24,8 @@ use crate::event::{
     is_toggle_combination_state, is_toggle_key, is_vn_control_key, key_to_char_with_case,
 };
 use crate::inject::execute_commands;
+use dboard_protocol::inject::{InjectResult, KeyInjector};
 use evdev::KeyCode;
-use vietc_protocol::inject::{InjectResult, KeyInjector};
 
 #[derive(Clone, Default, Debug)]
 struct OfficeEditorState {
@@ -346,7 +346,7 @@ impl OfficeSimulator {
         };
         let daemon = Daemon::new(
             config,
-            std::path::PathBuf::from("/tmp/vietc-office-matrix-test.toml"),
+            std::path::PathBuf::from("/tmp/dboard-office-matrix-test.toml"),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         );
 
@@ -632,7 +632,7 @@ impl OfficeSimulator {
         self.daemon.engine.set_enabled(true);
         self.daemon
             .engine
-            .set_method(vietc_engine::InputMethod::Telex);
+            .set_method(dboard_engine::InputMethod::Telex);
         self.daemon
             .engine_enabled
             .store(true, std::sync::atomic::Ordering::SeqCst);

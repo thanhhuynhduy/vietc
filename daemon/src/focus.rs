@@ -2,6 +2,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::surrounding_context::{
+    SurroundingContext, SurroundingContextData, SURROUNDING_CONTEXT_TTL,
+};
+
 #[allow(dead_code)]
 pub const FOCUS_UNKNOWN_COMPOSITION_TTL: Duration = Duration::from_millis(750);
 pub const OMNIBOX_SELECTION_TTL: Duration = Duration::from_millis(500);
@@ -58,6 +62,12 @@ pub struct FocusSnapshot {
     /// the caret in a focused browser omnibox / autocomplete entry.
     pub omnibox_inline_selection: bool,
     pub omnibox_selection_at: Option<Instant>,
+    /// Surrounding context before the caret observed by AT-SPI2 `TextCaretMoved`
+    /// on a non-password editable widget, consumed once when the engine is idle.
+    pub surrounding_context: Option<SurroundingContext>,
+    /// Timestamp of the most recent pointer click so pre-click surrounding
+    /// context is discarded while post-click AT-SPI `TextCaretMoved` context survives.
+    pub last_pointer_click_at: Option<Instant>,
 }
 
 impl Default for FocusSnapshot {
@@ -72,6 +82,8 @@ impl Default for FocusSnapshot {
             class_from_compositor: false,
             omnibox_inline_selection: false,
             omnibox_selection_at: None,
+            surrounding_context: None,
+            last_pointer_click_at: None,
         }
     }
 }
@@ -100,6 +112,14 @@ impl FocusSnapshot {
         self.omnibox_selection_at = active.then(Instant::now);
     }
 
+    pub fn set_surrounding_context(&mut self, data: Option<SurroundingContextData>) {
+        self.surrounding_context = data.map(|d| SurroundingContext {
+            data: d,
+            generation: self.generation,
+            captured_at: Instant::now(),
+        });
+    }
+
     pub fn observe_target(&mut self, target: Option<TargetIdentity>, class: Option<String>) {
         let class = class.filter(|value| !value.is_empty());
 
@@ -111,6 +131,7 @@ impl FocusSnapshot {
                         .store(self.generation, Ordering::Release);
                     self.omnibox_inline_selection = false;
                     self.omnibox_selection_at = None;
+                    self.surrounding_context = None;
                 }
                 self.identity = target
                     .surface_or_window
@@ -124,6 +145,7 @@ impl FocusSnapshot {
                 self.class = class;
                 self.omnibox_inline_selection = false;
                 self.omnibox_selection_at = None;
+                self.surrounding_context = None;
                 self.reliability = FocusReliability::Unavailable;
             }
         }
@@ -131,6 +153,42 @@ impl FocusSnapshot {
 }
 
 pub type SharedFocusSnapshot = Arc<Mutex<FocusSnapshot>>;
+
+pub fn clear_surrounding_word(shared: &SharedFocusSnapshot) {
+    let mut focus = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    focus.surrounding_context = None;
+}
+
+pub fn record_pointer_click(shared: &SharedFocusSnapshot) {
+    let mut focus = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    focus.last_pointer_click_at = Some(Instant::now());
+    focus.surrounding_context = None;
+}
+
+pub fn take_surrounding_context(
+    shared: &SharedFocusSnapshot,
+    expected_generation: u64,
+) -> Option<SurroundingContextData> {
+    let mut focus = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = focus.surrounding_context.take()?;
+    let after_last_click = focus
+        .last_pointer_click_at
+        .is_none_or(|click_at| entry.captured_at >= click_at);
+    if entry.generation == expected_generation
+        && after_last_click
+        && entry.captured_at.elapsed() <= SURROUNDING_CONTEXT_TTL
+    {
+        Some(entry.data)
+    } else {
+        None
+    }
+}
 
 pub fn clear_omnibox_inline_selection(shared: &SharedFocusSnapshot) {
     let mut focus = shared
@@ -314,5 +372,42 @@ mod tests {
         assert_eq!(snapshot.identity.as_deref(), Some("window-a"));
         assert_eq!(snapshot.generation, 1);
         assert_eq!(snapshot.reliability, FocusReliability::Unavailable);
+    }
+
+    #[test]
+    fn pointer_click_clears_pre_click_context_but_preserves_post_click_context() {
+        use super::{record_pointer_click, take_surrounding_context, SharedFocusSnapshot};
+        use crate::surrounding_context::SurroundingContextData;
+        use std::sync::{Arc, Mutex};
+
+        let shared: SharedFocusSnapshot = Arc::new(Mutex::new(FocusSnapshot::default()));
+        {
+            let mut f = shared.lock().unwrap();
+            f.observe(Some("editor".into()), Some("gedit".into()));
+            f.set_surrounding_context(Some(SurroundingContextData {
+                word_at_caret: Some("stale".into()),
+                prev_word: None,
+                after_sentence_boundary: false,
+            }));
+        }
+        let gen = shared.lock().unwrap().generation;
+
+        // Click clears pre-click context
+        record_pointer_click(&shared);
+        assert_eq!(take_surrounding_context(&shared, gen), None);
+
+        // Fresh post-click AT-SPI TextCaretMoved context survives until next keypress
+        shared
+            .lock()
+            .unwrap()
+            .set_surrounding_context(Some(SurroundingContextData {
+                word_at_caret: Some("chao".into()),
+                prev_word: Some("xin".into()),
+                after_sentence_boundary: false,
+            }));
+        let taken =
+            take_surrounding_context(&shared, gen).expect("post-click context must survive");
+        assert_eq!(taken.word_at_caret.as_deref(), Some("chao"));
+        assert_eq!(taken.prev_word.as_deref(), Some("xin"));
     }
 }

@@ -17,11 +17,20 @@ pub struct Config {
     #[serde(default = "default_toggle_method_key")]
     pub toggle_method_key: String,
 
+    #[serde(default = "default_toggle_modes")]
+    pub toggle_modes: Vec<String>,
+
     #[serde(default = "default_start_enabled")]
     pub start_enabled: bool,
 
     #[serde(default)]
     pub auto_restore: AutoRestoreConfig,
+
+    #[serde(default = "default_false")]
+    pub autocorrect: bool,
+
+    #[serde(default = "default_false")]
+    pub auto_capitalize: bool,
 
     #[serde(default)]
     pub password_detection: PasswordDetectionConfig,
@@ -151,6 +160,9 @@ fn default_toggle_key() -> String {
 }
 fn default_toggle_method_key() -> String {
     "space".into()
+}
+fn default_toggle_modes() -> Vec<String> {
+    vec!["vn".into(), "en".into()]
 }
 fn default_start_enabled() -> bool {
     true
@@ -285,13 +297,13 @@ fn default_vietnamese_apps() -> Vec<String> {
 
 fn candidate_config_paths() -> [Option<PathBuf>; 3] {
     [
-        dirs().map(|d| d.join("vietc").join("config.toml")),
-        Some(PathBuf::from("/etc/vietc/config.toml")),
+        dirs().map(|d| d.join("dboard").join("config.toml")),
+        Some(PathBuf::from("/etc/dboard/config.toml")),
         std::env::current_exe().ok().and_then(|exe| {
             exe.parent()
                 .and_then(|p| p.parent())
                 .and_then(|p| p.parent())
-                .map(|p| p.join("etc").join("vietc").join("config.toml"))
+                .map(|p| p.join("etc").join("dboard").join("config.toml"))
         }),
     ]
 }
@@ -309,12 +321,12 @@ impl Config {
             if path.exists() {
                 let content = fs::read_to_string(&path)?;
                 let config: Config = toml::from_str::<Config>(&content)?.normalize();
-                eprintln!("[vietc] Loaded config from: {}", path.display());
+                eprintln!("[dboard] Loaded config from: {}", path.display());
                 return Ok(config);
             }
         }
 
-        eprintln!("[vietc] Using default config");
+        eprintln!("[dboard] Using default config");
         Ok(Self::default())
     }
 
@@ -342,8 +354,11 @@ impl Default for Config {
             input_method: default_input_method(),
             toggle_key: default_toggle_key(),
             toggle_method_key: default_toggle_method_key(),
+            toggle_modes: default_toggle_modes(),
             start_enabled: default_start_enabled(),
             auto_restore: AutoRestoreConfig::default(),
+            autocorrect: false,
+            auto_capitalize: false,
             password_detection: PasswordDetectionConfig::default(),
             app_state: AppStateConfig::default(),
             macros,
@@ -373,20 +388,20 @@ fn dirs() -> Option<PathBuf> {
 }
 
 pub fn user_config_path() -> Option<PathBuf> {
-    dirs().map(|d| d.join("vietc").join("config.toml"))
+    dirs().map(|d| d.join("dboard").join("config.toml"))
 }
 
 pub fn user_ipc_file_path(name: &str) -> PathBuf {
     if let Some(base) = dirs() {
-        return base.join("vietc").join(name);
+        return base.join("dboard").join(name);
     }
     if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
         if !rt.is_empty() && std::path::Path::new(&rt).is_dir() {
-            return PathBuf::from(rt).join("vietc").join(name);
+            return PathBuf::from(rt).join("dboard").join(name);
         }
     }
     let uid = unsafe { libc::getuid() };
-    PathBuf::from(format!("/tmp/vietc-{}-{}", name, uid))
+    PathBuf::from(format!("/tmp/dboard-{}-{}", name, uid))
 }
 
 pub fn find_config_path() -> PathBuf {
@@ -396,7 +411,7 @@ pub fn find_config_path() -> PathBuf {
         }
     }
 
-    user_config_path().unwrap_or_else(|| PathBuf::from("/etc/vietc/config.toml"))
+    user_config_path().unwrap_or_else(|| PathBuf::from("/etc/dboard/config.toml"))
 }
 
 #[cfg(test)]

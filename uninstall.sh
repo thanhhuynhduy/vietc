@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# VietC — Vietnamese Input Method Uninstaller
+# Dboard — Vietnamese Input Method Uninstaller
 # Usage: verify the release checksum, then run sudo bash ./uninstall.sh
 set -euo pipefail
 
@@ -54,19 +54,19 @@ t() {
     if [ "$LANG_CODE" = "vi" ]; then
         case "$key" in
             sudo) echo -e "${RED}Vui lòng chạy với quyền sudo.${NC}" ;;
-            uninstaller_header) echo -e "${YELLOW}=== Bắt đầu gỡ cài đặt VietC ===${NC}" ;;
-            stopping_services) echo -e "Đang dừng các dịch vụ và tiến trình VietC..." ;;
+            uninstaller_header) echo -e "${YELLOW}=== Bắt đầu gỡ cài đặt Dboard ===${NC}" ;;
+            stopping_services) echo -e "Đang dừng các dịch vụ và tiến trình Dboard..." ;;
             removing_files) echo -e "Đang xóa các tệp nhị phân, cấu hình và icon..." ;;
-            removed) echo -e "${GREEN}=== Đã gỡ cài đặt hoàn toàn VietC khỏi hệ thống! ===${NC}" ;;
+            removed) echo -e "${GREEN}=== Đã gỡ cài đặt hoàn toàn Dboard khỏi hệ thống! ===${NC}" ;;
             *) echo -e "$key" ;;
         esac
     else
         case "$key" in
             sudo) echo -e "${RED}Please run with sudo.${NC}" ;;
-            uninstaller_header) echo -e "${YELLOW}=== Starting VietC Uninstaller ===${NC}" ;;
-            stopping_services) echo -e "Stopping VietC services and processes..." ;;
+            uninstaller_header) echo -e "${YELLOW}=== Starting Dboard Uninstaller ===${NC}" ;;
+            stopping_services) echo -e "Stopping Dboard services and processes..." ;;
             removing_files) echo -e "Removing binaries, configuration, and icons..." ;;
-            removed) echo -e "${GREEN}=== VietC has been completely removed from your system! ===${NC}" ;;
+            removed) echo -e "${GREEN}=== Dboard has been completely removed from your system! ===${NC}" ;;
             *) echo -e "$key" ;;
         esac
     fi
@@ -75,7 +75,7 @@ t() {
 # Auto-elevate with sudo if not root
 if [ "$EUID" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then
-        echo -e "${YELLOW}VietC uninstaller requires sudo permissions.${NC}"
+        echo -e "${YELLOW}Dboard uninstaller requires sudo permissions.${NC}"
         if [ ! -f "$0" ]; then
             echo "Refusing to re-download and execute a mutable remote script as root." >&2
             echo "Download uninstall.sh from a GitHub release, verify it with that release's SHA256SUMS, then run: sudo bash ./uninstall.sh" >&2
@@ -109,86 +109,86 @@ t stopping_services
 # Stop and disable systemd user services
 if [ -n "$INSTALLING_USER" ] && [ -n "$U_UID" ]; then
     sudo -u "$INSTALLING_USER" XDG_RUNTIME_DIR="/run/user/$U_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
-        systemctl --user stop vietc.service vietc-tray.service 2>/dev/null || true
+        systemctl --user stop dboard.service dboard-tray.service 2>/dev/null || true
     sudo -u "$INSTALLING_USER" XDG_RUNTIME_DIR="/run/user/$U_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
-        systemctl --user disable vietc.service vietc-tray.service 2>/dev/null || true
+        systemctl --user disable dboard.service dboard-tray.service 2>/dev/null || true
 fi
 
 # Gracefully stop all running processes first so evdev devices are cleanly ungrabbed
-pkill -TERM -x vietc 2>/dev/null || true
-pkill -TERM -x vietc-daemon 2>/dev/null || true
-pkill -TERM -x vietc-tray 2>/dev/null || true
+pkill -TERM -x dboard 2>/dev/null || true
+pkill -TERM -x dboard-daemon 2>/dev/null || true
+pkill -TERM -x dboard-tray 2>/dev/null || true
 sleep 0.2
-pkill -9 -x vietc 2>/dev/null || true
-pkill -9 -x vietc-daemon 2>/dev/null || true
-pkill -9 -x vietc-tray 2>/dev/null || true
-pkill -9 -x vietcctl 2>/dev/null || true
-pkill -9 -x vietc-uinputd 2>/dev/null || true
-pkill -9 -x vietc-cli 2>/dev/null || true
+pkill -9 -x dboard 2>/dev/null || true
+pkill -9 -x dboard-daemon 2>/dev/null || true
+pkill -9 -x dboard-tray 2>/dev/null || true
+pkill -9 -x dboardctl 2>/dev/null || true
+pkill -9 -x dboard-uinputd 2>/dev/null || true
+pkill -9 -x dboard-cli 2>/dev/null || true
 
 t removing_files
 
 # Remove system binaries
-rm -f /usr/bin/vietc /usr/bin/vietc-daemon /usr/bin/vietcctl /usr/bin/vietc-tray \
-      /usr/bin/vietc-uinputd /usr/bin/vietc-cli /usr/bin/vietc-xrecord
-rm -f /usr/local/bin/vietc /usr/local/bin/vietc-daemon /usr/local/bin/vietcctl \
-      /usr/local/bin/vietc-tray /usr/local/bin/vietc-uinputd /usr/local/bin/vietc-cli \
-      /usr/local/bin/vietc-xrecord
+rm -f /usr/bin/dboard /usr/bin/dboard-daemon /usr/bin/dboardctl /usr/bin/dboard-tray \
+      /usr/bin/dboard-uinputd /usr/bin/dboard-cli /usr/bin/dboard-xrecord
+rm -f /usr/local/bin/dboard /usr/local/bin/dboard-daemon /usr/local/bin/dboardctl \
+      /usr/local/bin/dboard-tray /usr/local/bin/dboard-uinputd /usr/local/bin/dboard-cli \
+      /usr/local/bin/dboard-xrecord
 
 # Remove user local binaries if present
 if [ -n "$USER_HOME" ]; then
-    LEGACY_UINPUT_SOCKET="$USER_HOME/.vietc/uinput.sock"
+    LEGACY_UINPUT_SOCKET="$USER_HOME/.dboard/uinput.sock"
     if [ -S "$LEGACY_UINPUT_SOCKET" ]; then
         rm -f -- "$LEGACY_UINPUT_SOCKET"
     elif [ -e "$LEGACY_UINPUT_SOCKET" ] || [ -L "$LEGACY_UINPUT_SOCKET" ]; then
         echo "Refusing to remove non-socket legacy path: $LEGACY_UINPUT_SOCKET" >&2
     fi
 
-    rm -f "$USER_HOME/.local/bin/vietc" "$USER_HOME/.local/bin/vietc-daemon" \
-          "$USER_HOME/.local/bin/vietcctl" "$USER_HOME/.local/bin/vietc-tray" \
-          "$USER_HOME/.local/bin/vietc-uinputd" "$USER_HOME/.local/bin/vietc-cli"
+    rm -f "$USER_HOME/.local/bin/dboard" "$USER_HOME/.local/bin/dboard-daemon" \
+          "$USER_HOME/.local/bin/dboardctl" "$USER_HOME/.local/bin/dboard-tray" \
+          "$USER_HOME/.local/bin/dboard-uinputd" "$USER_HOME/.local/bin/dboard-cli"
 fi
 
 # Remove systemd service files
-rm -f /usr/lib/systemd/user/vietc.service /usr/lib/systemd/user/vietc-tray.service \
-      /usr/lib/systemd/user/graphical-session.target.wants/vietc.service
-rm -f /etc/systemd/user/vietc.service /etc/systemd/user/vietc-tray.service
+rm -f /usr/lib/systemd/user/dboard.service /usr/lib/systemd/user/dboard-tray.service \
+      /usr/lib/systemd/user/graphical-session.target.wants/dboard.service
+rm -f /etc/systemd/user/dboard.service /etc/systemd/user/dboard-tray.service
 if [ -n "$USER_HOME" ]; then
-    rm -f "$USER_HOME/.config/systemd/user/vietc.service" \
-          "$USER_HOME/.config/systemd/user/vietc-tray.service" \
-          "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service" \
-          "$USER_HOME/.config/systemd/user/default.target.wants/vietc.service"
+    rm -f "$USER_HOME/.config/systemd/user/dboard.service" \
+          "$USER_HOME/.config/systemd/user/dboard-tray.service" \
+          "$USER_HOME/.config/systemd/user/graphical-session.target.wants/dboard.service" \
+          "$USER_HOME/.config/systemd/user/default.target.wants/dboard.service"
 fi
 
 # Remove udev rules and kernel module load drop-in
-rm -f /etc/udev/rules.d/70-vietc.rules /etc/udev/rules.d/99-vietc.rules /etc/udev/rules.d/99-uinput.rules \
-      /lib/udev/rules.d/70-vietc.rules /usr/lib/udev/rules.d/70-vietc.rules
-rm -f /etc/modules-load.d/vietc.conf /usr/lib/modules-load.d/vietc.conf /etc/default/vietc
+rm -f /etc/udev/rules.d/70-dboard.rules /etc/udev/rules.d/99-dboard.rules /etc/udev/rules.d/99-uinput.rules \
+      /lib/udev/rules.d/70-dboard.rules /usr/lib/udev/rules.d/70-dboard.rules
+rm -f /etc/modules-load.d/dboard.conf /usr/lib/modules-load.d/dboard.conf /etc/default/dboard
 
 # Remove legacy component XML if present from older versions
-rm -f /usr/share/ibus/component/vietc.xml
+rm -f /usr/share/ibus/component/dboard.xml
 
 # Remove system desktop autostart & icons
-rm -f /usr/share/applications/vietc*.desktop /etc/xdg/autostart/vietc*.desktop
-rm -f /usr/share/icons/hicolor/*/apps/vietc*.svg /usr/share/icons/vietc*.svg
+rm -f /usr/share/applications/dboard*.desktop /etc/xdg/autostart/dboard*.desktop
+rm -f /usr/share/icons/hicolor/*/apps/dboard*.svg /usr/share/icons/dboard*.svg
 gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 
 # Remove user configs, user autostart & icons
-rm -rf /etc/vietc
+rm -rf /etc/dboard
 if [ -n "$USER_HOME" ]; then
-    rm -rf "$USER_HOME/.config/vietc" "$USER_HOME/.local/state/vietc"
-    rm -f "$USER_HOME/.config/autostart/vietc*.desktop"
-    rm -f "$USER_HOME/.local/share/icons/vietc*.svg"
-    rm -f "$USER_HOME/.local/share/icons/hicolor/*/apps/vietc*.svg"
+    rm -rf "$USER_HOME/.config/dboard" "$USER_HOME/.local/state/dboard"
+    rm -f "$USER_HOME/.config/autostart/dboard*.desktop"
+    rm -f "$USER_HOME/.local/share/icons/dboard*.svg"
+    rm -f "$USER_HOME/.local/share/icons/hicolor/*/apps/dboard*.svg"
 fi
 
 # Clean up status, lock, and socket files
 if [ -n "$U_UID" ]; then
-    rm -f "/tmp/vietc-daemon-$U_UID.lock" "/tmp/vietc-tray-$U_UID.lock" \
-          "/tmp/vietc-status-$U_UID" "/tmp/vietc-method-$U_UID" \
-          "/tmp/vietc-$U_UID.log" "/tmp/vietc-$U_UID.log.old"
-    rm -f "/run/user/$U_UID/vietc-daemon.lock" "/run/user/$U_UID/vietc-tray.lock"
-    rm -rf "/run/user/$U_UID/vietc"
+    rm -f "/tmp/dboard-daemon-$U_UID.lock" "/tmp/dboard-tray-$U_UID.lock" \
+          "/tmp/dboard-status-$U_UID" "/tmp/dboard-method-$U_UID" \
+          "/tmp/dboard-$U_UID.log" "/tmp/dboard-$U_UID.log.old"
+    rm -f "/run/user/$U_UID/dboard-daemon.lock" "/run/user/$U_UID/dboard-tray.lock"
+    rm -rf "/run/user/$U_UID/dboard"
 fi
 
 # Revoke legacy world and named-user access before restoring distro policy.

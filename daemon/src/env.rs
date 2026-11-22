@@ -181,7 +181,7 @@ pub fn recover_display_env() {
         if let Some(ref r) = found_xdg {
             std::env::set_var("XDG_RUNTIME_DIR", r);
             log_info(&format!(
-                "[vietc] Recovered XDG_RUNTIME_DIR={} from /proc",
+                "[dboard] Recovered XDG_RUNTIME_DIR={} from /proc",
                 r
             ));
         }
@@ -189,7 +189,7 @@ pub fn recover_display_env() {
     if std::env::var_os("DISPLAY").is_none() {
         if let Some(ref d) = found_display {
             std::env::set_var("DISPLAY", d);
-            log_info(&format!("[vietc] Recovered DISPLAY={} from /proc", d));
+            log_info(&format!("[dboard] Recovered DISPLAY={} from /proc", d));
         }
     }
     if std::env::var_os("XAUTHORITY").is_none() {
@@ -201,7 +201,7 @@ pub fn recover_display_env() {
         if let Some(ref w) = found_wayland {
             std::env::set_var("WAYLAND_DISPLAY", w);
             log_info(&format!(
-                "[vietc] Recovered WAYLAND_DISPLAY={} from /proc",
+                "[dboard] Recovered WAYLAND_DISPLAY={} from /proc",
                 w
             ));
         }
@@ -232,7 +232,7 @@ pub fn recover_display_env() {
             if let Some(sock_name) = find_wayland_socket_in_dir(Path::new(&xdg_dir)) {
                 std::env::set_var("WAYLAND_DISPLAY", &sock_name);
                 log_info(&format!(
-                    "[vietc] Recovered WAYLAND_DISPLAY={} from XDG_RUNTIME_DIR",
+                    "[dboard] Recovered WAYLAND_DISPLAY={} from XDG_RUNTIME_DIR",
                     sock_name
                 ));
             }
@@ -273,7 +273,7 @@ pub fn recover_dbus_env() {
                         if let Some(val) = var.strip_prefix("DBUS_SESSION_BUS_ADDRESS=") {
                             if !val.is_empty() {
                                 std::env::set_var("DBUS_SESSION_BUS_ADDRESS", val);
-                                log_info("[vietc] Recovered DBUS_SESSION_BUS_ADDRESS");
+                                log_info("[dboard] Recovered DBUS_SESSION_BUS_ADDRESS");
                                 return;
                             }
                         }
@@ -292,7 +292,7 @@ pub fn recover_dbus_env() {
         if bus_path.exists() {
             let addr = format!("unix:path={}", bus_path.display());
             std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &addr);
-            log_info("[vietc] Set DBUS_SESSION_BUS_ADDRESS from XDG_RUNTIME_DIR/bus");
+            log_info("[dboard] Set DBUS_SESSION_BUS_ADDRESS from XDG_RUNTIME_DIR/bus");
         }
     }
 }

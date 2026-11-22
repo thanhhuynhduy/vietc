@@ -14,6 +14,7 @@
 use std::collections::HashSet;
 
 const COMMON_ENGLISH_WORDS_RAW: &str = include_str!("english_words.txt");
+const EXTENDED_ENGLISH_WORDS_RAW: &str = include_str!("english_extended.txt");
 
 /// Words that are overwhelmingly English even inside Vietnamese sentences
 /// (`"team mình lets meet"`, `"làm ops"`, `"nuôi pets"`, `"chặn bots"`).
@@ -81,6 +82,7 @@ pub enum LanguageContext {
 
 pub struct EnglishDict {
     words: HashSet<&'static str>,
+    extended: Vec<&'static str>,
     unconditional_english_collisions: HashSet<&'static str>,
     english_dominant_collisions: HashSet<&'static str>,
     vietnamese_dominant_collisions: HashSet<&'static str>,
@@ -93,6 +95,11 @@ impl EnglishDict {
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .collect();
+        let extended = EXTENDED_ENGLISH_WORDS_RAW
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect();
         let unconditional_english_collisions =
             UNCONDITIONAL_ENGLISH_COLLISIONS.iter().copied().collect();
         let english_dominant_collisions = ENGLISH_DOMINANT_COLLISIONS.iter().copied().collect();
@@ -100,14 +107,19 @@ impl EnglishDict {
             VIETNAMESE_DOMINANT_COLLISIONS.iter().copied().collect();
         Self {
             words,
+            extended,
             unconditional_english_collisions,
             english_dominant_collisions,
             vietnamese_dominant_collisions,
         }
     }
 
-    pub fn is_english_word(&self, word: &str) -> bool {
+    pub fn is_core_english_word(&self, word: &str) -> bool {
         self.words.contains(word)
+    }
+
+    pub fn is_english_word(&self, word: &str) -> bool {
+        self.words.contains(word) || self.extended.binary_search(&word).is_ok()
     }
 
     pub fn is_unconditional_english_collision(&self, raw_lower: &str) -> bool {
@@ -218,6 +230,19 @@ pub fn is_alphanumeric_tech_token(raw: &str) -> bool {
             | "http3"
             | "web3"
     ) {
+        return true;
+    }
+    // Uppercase 2-char standard codes (`A3`, `A4`, `A5`, `I3`, `I5`, `I7`, `I9`,
+    // `O2`, `O3`, `U2`) must not be mangled into Vietnamese diacritics in VNI,
+    // while lowercase VNI typing (`a1` -> `á`, `o2` -> `ò`) remains untouched.
+    if raw.len() == 2
+        && raw.as_bytes()[0].is_ascii_uppercase()
+        && raw.as_bytes()[1].is_ascii_digit()
+        && matches!(
+            raw,
+            "A3" | "A4" | "A5" | "E1" | "E2" | "I3" | "I5" | "I7" | "I9" | "O2" | "O3" | "U2"
+        )
+    {
         return true;
     }
     let chars: Vec<char> = lower.chars().collect();
@@ -468,9 +493,9 @@ pub(crate) fn should_restore_word_decision(
     }
 
     let vn_candidate = composed.trim_start_matches(|c: char| c.is_ascii_digit());
-    let valid_vn = !vn_candidate.is_empty()
-        && crate::spelling::is_valid_vietnamese_syllable(vn_candidate)
-        && crate::spelling::is_in_vietnamese_dictionary(vn_candidate);
+    let valid_syllable =
+        !vn_candidate.is_empty() && crate::spelling::is_valid_vietnamese_syllable(vn_candidate);
+    let valid_vn = valid_syllable && crate::spelling::is_in_vietnamese_dictionary(vn_candidate);
     if !valid_vn {
         let is_english = dict.is_english_word(&raw_lower)
             || has_natural_english_double(&raw_lower)
@@ -482,7 +507,7 @@ pub(crate) fn should_restore_word_decision(
         if crate::engine_helpers::is_vn_d_abbreviation(vn_candidate, &raw_lower) {
             return false;
         }
-        return true;
+        return !valid_syllable;
     }
 
     if dict.is_unconditional_english_collision(&raw_lower) {
@@ -524,6 +549,11 @@ pub fn is_tech_token(raw_lower: &str) -> bool {
             | "opt"
             | "usr"
             | "dev"
+            | "def"
+            | "buf"
+            | "cur"
+            | "ver"
+            | "dir"
             | "sys"
             | "proc"
             | "tmp"
@@ -562,8 +592,14 @@ pub fn is_path_or_code_context(
     let raw_lower = raw.to_ascii_lowercase();
 
     // Vietnamese abbreviations with 'Đ' / 'đ' (`QĐ`, `HĐ`, `NĐ`, `UBND`, `VNĐ`)
-    // must NEVER be mangled back into 'DD' inside documents or legal codes!
-    if (composed.contains('Đ') || composed.contains('đ')) && raw_lower != "ddos" {
+    // must NEVER be mangled back into 'DD' inside documents or legal codes,
+    // while lowercase snake_case code identifiers (`config_ddi`, `btn_ddo`) restore safely.
+    let is_snake_case_lower =
+        (prev_boundary == Some('_') || next_boundary == '_') && !composed.contains('Đ');
+    if (composed.contains('Đ') || composed.contains('đ'))
+        && raw_lower != "ddos"
+        && !is_snake_case_lower
+    {
         return false;
     }
 
@@ -600,9 +636,52 @@ pub fn is_path_or_code_context(
         return true;
     }
 
-    // 3. Kebab-case or Snake-case identifier (`WEB-INF`, `my-app`, `ioffice_web`)
+    // 3. Snake-case code identifier (`config_ddi`, `raw_buf`, `ioffice_web`)
+    //    or kebab-case technical identifier (`WEB-INF`, `my-app`).
+    if is_snake_case_lower {
+        return true;
+    }
     (is_prev_hyphen || is_next_hyphen)
         && (is_tech_token(&raw_lower)
             || dict.is_english_word(&raw_lower)
             || is_alphanumeric_tech_token(raw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EnglishDict;
+
+    #[test]
+    fn extended_english_lexicon_is_sorted_and_collision_free_with_telex() {
+        let dict = EnglishDict::new();
+        assert!(
+            dict.extended.len() > 30_000,
+            "expected >30k extended English words, got {}",
+            dict.extended.len()
+        );
+        for pair in dict.extended.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "english_extended.txt must be strictly sorted for binary_search: {:?} >= {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        for &word in &dict.extended {
+            assert!(
+                !crate::spelling::is_in_vietnamese_dictionary(word),
+                "extended English word {:?} collides directly with Vietnamese dictionary",
+                word
+            );
+            let composed = crate::telex::resolve_and_render(word);
+            let collides_with_vn = composed != word
+                && crate::spelling::is_valid_vietnamese_syllable(&composed)
+                && crate::spelling::is_in_vietnamese_dictionary(&composed);
+            assert!(
+                !collides_with_vn,
+                "extended English word {:?} collides with Vietnamese Telex syllable {:?}",
+                word, composed
+            );
+        }
+    }
 }

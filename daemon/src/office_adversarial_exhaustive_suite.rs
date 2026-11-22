@@ -17,8 +17,8 @@ use crate::event::{
     key_to_char_with_case,
 };
 use crate::inject::execute_commands;
+use dboard_protocol::inject::{InjectResult, KeyInjector};
 use evdev::KeyCode;
-use vietc_protocol::inject::{InjectResult, KeyInjector};
 
 #[derive(Clone, Default, Debug)]
 struct OfficeDocumentBuffer {
@@ -296,11 +296,11 @@ struct AdversarialOfficeRig {
 impl AdversarialOfficeRig {
     fn new(initial_app: &str) -> Self {
         let config = Config::default();
-        let config_path = std::path::PathBuf::from("/etc/vietc/config.toml");
+        let config_path = std::path::PathBuf::from("/etc/dboard/config.toml");
         let engine_enabled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let mut daemon = Daemon::new(config, config_path, engine_enabled);
         daemon.engine.set_enabled(true);
-        daemon.engine.set_method(vietc_engine::InputMethod::Telex);
+        daemon.engine.set_method(dboard_engine::InputMethod::Telex);
 
         let desktop = Rc::new(RefCell::new(VirtualDesktop::default()));
         {
@@ -747,12 +747,12 @@ fn test_adversarial_cross_application_clipboard_workflow() {
     rig.switch_app("code");
     rig.type_text("// Config for ");
     rig.shortcut_ctrl(KeyCode::KEY_V);
-    rig.type_text(" in /etc/vietc/config.toml\n");
+    rig.type_text(" in /etc/dboard/config.toml\n");
 
     let code_text = rig.text();
     println!("VS Code text:\n{}", code_text);
     assert!(code_text.contains("// Config for "));
-    assert!(code_text.contains("in /etc/vietc/config.toml"));
+    assert!(code_text.contains("in /etc/dboard/config.toml"));
 }
 
 #[test]
@@ -789,8 +789,8 @@ fn test_adversarial_bilingual_it_infrastructure_commands() {
     let mut rig = AdversarialOfficeRig::new("code");
 
     // Mix of shell commands, English keywords, and Vietnamese instructions
-    rig.type_text("1. chayj leejnh: sudo systemctl restart vietc.service\n");
-    rig.type_text("2. kieemr tra log taij: tail -f ~/.local/state/vietc/vietc.log\n");
+    rig.type_text("1. chayj leejnh: sudo systemctl restart dboard.service\n");
+    rig.type_text("2. kieemr tra log taij: tail -f ~/.local/state/dboard/dboard.log\n");
     rig.type_text("3. neesu cos looxi thif run: git status vaf git diff --stat\n");
     rig.type_text(
         "4. curl -X POST http://localhost:8080/api/v1/auth/token -d '{\"username\":\"admin\"}'\n",
@@ -798,8 +798,8 @@ fn test_adversarial_bilingual_it_infrastructure_commands() {
 
     let actual = rig.text();
     println!("Bilingual commands text:\n{}", actual);
-    assert!(actual.contains("1. chạy lệnh: sudo systemctl restart vietc.service\n"));
-    assert!(actual.contains("2. kiểm tra log tại: tail -f ~/.local/state/vietc/vietc.log\n"));
+    assert!(actual.contains("1. chạy lệnh: sudo systemctl restart dboard.service\n"));
+    assert!(actual.contains("2. kiểm tra log tại: tail -f ~/.local/state/dboard/dboard.log\n"));
     assert!(actual.contains("3. nếu có lỗi thì run: git status và git diff --stat\n"));
     assert!(actual.contains("http://localhost:8080/api/v1/auth/token"));
 }

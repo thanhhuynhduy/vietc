@@ -56,8 +56,10 @@ fn scan_new(
 }
 
 /// Spawn the watcher. The returned counter increments on every pointer button
-/// press; consumers compare it with the last value they saw.
-pub fn spawn_pointer_watcher() -> Arc<AtomicU64> {
+/// press; consumers compare it with the last value they saw. Pre-click
+/// surrounding context is cleared immediately at click time so fresh post-click
+/// AT-SPI `TextCaretMoved` context survives until the next keypress.
+pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) -> Arc<AtomicU64> {
     let counter = Arc::new(AtomicU64::new(0));
     let shared = counter.clone();
     std::thread::spawn(move || {
@@ -110,6 +112,7 @@ pub fn spawn_pointer_watcher() -> Arc<AtomicU64> {
                                 && event.value() == 1
                                 && is_pointer_button(event.code())
                             {
+                                crate::focus::record_pointer_click(&shared_focus);
                                 shared.fetch_add(1, Ordering::SeqCst);
                             }
                         }

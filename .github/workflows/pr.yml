@@ -54,8 +54,8 @@ jobs:
 
       - name: Run Clippy
         run: |
-          env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY cargo clippy --workspace --all-targets --all-features -- -D warnings
-          env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY cargo clippy --manifest-path ui/Cargo.toml --all-targets -- -D warnings
+          env -u DISPLAY -u WAYLAND_DISPLAY -u DBOARD_RUNTIME_TESTS -u DBOARD_CONTROLLED_DISPLAY cargo clippy --workspace --all-targets --all-features -- -D warnings
+          env -u DISPLAY -u WAYLAND_DISPLAY -u DBOARD_RUNTIME_TESTS -u DBOARD_CONTROLLED_DISPLAY cargo clippy --manifest-path ui/Cargo.toml --all-targets -- -D warnings
 
       - name: Run headless workspace and UI tests
         run: make test-ci-smoke CARGO_FLAGS=--locked

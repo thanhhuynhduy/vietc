@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
+use dboard_engine::{Engine, InputMethod};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use vietc_engine::{Engine, InputMethod};
 
 const CORPUS: &str = include_str!("fixtures/vietnamese_typing_corpus.json");
 

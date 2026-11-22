@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use vietc_engine::{Engine, EngineEvent, EventStore, InputMethod};
+use dboard_engine::{Engine, EngineEvent, EventStore, InputMethod};
 
 use crate::app_state::AppStateManager;
 use crate::commands::OutputCommand;
@@ -20,9 +20,9 @@ fn show_osd(summary: &str, body: &str) {
                 "-t",
                 "1000",
                 "-h",
-                "string:x-canonical-private-synchronous:vietc-osd",
+                "string:x-canonical-private-synchronous:dboard-osd",
                 "-a",
-                "VietC",
+                "Dboard",
                 &summary,
                 &body,
             ])
@@ -31,6 +31,48 @@ fn show_osd(summary: &str, body: &str) {
             let _ = child.wait();
         }
     });
+}
+
+fn next_toggle_state(
+    toggle_modes: &[String],
+    current_enabled: bool,
+    current_method: &str,
+) -> (bool, String) {
+    let base_vn_method = if current_method.eq_ignore_ascii_case("vni") {
+        "vni"
+    } else {
+        "telex"
+    };
+
+    let mut targets: Vec<(bool, String)> = Vec::new();
+    for raw in toggle_modes {
+        let target = match raw.trim().to_ascii_lowercase().as_str() {
+            "en" | "english" => Some((false, base_vn_method.to_string())),
+            "vn" | "vietnamese" => Some((true, base_vn_method.to_string())),
+            "telex" => Some((true, "telex".to_string())),
+            "vni" => Some((true, "vni".to_string())),
+            _ => None,
+        };
+        if let Some(t) = target {
+            if !targets.contains(&t) {
+                targets.push(t);
+            }
+        }
+    }
+
+    if targets.len() < 2 {
+        targets = vec![
+            (true, base_vn_method.to_string()),
+            (false, base_vn_method.to_string()),
+        ];
+    }
+
+    let current = (current_enabled, base_vn_method.to_string());
+    if let Some(idx) = targets.iter().position(|t| *t == current) {
+        targets[(idx + 1) % targets.len()].clone()
+    } else {
+        targets[0].clone()
+    }
 }
 
 pub struct Daemon {
@@ -55,6 +97,11 @@ impl Daemon {
         let mut engine = Engine::new(method);
         engine.set_enabled(config.start_enabled);
         engine.set_auto_restore(config.auto_restore.enabled);
+        engine.set_autocorrect(config.autocorrect);
+        engine.set_auto_capitalize(config.auto_capitalize);
+        if let Some(dict_path) = crate::user_dict_store::user_dict_path() {
+            engine.set_user_dict(crate::user_dict_store::load_user_dict_from(&dict_path));
+        }
         engine_enabled.store(config.start_enabled, Ordering::SeqCst);
 
         for (shortcut, expansion) in &config.macros {
@@ -164,19 +211,14 @@ impl Daemon {
         let is_enabled = self.engine.is_enabled();
         let current_method = self.config.input_method.as_str();
 
-        let (new_enabled, new_method) = if !is_enabled {
-            (true, "vni")
-        } else if current_method == "vni" {
-            (true, "telex")
-        } else {
-            (false, "telex")
-        };
+        let (new_enabled, new_method) =
+            next_toggle_state(&self.config.toggle_modes, is_enabled, current_method);
 
         self.engine.set_enabled(new_enabled);
         self.engine_enabled.store(new_enabled, Ordering::SeqCst);
-        self.config.input_method = new_method.into();
+        self.config.input_method = new_method.clone();
         self.app_state.set_global_enabled(new_enabled);
-        self.app_state.set_global_method(new_method);
+        self.app_state.set_global_method(&new_method);
         self.app_state.clear_overrides();
         let effective = self.app_state.effective_method().to_string();
         let engine_method = match effective.as_str() {
@@ -184,6 +226,8 @@ impl Daemon {
             _ => InputMethod::Telex,
         };
         self.engine.set_method(engine_method);
+        self.engine
+            .set_auto_capitalize(self.config.auto_capitalize && !self.app_state.is_terminal_app());
         self.reset_composition_state();
         self.write_status();
         self.write_method_status();
@@ -194,9 +238,9 @@ impl Daemon {
         } else {
             "TELEX (Vietnamese)"
         };
-        show_osd("VietC", &format!("Mode: {}", label));
+        show_osd("Dboard", &format!("Mode: {}", label));
         log_info(&format!(
-            "[vietc] Mode rotated (Ctrl+Space): enabled={}, method={}, effective={}",
+            "[dboard] Mode rotated: enabled={}, method={}, effective={}",
             new_enabled, new_method, effective
         ));
     }
@@ -227,24 +271,25 @@ impl Daemon {
             {
                 self.config.input_method = expect_method.clone();
                 self.app_state.set_global_method(&expect_method);
-                let effective = self.app_state.effective_method();
-                let engine_method = if effective.eq_ignore_ascii_case("vni") {
-                    InputMethod::Vni
-                } else {
-                    InputMethod::Telex
-                };
-                self.engine.set_method(engine_method);
                 changed = true;
             }
         }
         if changed {
+            self.app_state.clear_overrides();
+            let effective = self.app_state.effective_method();
+            let engine_method = if effective.eq_ignore_ascii_case("vni") {
+                InputMethod::Vni
+            } else {
+                InputMethod::Telex
+            };
+            self.engine.set_method(engine_method);
             self.reset_composition_state();
         }
     }
 
     pub fn reload_config(&mut self) -> bool {
-        // Promote ~/.config/vietc/config.toml if the user created/saved it after
-        // the daemon initially booted from /etc/vietc/config.toml (.deb install).
+        // Promote ~/.config/dboard/config.toml if the user created/saved it after
+        // the daemon initially booted from /etc/dboard/config.toml (.deb install).
         if let Some(user_cfg) = crate::config::user_config_path() {
             if user_cfg != self.config_path && user_cfg.exists() {
                 self.config_path = user_cfg;
@@ -263,6 +308,10 @@ impl Daemon {
             Ok(new_config) => {
                 self.engine
                     .set_auto_restore(new_config.auto_restore.enabled);
+                self.engine.set_autocorrect(new_config.autocorrect);
+                self.engine.set_auto_capitalize(
+                    new_config.auto_capitalize && !self.app_state.is_terminal_app(),
+                );
 
                 self.engine.clear_macros();
                 for (shortcut, expansion) in &new_config.macros {
@@ -336,6 +385,16 @@ impl Daemon {
             }
         }
 
+        // Persist newly learned personal dictionary entries off the typing thread
+        // (only when an explicit One-Tap Undo occurs outside bypassed/terminal apps).
+        if !self.is_current_app_bypassed() && !self.app_state.is_terminal_app() {
+            if let Some(serialized) = self.engine.take_user_dict_for_save() {
+                if let Some(path) = crate::user_dict_store::user_dict_path() {
+                    crate::user_dict_store::enqueue_user_dict_save(path, serialized);
+                }
+            }
+        }
+
         commands
     }
 
@@ -366,7 +425,7 @@ impl Daemon {
             crate::commands::TransactionOutcome::Applied { .. } => true,
             crate::commands::TransactionOutcome::Failed => {
                 self.engine
-                    .reduce(vietc_engine::PhysicalEvent::ReplacementFailed);
+                    .reduce(dboard_engine::PhysicalEvent::ReplacementFailed);
                 false
             }
             crate::commands::TransactionOutcome::Stale { .. } => {
@@ -408,6 +467,8 @@ impl Daemon {
             _ => InputMethod::Telex,
         };
         self.engine.set_method(engine_method);
+        self.engine
+            .set_auto_capitalize(self.config.auto_capitalize && !self.app_state.is_terminal_app());
         self.reset_composition_state();
     }
 }
@@ -415,10 +476,10 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dboard_engine::InputEvent;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
-    use vietc_engine::InputEvent;
 
     const BS: char = '\x08';
 
@@ -452,7 +513,7 @@ mod tests {
         };
         let mut daemon = Daemon::new(
             config,
-            PathBuf::from("/tmp/vietc-forwarded-test.toml"),
+            PathBuf::from("/tmp/dboard-forwarded-test.toml"),
             Arc::new(AtomicBool::new(true)),
         );
         let mut screen = String::from("X ");
@@ -473,7 +534,7 @@ mod tests {
     fn focus_change_resets_engine_and_daemon_visible_revisions_together() {
         let mut daemon = Daemon::new(
             Config::default(),
-            PathBuf::from("/tmp/vietc_focus_revision_test.toml"),
+            PathBuf::from("/tmp/dboard_focus_revision_test.toml"),
             Arc::new(AtomicBool::new(true)),
         );
         daemon.engine.set_enabled(true);
@@ -511,7 +572,7 @@ mod tests {
     fn two_target_focus_change_does_not_replay_stale_composition() {
         let mut daemon = Daemon::new(
             Config::default(),
-            PathBuf::from("/tmp/vietc_two_target_test.toml"),
+            PathBuf::from("/tmp/dboard_two_target_test.toml"),
             Arc::new(AtomicBool::new(true)),
         );
         daemon.engine.set_enabled(true);
@@ -600,7 +661,7 @@ mod tests {
     fn focus_change_reset_clears_all_composition_state() {
         let mut daemon = Daemon::new(
             Config::default(),
-            PathBuf::from("/tmp/vietc_focus_reset_test.toml"),
+            PathBuf::from("/tmp/dboard_focus_reset_test.toml"),
             Arc::new(AtomicBool::new(true)),
         );
         daemon.engine.set_enabled(true);
@@ -618,5 +679,51 @@ mod tests {
         assert!(daemon.event_store.is_empty());
         assert!(daemon.screen_output.is_empty());
         assert_eq!(daemon.visible_revision, 0);
+    }
+
+    #[test]
+    fn toggle_modes_supports_one_tap_vn_en_and_three_way_rotation() {
+        let two_way = vec!["vn".into(), "en".into()];
+        assert_eq!(
+            next_toggle_state(&two_way, true, "telex"),
+            (false, "telex".into())
+        );
+        assert_eq!(
+            next_toggle_state(&two_way, false, "telex"),
+            (true, "telex".into())
+        );
+        // Preserves VNI when toggling VN <-> EN
+        assert_eq!(
+            next_toggle_state(&two_way, true, "vni"),
+            (false, "vni".into())
+        );
+        assert_eq!(
+            next_toggle_state(&two_way, false, "vni"),
+            (true, "vni".into())
+        );
+
+        let three_way = vec!["en".into(), "vni".into(), "telex".into()];
+        assert_eq!(
+            next_toggle_state(&three_way, false, "telex"),
+            (true, "vni".into())
+        );
+        assert_eq!(
+            next_toggle_state(&three_way, true, "vni"),
+            (true, "telex".into())
+        );
+        assert_eq!(
+            next_toggle_state(&three_way, true, "telex"),
+            (false, "telex".into())
+        );
+
+        // Invalid/empty lists fall back safely to 2-way VN <-> EN
+        assert_eq!(
+            next_toggle_state(&[], true, "telex"),
+            (false, "telex".into())
+        );
+        assert_eq!(
+            next_toggle_state(&["bogus".into()], false, "vni"),
+            (true, "vni".into())
+        );
     }
 }

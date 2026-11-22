@@ -9,10 +9,12 @@ mod config;
 mod daemon;
 mod device;
 mod display;
+mod doctor;
 mod env;
 mod evdev_loop;
 mod event;
 mod focus;
+mod focus_sync;
 mod focus_tracker;
 mod inject;
 mod key_dedup;
@@ -27,10 +29,14 @@ mod password_detector;
 mod pointer_watcher;
 #[cfg(test)]
 mod probe_office_exhaustive;
+#[cfg(test)]
+mod qc_multi_env_stress;
 mod signal;
 mod stdin;
+mod surrounding_context;
 #[cfg(feature = "wayland")]
 mod toplevel_tracker;
+mod user_dict_store;
 
 use daemon::Daemon;
 use device::open_keyboard_devices;
@@ -48,16 +54,23 @@ fn boost_thread_priority() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("doctor" | "--doctor")
+    ) {
+        recover_display_env();
+        std::process::exit(doctor::run_doctor());
+    }
     recover_display_env();
     let config_path = config::find_config_path();
     let config = config::Config::load().unwrap_or_default();
     let custom_log_file = config.log_file.as_deref().map(std::path::Path::new);
     let active_log = log::init(config.debug, config.log_level.as_deref(), custom_log_file)?;
     install_signal_handlers();
-    let _instance_lock = match ensure_single_instance("vietc-daemon") {
+    let _instance_lock = match ensure_single_instance("dboard-daemon") {
         Ok(lock) => lock,
         Err(signal::InstanceLockError::AlreadyRunning) => {
-            eprintln!("[vietc-daemon] Another instance is already running. Exiting.");
+            eprintln!("[dboard-daemon] Another instance is already running. Exiting.");
             return Ok(());
         }
         Err(error) => return Err(error.into()),
@@ -72,9 +85,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let display = display::detect_display_server();
     let compositor = display::detect_compositor();
 
-    log_info(&format!("VietC Daemon v{}", env!("CARGO_PKG_VERSION")));
+    log_info(&format!("Dboard Daemon v{}", env!("CARGO_PKG_VERSION")));
     log_info(&format!(
-        "[vietc] Active log file: {}",
+        "[dboard] Active log file: {}",
         active_log.display()
     ));
     log_info(&format!(
@@ -102,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     focus_tracker::spawn_atspi_focus_watcher(shared_focus.clone());
     #[cfg(feature = "wayland")]
     toplevel_tracker::spawn_toplevel_focus_tracker(shared_focus.clone());
-    let pointer_activity = pointer_watcher::spawn_pointer_watcher();
+    let pointer_activity = pointer_watcher::spawn_pointer_watcher(shared_focus.clone());
     let config_changed = Arc::new(AtomicBool::new(false));
     let status_changed = Arc::new(AtomicBool::new(false));
 
@@ -173,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 focus.observe(effective_identity, class);
                 if focus.generation != previous_generation {
                     log_info(&format!(
-                        "[vietc] bg: focus {:?} -> {:?} generation={}",
+                        "[dboard] bg: focus {:?} -> {:?} generation={}",
                         previous_identity, focus.identity, focus.generation
                     ));
                 }
@@ -238,23 +251,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 display,
             ) {
                 Ok(()) => {
-                    log_info("[vietc] evdev session ended");
+                    log_info("[dboard] evdev session ended");
                     return Ok(());
                 }
                 Err(e) => {
                     log_info(&format!(
-                        "[vietc] evdev exited with error: {} — falling back to stdin mode",
+                        "[dboard] evdev exited with error: {} — falling back to stdin mode",
                         e
                     ));
                 }
             }
         }
         Err(e) => {
-            log_info(&format!("[vietc] evdev not available: {}", e));
+            log_info(&format!("[dboard] evdev not available: {}", e));
         }
     }
 
-    log_info("[vietc] Running in stdin mode");
+    log_info("[dboard] Running in stdin mode");
     run_stdin_mode(
         &mut daemon,
         shared_focus,

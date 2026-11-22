@@ -1,6 +1,9 @@
 input_method = "telex"
 toggle_key = "space"
+toggle_modes = ["vn", "en"]
 start_enabled = true
+autocorrect = false
+auto_capitalize = false
 grab = true
 debug = false
 deduplicate_keys = false

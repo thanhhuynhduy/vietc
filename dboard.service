@@ -1,11 +1,11 @@
 [Unit]
-Description=VietC Vietnamese Input Daemon (evdev/uinput)
+Description=Dboard Vietnamese Input Daemon (evdev/uinput)
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/vietc-daemon
+ExecStart=/usr/bin/dboard-daemon
 Restart=on-failure
 RestartSec=3
 KillMode=process

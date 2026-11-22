@@ -20,7 +20,7 @@ KERNEL="$(uname -srmo)"
 DISTRO="$(. /etc/os-release 2>/dev/null && printf '%s %s' "${NAME:-unknown}" "${VERSION_ID:-unknown}")"
 
 cat > "$OUTPUT" <<EOF
-# Vietc Release Evidence
+# Dboard Release Evidence
 
 - Channel: ${CHANNEL}
 - Tag: ${TAG}

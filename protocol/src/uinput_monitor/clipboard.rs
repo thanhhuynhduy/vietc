@@ -9,7 +9,7 @@ use super::clipboard_backup::{
 use super::replacement_transaction::{ClipboardAction, ClipboardBurstState, ReplacementPhase};
 use super::UinputInjector;
 
-const CLIPBOARD_READY_TIMEOUT: Duration = Duration::from_millis(750);
+const CLIPBOARD_READY_TIMEOUT: Duration = Duration::from_millis(350);
 const CLIPBOARD_READY_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const PASTE_OBSERVATION_DELAY: Duration = Duration::from_millis(20);
 const CLIPBOARD_TRACE_LIMIT: usize = 128;
@@ -19,7 +19,7 @@ pub(super) fn trace_clipboard(sequence_id: u64, phase: &str, detail: &str) {
     let trace_index = CLIPBOARD_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
     if trace_index < CLIPBOARD_TRACE_LIMIT {
         eprintln!(
-            "[vietc] clipboard trace={} sequence_id={} phase={} {}",
+            "[dboard] clipboard trace={} sequence_id={} phase={} {}",
             trace_index, sequence_id, phase, detail
         );
     }
@@ -112,13 +112,11 @@ impl UinputInjector {
 
     fn read_clipboard() -> Option<String> {
         let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
-        let (prog, args): (&str, &[&str]) = if is_wayland {
-            ("wl-paste", &["-n"])
-        } else {
-            ("xclip", &["-selection", "clipboard", "-o"])
-        };
-        let mut cmd = Self::user_cmd(prog).ok()?;
-        cmd.args(args);
+        if !is_wayland {
+            return None;
+        }
+        let mut cmd = Self::user_cmd("wl-paste").ok()?;
+        cmd.args(["-n"]);
         let output = Self::run_cmd_with_timeout(cmd, Duration::from_millis(250))?;
         if !output.status.success() {
             return None;
@@ -224,7 +222,7 @@ impl UinputInjector {
             return self.paste_via_wayland_clipboard(text, backspaces, focus_generation);
             #[cfg(not(feature = "wayland-protocol"))]
             {
-                eprintln!("[vietc] Wayland Unicode injection requires the wayland-protocol feature; no keys sent");
+                eprintln!("[dboard] Wayland Unicode injection requires the wayland-protocol feature; no keys sent");
                 return false;
             }
         }
@@ -414,7 +412,7 @@ impl UinputInjector {
             let elapsed = t_total.elapsed().as_millis();
             if elapsed > 20 {
                 eprintln!(
-                    "[vietc] clipboard sequence_id={} elapsed_ms={}",
+                    "[dboard] clipboard sequence_id={} elapsed_ms={}",
                     sequence_id, elapsed
                 );
             }
@@ -467,7 +465,7 @@ impl UinputInjector {
         let elapsed = t_total.elapsed().as_millis();
         if elapsed > 20 {
             eprintln!(
-                "[vietc] clipboard sequence_id={} elapsed_ms={}",
+                "[dboard] clipboard sequence_id={} elapsed_ms={}",
                 sequence_id, elapsed
             );
         }
@@ -536,6 +534,9 @@ impl UinputInjector {
         use crate::clipboard_transaction::{paste_with_transfer, PasteCompletion};
         use crate::wayland_clipboard::{ClipboardOffer, Ownership};
 
+        // Cancel any pending background Wayland clipboard restore so a burst
+        // paste reuses the retained user snapshot instead of racing with it.
+        self.wayland_restore_gen.fetch_add(1, Ordering::AcqRel);
         let _clipboard_io = self
             .clip
             .io_lock
@@ -557,7 +558,7 @@ impl UinputInjector {
                 .uncertain_focus
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(focus_generation);
-            eprintln!("[vietc] Clipboard transfer backlog; native input only until focus changes");
+            eprintln!("[dboard] Clipboard transfer backlog; native input only until focus changes");
             return false;
         }
         let mut retire = |offer: ClipboardOffer| {
@@ -565,7 +566,7 @@ impl UinputInjector {
             retired.push(offer);
         };
         if self.wayland_paste_is_uncertain() {
-            eprintln!("[vietc] Unicode replacement suspended after uncertain paste; change input field before resuming");
+            eprintln!("[dboard] Unicode replacement suspended after uncertain paste; change input field before resuming");
             return false;
         }
         let backup = match retained.as_ref() {
@@ -581,12 +582,12 @@ impl UinputInjector {
                     .uncertain_focus
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(focus_generation);
-                eprintln!("[vietc] Clipboard transport unavailable; saved snapshot retained, no keys sent");
+                eprintln!("[dboard] Clipboard transport unavailable; saved snapshot retained, no keys sent");
                 return false;
             }
             _ => {
                 let Some(backup) = Self::snapshot_wayland_clipboard() else {
-                    eprintln!("[vietc] Clipboard snapshot unavailable; no replacement keys sent");
+                    eprintln!("[dboard] Clipboard snapshot unavailable; no replacement keys sent");
                     return false;
                 };
                 backup
@@ -599,7 +600,7 @@ impl UinputInjector {
             Ok(offer) => offer,
             Err(error) => {
                 eprintln!(
-                    "[vietc] Wayland clipboard publication failed before key dispatch: {error}"
+                    "[dboard] Wayland clipboard publication failed before key dispatch: {error}"
                 );
                 return false;
             }
@@ -610,7 +611,7 @@ impl UinputInjector {
         }
         if let Err(error) = publication {
             eprintln!(
-                "[vietc] Clipboard publication uncertain; snapshot retained, no keys sent: {error}"
+                "[dboard] Clipboard publication uncertain; snapshot retained, no keys sent: {error}"
             );
             *self
                 .uncertain_focus
@@ -650,35 +651,55 @@ impl UinputInjector {
                 offer.wait_for_transfer(CLIPBOARD_READY_TIMEOUT, || {
                     self.current_focus_generation() == focus_generation
                 })?;
-                // A clipboard manager may request the payload before Chromium/Electron.
-                // Keep the injected offer active briefly so the actual target cannot
-                // observe the restored user clipboard when it handles Ctrl+V later.
-                std::thread::sleep(Duration::from_millis(100));
                 if self.current_focus_generation() != focus_generation || !offer.owns_selection() {
                     return Err(std::io::ErrorKind::Interrupted.into());
                 }
                 Ok(())
             },
-            || match offer.ownership() {
-                Ownership::Owned => Self::restore_wayland_clipboard(&backup),
-                Ownership::Replaced => true,
-                Ownership::Unavailable => false,
-            },
+            || true,
         );
         match result {
-            PasteCompletion::PayloadServed { cleanup_ok } => {
-                // This is transport evidence only. Neither a clipboard manager
-                // nor the target app exposes insertion acknowledgment here.
-                eprintln!("[vietc] Wayland clipboard payload served; cleanup_ok={cleanup_ok}; target insertion unconfirmed");
-                if !cleanup_ok {
-                    *retained = Some(RetainedWaylandPaste { offer, backup });
-                } else {
-                    retire(offer);
-                }
+            PasteCompletion::PayloadServed { .. } => {
+                // Keep the offer & user snapshot retained so a burst paste reuses it,
+                // and run the 100ms clipboard-manager grace + restore off `evdev_loop`.
+                let expected_gen = self.wayland_restore_gen.fetch_add(1, Ordering::AcqRel) + 1;
+                *retained = Some(RetainedWaylandPaste { offer, backup });
+                let clip = Arc::clone(&self.clip);
+                let paste_slot = Arc::clone(&self.wayland_paste);
+                let retired_slot = Arc::clone(&self.retired_wayland_offers);
+                let restore_gen = Arc::clone(&self.wayland_restore_gen);
+                let _ = std::thread::Builder::new()
+                    .name("dboard-clip-restore".into())
+                    .spawn(move || {
+                        std::thread::sleep(Duration::from_millis(100));
+                        if restore_gen.load(Ordering::Acquire) != expected_gen {
+                            return;
+                        }
+                        let _io = clip.io_lock.lock().unwrap_or_else(|p| p.into_inner());
+                        if restore_gen.load(Ordering::Acquire) != expected_gen {
+                            return;
+                        }
+                        let mut slot = paste_slot.lock().unwrap_or_else(|p| p.into_inner());
+                        let Some(entry) = slot.take() else { return };
+                        let ok = match entry.offer.ownership() {
+                            Ownership::Owned => Self::restore_wayland_clipboard(&entry.backup),
+                            Ownership::Replaced => true,
+                            Ownership::Unavailable => false,
+                        };
+                        if ok {
+                            entry.offer.request_retire();
+                            retired_slot
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .push(entry.offer);
+                        } else {
+                            *slot = Some(entry);
+                        }
+                    });
                 true
             }
             PasteCompletion::Indeterminate => {
-                eprintln!("[vietc] Wayland paste indeterminate; keeping payload available, no clipboard restore or retry");
+                eprintln!("[dboard] Wayland paste indeterminate; keeping payload available, no clipboard restore or retry");
                 *self
                     .uncertain_focus
                     .lock()
@@ -781,18 +802,12 @@ impl UinputInjector {
 
     fn copy_to_clipboard(s: &str) -> bool {
         let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
-        let (prog, args): (&str, &[&str]) = if is_wayland {
-            ("wl-copy", &[])
-        } else {
-            ("xclip", &["-selection", "clipboard", "-i"])
-        };
-        let Ok(mut cmd) = Self::user_cmd(prog) else {
+        if !is_wayland {
+            return false;
+        }
+        let Ok(mut cmd) = Self::user_cmd("wl-copy") else {
             return false;
         };
-        cmd.args(args);
-        if !is_wayland {
-            return crate::clipboard_command::run_copy(cmd, s.as_bytes(), CLIPBOARD_READY_TIMEOUT);
-        }
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
@@ -809,7 +824,7 @@ impl UinputInjector {
                 true
             }
             Err(e) => {
-                eprintln!("[vietc] copy_to_clipboard: {} spawn failed: {}", prog, e);
+                eprintln!("[dboard] copy_to_clipboard: wl-copy spawn failed: {}", e);
                 false
             }
         }

@@ -6,7 +6,7 @@ version = 2
 yanked = "deny"
 ignore = [
     # Build-time-only transitive deps of `ksni 0.2 -> dbus-codegen -> clap 2`
-    # in `ui/Cargo.lock` (never linked into the runtime `vietc-tray` binary).
+    # in `ui/Cargo.lock` (never linked into the runtime `dboard-tray` binary).
     "RUSTSEC-2021-0139", # ansi_term unmaintained
     "RUSTSEC-2024-0375", # atty unmaintained
     "RUSTSEC-2021-0145", # atty Windows-only unsoundness

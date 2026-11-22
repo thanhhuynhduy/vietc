@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# VietC — Generic Linux Tarball Packager
+# Dboard — Generic Linux Tarball Packager
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,11 +11,11 @@ case "$(uname -m)" in
     aarch64|arm64) TAR_ARCH="arm64" ;;
     *) TAR_ARCH="amd64" ;;
 esac
-PACKAGE_NAME="vietc_${VERSION}_linux_${TAR_ARCH}"
+PACKAGE_NAME="dboard_${VERSION}_linux_${TAR_ARCH}"
 DIST_DIR="$PROJECT_ROOT/target/dist"
 STAGING="$DIST_DIR/$PACKAGE_NAME"
 
-echo "=== Building VietC release tarball v${VERSION} (${TAR_ARCH}) ==="
+echo "=== Building Dboard release tarball v${VERSION} (${TAR_ARCH}) ==="
 
 echo "[1/4] Compiling components in release mode..."
 cargo build --release --locked --manifest-path "$PROJECT_ROOT/Cargo.toml"
@@ -30,14 +30,14 @@ mkdir -p "$STAGING/icons"
 mkdir -p "$STAGING/config"
 mkdir -p "$STAGING/systemd"
 
-install -m 755 "$PROJECT_ROOT/target/release/vietc" "$STAGING/bin/vietc-daemon"
-install -m 755 "$PROJECT_ROOT/target/release/vietc-cli" "$STAGING/bin/vietc-cli"
-install -m 755 "$PROJECT_ROOT/ui/target/release/vietc-tray" "$STAGING/bin/vietc-tray"
+install -m 755 "$PROJECT_ROOT/target/release/dboard" "$STAGING/bin/dboard-daemon"
+install -m 755 "$PROJECT_ROOT/target/release/dboard-cli" "$STAGING/bin/dboard-cli"
+install -m 755 "$PROJECT_ROOT/ui/target/release/dboard-tray" "$STAGING/bin/dboard-tray"
 
-cp "$PROJECT_ROOT/packaging/70-vietc.rules" "$STAGING/udev/"
-cp "$PROJECT_ROOT/packaging/deb/vietc.desktop" "$STAGING/desktop/"
-cp "$PROJECT_ROOT/vietc.service" "$STAGING/systemd/"
-cp "$PROJECT_ROOT/vietc.toml" "$STAGING/config/config.toml"
+cp "$PROJECT_ROOT/packaging/70-dboard.rules" "$STAGING/udev/"
+cp "$PROJECT_ROOT/packaging/deb/dboard.desktop" "$STAGING/desktop/"
+cp "$PROJECT_ROOT/dboard.service" "$STAGING/systemd/"
+cp "$PROJECT_ROOT/dboard.toml" "$STAGING/config/config.toml"
 cp "$PROJECT_ROOT/packaging/icons/"*.svg "$STAGING/icons/"
 
 cp "$PROJECT_ROOT/install.sh" "$STAGING/"

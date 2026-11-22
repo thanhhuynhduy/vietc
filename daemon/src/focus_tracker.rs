@@ -14,9 +14,12 @@ const ATSPI_REGISTRY: &str = "org.a11y.atspi.Registry";
 const ATSPI_REGISTRY_PATH: &str = "/org/a11y/atspi/registry";
 const ATSPI_EVENT_FOCUS: &str = "object:state-changed:focused";
 const ATSPI_EVENT_SELECTION: &str = "object:text-selection-changed";
+const ATSPI_EVENT_CARET: &str = "object:text-caret-moved";
 const ROLE_AUTOCOMPLETE: i32 = 4;
 const ROLE_ENTRY: i32 = 19;
 const ROLE_TEXT: i32 = 60;
+const ROLE_PARAGRAPH: i32 = 71;
+const ROLE_DOCUMENT_TEXT: i32 = 100;
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 const PROCESS_TIMEOUT: Duration = Duration::from_millis(500);
 const QUERY_TIMEOUT: Duration = Duration::from_millis(35);
@@ -24,6 +27,7 @@ const QUERY_TIMEOUT: Duration = Duration::from_millis(35);
 enum PendingAtspiEvent {
     Focused(String, String),
     SelectionChanged(String, String),
+    CaretMoved(String, String, i32),
 }
 
 fn accessibility_bus_address() -> Result<String, Box<dyn Error>> {
@@ -87,6 +91,7 @@ fn is_inline_autocomplete_selection(caret: i32, start: i32, end: i32, char_count
 struct FocusedNodeInspection {
     is_password: bool,
     is_omnibox: bool,
+    is_editable_text: bool,
     app_name: Option<String>,
 }
 
@@ -97,6 +102,11 @@ fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedN
         .map(|(r,)| r)
         .unwrap_or(0);
     let is_password = role == crate::password_detector::ROLE_PASSWORD_TEXT;
+    let is_editable_text = !is_password
+        && matches!(
+            role,
+            ROLE_AUTOCOMPLETE | ROLE_ENTRY | ROLE_TEXT | ROLE_PARAGRAPH | ROLE_DOCUMENT_TEXT
+        );
     let is_omnibox = if role == ROLE_AUTOCOMPLETE {
         true
     } else if role == ROLE_ENTRY || role == ROLE_TEXT {
@@ -136,6 +146,7 @@ fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedN
     FocusedNodeInspection {
         is_password,
         is_omnibox,
+        is_editable_text,
         app_name,
     }
 }
@@ -189,6 +200,11 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
         "RegisterEvent",
         (ATSPI_EVENT_SELECTION,),
     );
+    let _ = registry.method_call::<(), _, _, _>(
+        "org.a11y.atspi.Registry",
+        "RegisterEvent",
+        (ATSPI_EVENT_CARET,),
+    );
 
     let pending: Arc<Mutex<Vec<PendingAtspiEvent>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -232,8 +248,31 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
         true
     })?;
 
+    let mut caret_rule = MatchRule::new_signal("org.a11y.atspi.Event.Object", "TextCaretMoved");
+    caret_rule.path_is_namespace = true;
+    let pending_caret = Arc::clone(&pending);
+    connection.add_match(caret_rule, move |_: (), _, message| {
+        let mut fields = message.iter_init();
+        let _detail = fields.read::<&str>().unwrap_or_default();
+        let caret = fields.read::<i32>().unwrap_or(-1);
+        if caret >= 0 {
+            if let (Some(s), Some(p)) = (message.sender(), message.path()) {
+                let s_str = s.to_string();
+                let p_str = p.to_string();
+                if !s_str.is_empty() && !p_str.is_empty() {
+                    pending_caret
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push(PendingAtspiEvent::CaretMoved(s_str, p_str, caret));
+                }
+            }
+        }
+        true
+    })?;
+
     let mut active_omnibox: Option<(String, String)> = None;
-    log_info("[vietc] AT-SPI focus, password & omnibox selection watcher active");
+    let mut active_text_node: Option<(String, String)> = None;
+    log_info("[dboard] AT-SPI focus, password, omnibox & surrounding-text watcher active");
     loop {
         if crate::signal::SIGNAL_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
@@ -244,9 +283,11 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|p| p.into_inner())
             .drain(..)
             .collect();
+        let mut latest_caret: Option<(String, String, i32)> = None;
         for ev in drained {
             match ev {
                 PendingAtspiEvent::Focused(sender, path) => {
+                    latest_caret = None;
                     // Inspect role & password state BEFORE bumping focus generation so
                     // evdev_loop sees the updated password flag on the very next keystroke!
                     let info = inspect_focused_node(&connection, &sender, &path);
@@ -261,10 +302,33 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
                             .set_omnibox_inline_selection(inline);
-                        active_omnibox = Some((sender, path));
+                        active_omnibox = Some((sender.clone(), path.clone()));
                     } else {
                         active_omnibox = None;
                         crate::focus::clear_omnibox_inline_selection(&shared_focus);
+                    }
+                    if info.is_editable_text {
+                        let ctx = crate::surrounding_context::query_caret_offset(
+                            &connection,
+                            &sender,
+                            &path,
+                        )
+                        .and_then(|caret| {
+                            crate::surrounding_context::query_surrounding_context(
+                                &connection,
+                                &sender,
+                                &path,
+                                caret,
+                            )
+                        });
+                        shared_focus
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .set_surrounding_context(ctx);
+                        active_text_node = Some((sender, path));
+                    } else {
+                        active_text_node = None;
+                        crate::focus::clear_surrounding_word(&shared_focus);
                     }
                 }
                 PendingAtspiEvent::SelectionChanged(sender, path) => {
@@ -278,8 +342,34 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                             .unwrap_or_else(|p| p.into_inner())
                             .set_omnibox_inline_selection(inline);
                     }
+                    if active_text_node
+                        .as_ref()
+                        .is_some_and(|(s, p)| s == &sender && p == &path)
+                    {
+                        crate::focus::clear_surrounding_word(&shared_focus);
+                    }
+                }
+                PendingAtspiEvent::CaretMoved(sender, path, caret) => {
+                    if active_text_node
+                        .as_ref()
+                        .is_some_and(|(s, p)| s == &sender && p == &path)
+                    {
+                        latest_caret = Some((sender, path, caret));
+                    }
                 }
             }
+        }
+        if let Some((sender, path, caret)) = latest_caret {
+            let ctx = crate::surrounding_context::query_surrounding_context(
+                &connection,
+                &sender,
+                &path,
+                caret,
+            );
+            shared_focus
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .set_surrounding_context(ctx);
         }
     }
 }
@@ -292,8 +382,9 @@ pub fn spawn_atspi_focus_watcher(shared_focus: SharedFocusSnapshot) {
         if let Err(error) = watch_once(shared_focus.clone()) {
             crate::password_detector::reset_atspi_focus_state();
             crate::focus::clear_omnibox_inline_selection(&shared_focus);
+            crate::focus::clear_surrounding_word(&shared_focus);
             log_info(&format!(
-                "[vietc] AT-SPI focus watcher unavailable: {}; retrying",
+                "[dboard] AT-SPI focus watcher unavailable: {}; retrying",
                 error
             ));
             thread::sleep(RETRY_DELAY);

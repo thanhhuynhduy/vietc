@@ -12,8 +12,8 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+use dboard_protocol::inject::{InjectResult, KeyInjector};
 use evdev::KeyCode;
-use vietc_protocol::inject::{InjectResult, KeyInjector};
 
 use crate::config::Config;
 use crate::daemon::Daemon;
@@ -509,7 +509,7 @@ impl OfficeProbeHarness {
         let config = Config::default();
         let mut daemon = Daemon::new(
             config,
-            PathBuf::from("/tmp/vietc-probe-config.toml"),
+            PathBuf::from("/tmp/dboard-probe-config.toml"),
             Arc::new(AtomicBool::new(true)),
         );
         daemon.engine.set_enabled(true);
@@ -565,7 +565,7 @@ impl OfficeProbeHarness {
         } else if value == 0 {
             self.key_state.remove(key);
         }
-        if key == KeyCode::KEY_CAPSLOCK && value == 1 {
+        if key == KeyCode::KEY_CAPSLOCK && value == 1 && !is_modifier_pressed(&self.key_state) {
             self.global_caps_lock = !self.global_caps_lock;
         }
         self.injector.set_caps_lock(self.global_caps_lock);
@@ -574,10 +574,6 @@ impl OfficeProbeHarness {
             && is_toggle_key(key, &self.daemon.config.toggle_key)
             && is_toggle_combination_state(&self.key_state, &self.daemon.config.toggle_key)
         {
-            if key == KeyCode::KEY_CAPSLOCK {
-                self.global_caps_lock = !self.global_caps_lock;
-                self.injector.set_caps_lock(self.global_caps_lock);
-            }
             self.consumed_keys.insert(keycode);
             self.daemon.toggle_method();
             return;
@@ -927,10 +923,12 @@ fn run_exhaustive_adversarial_office_probe() {
 
     // VNI mode mid-word Backspace after tone/mark ('vie6t5' + BS + 'c' -> 'việc')
     h.clear_text();
-    h.daemon.engine.set_method(vietc_engine::InputMethod::Vni);
+    h.daemon.engine.set_method(dboard_engine::InputMethod::Vni);
     h.type_ascii_str("vie6t5\x08c ");
     assert_eq!(h.text(), "việc ");
-    h.daemon.engine.set_method(vietc_engine::InputMethod::Telex);
+    h.daemon
+        .engine
+        .set_method(dboard_engine::InputMethod::Telex);
 
     // Holding Backspace (KeyRepeat value=2) across Space into committed word
     h.clear_text();

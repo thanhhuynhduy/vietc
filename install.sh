@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# VietC — Pure evdev/uinput Vietnamese Input Method Installer
+# Dboard — Pure evdev/uinput Vietnamese Input Method Installer
 set -euo pipefail
 
 # Privileged operations must never resolve executables from user-writable paths.
@@ -58,17 +58,17 @@ t() {
             no_prebuilt) echo -e "${RED}Không tìm thấy tệp nhị phân dựng sẵn cho v$1 ($2).${NC}" ;;
             visit_releases) echo -e "${YELLOW}Truy cập https://github.com/thanhhuynhduy/vietc/releases${NC}" ;;
             installing_bins) echo -e "Đang cài đặt vào /usr/bin/..." ;;
-            capability_removed) echo -e "${GREEN}Đã xác nhận vietc-daemon không mang Linux capability đặc quyền.${NC}" ;;
+            capability_removed) echo -e "${GREEN}Đã xác nhận dboard-daemon không mang Linux capability đặc quyền.${NC}" ;;
             success_title)
                 echo -e "${GREEN}========================================${NC}"
-                echo -e "${GREEN}  VietC đã cài đặt thành công!${NC}"
+                echo -e "${GREEN}  Dboard đã cài đặt thành công!${NC}"
                 echo -e "${GREEN}========================================${NC}" ;;
             next_steps)
                 echo -e "${GREEN}► Các bước tiếp theo:${NC}"
-                echo -e "  1. Dịch vụ người dùng ${GREEN}vietc.service${NC} (evdev/uinput qua systemd-logind uaccess) đã được cài đặt."
+                echo -e "  1. Dịch vụ người dùng ${GREEN}dboard.service${NC} (evdev/uinput qua systemd-logind uaccess) đã được cài đặt."
                 echo -e "  2. Nhấn ${GREEN}Ctrl+Space${NC} để bật/tắt gõ tiếng Việt (Telex / VNI, chuẩn dấu kiểu cũ)."
-                echo -e "  3. Tùy chọn khay hệ thống: chạy ${GREEN}vietc-tray${NC} hoặc mở VietC từ menu ứng dụng."
-                echo -e "  4. Cấu hình cá nhân: ${GREEN}~/.config/vietc/config.toml${NC}" ;;
+                echo -e "  3. Tùy chọn khay hệ thống: chạy ${GREEN}dboard-tray${NC} hoặc mở Dboard từ menu ứng dụng."
+                echo -e "  4. Cấu hình cá nhân: ${GREEN}~/.config/dboard/config.toml${NC}" ;;
             ns_uninstall_hdr) echo -e "Để gỡ cài đặt:" ;;
             ns_uninstall) echo -e "  ${GREEN}sudo bash ./uninstall.sh${NC}" ;;
             *) echo -e "$key" ;;
@@ -94,17 +94,17 @@ t() {
             no_prebuilt) echo -e "${RED}No prebuilt binary found for v$1 ($2).${NC}" ;;
             visit_releases) echo -e "${YELLOW}Visit https://github.com/thanhhuynhduy/vietc/releases${NC}" ;;
             installing_bins) echo -e "Installing to /usr/bin/..." ;;
-            capability_removed) echo -e "${GREEN}Confirmed vietc-daemon has no privileged Linux capabilities.${NC}" ;;
+            capability_removed) echo -e "${GREEN}Confirmed dboard-daemon has no privileged Linux capabilities.${NC}" ;;
             success_title)
                 echo -e "${GREEN}========================================${NC}"
-                echo -e "${GREEN}  VietC installed successfully!${NC}"
+                echo -e "${GREEN}  Dboard installed successfully!${NC}"
                 echo -e "${GREEN}========================================${NC}" ;;
             next_steps)
                 echo -e "${GREEN}► Next steps:${NC}"
-                echo -e "  1. User service ${GREEN}vietc.service${NC} (pure evdev/uinput via systemd-logind uaccess) is installed."
+                echo -e "  1. User service ${GREEN}dboard.service${NC} (pure evdev/uinput via systemd-logind uaccess) is installed."
                 echo -e "  2. Press ${GREEN}Ctrl+Space${NC} to toggle Vietnamese input (Telex / VNI, old-style tone placement)."
-                echo -e "  3. Optional tray icon: run ${GREEN}vietc-tray${NC} or launch VietC from your app menu."
-                echo -e "  4. User configuration: ${GREEN}~/.config/vietc/config.toml${NC}" ;;
+                echo -e "  3. Optional tray icon: run ${GREEN}dboard-tray${NC} or launch Dboard from your app menu."
+                echo -e "  4. User configuration: ${GREEN}~/.config/dboard/config.toml${NC}" ;;
             ns_uninstall_hdr) echo -e "To uninstall:" ;;
             ns_uninstall) echo -e "  ${GREEN}sudo bash ./uninstall.sh${NC}" ;;
             *) echo -e "$key" ;;
@@ -119,7 +119,7 @@ fi
 
 if [ "$EUID" -ne 0 ]; then
     if command -v sudo >/dev/null 2>&1; then
-        echo -e "${YELLOW}VietC installer requires sudo permissions.${NC}"
+        echo -e "${YELLOW}Dboard installer requires sudo permissions.${NC}"
         if [ ! -f "$0" ]; then
             echo "Refusing to re-download and execute a mutable remote script as root." >&2
             echo "Download install.sh from a GitHub release, verify it with that release's SHA256SUMS, then run: sudo bash ./install.sh" >&2
@@ -139,7 +139,7 @@ cleanup_legacy_uinput_socket() {
     user_home="$(getent passwd "$INSTALLING_USER" 2>/dev/null | cut -d: -f6 || true)"
     [ -n "$user_home" ] || return 0
 
-    local legacy_socket="$user_home/.vietc/uinput.sock"
+    local legacy_socket="$user_home/.dboard/uinput.sock"
     if [ -S "$legacy_socket" ]; then
         rm -f -- "$legacy_socket"
     elif [ -e "$legacy_socket" ] || [ -L "$legacy_socket" ]; then
@@ -189,19 +189,19 @@ install_deps() {
             ubuntu|debian|linuxmint|mint|pop|neon|zorin|elementary)
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update -y
-                apt-get install -y build-essential pkg-config libx11-dev libxtst-dev \
+                apt-get install -y build-essential pkg-config \
                   libdbus-1-dev libevdev-dev libwayland-dev git \
-                  libevdev2 libdbus-1-3 libx11-6 libxtst6 \
-                  libwayland-client0 xclip wl-clipboard wtype curl
+                  libevdev2 libdbus-1-3 \
+                  libwayland-client0 wl-clipboard curl
                 ;;
             fedora|rhel|centos)
-                dnf install -y gcc pkgconf-pkg-config libX11-devel libXtst-devel \
+                dnf install -y gcc pkgconf-pkg-config \
                   dbus-devel libevdev-devel wayland-devel git \
-                  libevdev libX11 libXtst dbus-libs libwayland-client xclip wl-clipboard wtype curl
+                  libevdev dbus-libs libwayland-client wl-clipboard curl
                 ;;
             arch|manjaro|cachyos|endeavouros|garuda|artix|omarchy)
                 pacman -Sy --needed --noconfirm base-devel pkgconf git \
-                  libevdev libx11 libxtst dbus wayland xclip wl-clipboard wtype curl
+                  libevdev dbus wayland wl-clipboard curl
                 ;;
             *)
                 t unsupported_distro "$DISTRO"
@@ -213,15 +213,15 @@ install_deps() {
             ubuntu|debian|linuxmint|mint|pop|neon|zorin|elementary)
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update -y
-                apt-get install -y libevdev2 libdbus-1-3 libx11-6 libxtst6 \
-                  libwayland-client0 xclip wl-clipboard wtype curl
+                apt-get install -y libevdev2 libdbus-1-3 \
+                  libwayland-client0 wl-clipboard curl
                 ;;
             fedora|rhel|centos)
-                dnf install -y libevdev libX11 libXtst dbus-libs libwayland-client xclip wl-clipboard wtype curl
+                dnf install -y libevdev dbus-libs libwayland-client wl-clipboard curl
                 ;;
             arch|manjaro|cachyos|endeavouros|garuda|artix|omarchy)
-                pacman -Sy --needed --noconfirm libevdev libx11 libxtst dbus \
-                  wayland xclip wl-clipboard wtype curl
+                pacman -Sy --needed --noconfirm libevdev dbus \
+                  wayland wl-clipboard curl
                 ;;
             *)
                 t unsupported_distro "$DISTRO"
@@ -305,10 +305,12 @@ if [ "$FROM_SOURCE" = true ]; then
         [ -d target ] && chown -R "$REAL_USER:$REAL_GROUP" target 2>/dev/null || true
         [ -d ui/target ] && chown -R "$REAL_USER:$REAL_GROUP" ui/target 2>/dev/null || true
     fi
-    run_as_build_user cargo build --release
-    (cd ui && run_as_build_user cargo build --release)
-elif [ -f "./bin/vietc-daemon" ]; then
+    run_as_build_user cargo build --release --locked
+    (cd ui && run_as_build_user cargo build --release --locked)
+elif [ -f "./bin/dboard-daemon" ]; then
     INSTALL_DIR="$(pwd)"
+    BIN_DIR="$INSTALL_DIR/bin"
+    PKG_DIR="$INSTALL_DIR"
 else
     t fetching_release
     RELEASE_JSON=$(curl --proto '=https' --tlsv1.2 -sSfL "https://api.github.com/repos/thanhhuynhduy/vietc/releases/latest" 2>/dev/null || echo "")
@@ -319,9 +321,9 @@ else
     fi
     t latest_version "$TAG"
 
-    TARBALL="vietc_${TAG}_linux_${ARCH}.tar.gz"
+    TARBALL="dboard_${TAG}_linux_${ARCH}.tar.gz"
     TARBALL_URL="https://github.com/thanhhuynhduy/vietc/releases/download/v${TAG}/${TARBALL}"
-    DEB="vietc_${TAG}-1_${ARCH}.deb"
+    DEB="dboard_${TAG}-1_${ARCH}.deb"
     DEB_URL="https://github.com/thanhhuynhduy/vietc/releases/download/v${TAG}/${DEB}"
     CHECKSUMS_URL="https://github.com/thanhhuynhduy/vietc/releases/download/v${TAG}/SHA256SUMS"
     INSTALL_DIR="$TMPDIR/install"
@@ -370,8 +372,8 @@ else
         t downloading_tarball
         verify_release_artifact "$TARBALL" || exit 1
         tar -xzf "$TMPDIR/$TARBALL" -C "$INSTALL_DIR"
-        BIN_DIR="$INSTALL_DIR/vietc_${TAG}_linux_${ARCH}/bin"
-        PKG_DIR="$INSTALL_DIR/vietc_${TAG}_linux_${ARCH}"
+        BIN_DIR="$INSTALL_DIR/dboard_${TAG}_linux_${ARCH}/bin"
+        PKG_DIR="$INSTALL_DIR/dboard_${TAG}_linux_${ARCH}"
     elif curl --proto '=https' --tlsv1.2 -sSfL \
         -o "$TMPDIR/$DEB" "$DEB_URL" 2>/dev/null; then
         t downloading_deb
@@ -395,53 +397,55 @@ else
 fi
 
 # Stop running processes before replacing binaries
-pkill -x vietc-tray 2>/dev/null || true
-pkill -x vietc-daemon 2>/dev/null || true
-pkill -x vietc 2>/dev/null || true
-pkill -x vietc-cli 2>/dev/null || true
+pkill -x dboard-tray 2>/dev/null || true
+pkill -x dboard-daemon 2>/dev/null || true
+pkill -x dboard 2>/dev/null || true
+pkill -x dboard-cli 2>/dev/null || true
 sleep 0.3
 cleanup_legacy_uinput_socket
 
 # Install binaries
 t installing_bins
 if [ "$FROM_SOURCE" = true ]; then
-    install -m 755 target/release/vietc /usr/bin/vietc-daemon
-    install -m 755 target/release/vietc-cli /usr/bin/vietc-cli
-    [ -f ui/target/release/vietc-tray ] && install -m 755 ui/target/release/vietc-tray /usr/bin/vietc-tray || true
+    install -m 755 target/release/dboard /usr/bin/dboard-daemon
+    install -m 755 target/release/dboard-cli /usr/bin/dboard-cli
+    [ -f ui/target/release/dboard-tray ] && install -m 755 ui/target/release/dboard-tray /usr/bin/dboard-tray || true
 else
-    install -m 755 "$BIN_DIR/vietc-daemon" /usr/bin/vietc-daemon
-    install -m 755 "$BIN_DIR/vietc-cli" /usr/bin/vietc-cli
-    [ -f "$BIN_DIR/vietc-tray" ] && install -m 755 "$BIN_DIR/vietc-tray" /usr/bin/vietc-tray || true
+    install -m 755 "$BIN_DIR/dboard-daemon" /usr/bin/dboard-daemon
+    install -m 755 "$BIN_DIR/dboard-cli" /usr/bin/dboard-cli
+    [ -f "$BIN_DIR/dboard-tray" ] && install -m 755 "$BIN_DIR/dboard-tray" /usr/bin/dboard-tray || true
 fi
 
 # The daemon must remain unprivileged. Device access is granted exclusively to
 # the active desktop seat by systemd-logind via the uaccess udev rules below.
 if command -v setcap &>/dev/null; then
-    setcap -r /usr/bin/vietc-daemon 2>/dev/null || true
+    setcap -r /usr/bin/dboard-daemon 2>/dev/null || true
 fi
 t capability_removed
 
 # Remove stale binaries and duplicate autostart entries from older versions
-rm -f /usr/local/bin/vietc /usr/local/bin/vietc-daemon /usr/local/bin/vietc-cli \
-      /usr/local/bin/vietc-tray /etc/xdg/autostart/vietc-tray.desktop \
-      /etc/default/vietc 2>/dev/null || true
+rm -f /usr/local/bin/dboard /usr/local/bin/dboard-daemon /usr/local/bin/dboard-cli \
+      /usr/local/bin/dboard-tray /etc/xdg/autostart/dboard-tray.desktop \
+      /etc/default/dboard 2>/dev/null || true
 
 USER_HOME="$(getent passwd "$INSTALLING_USER" 2>/dev/null | cut -d: -f6 || true)"
 if [ -n "$INSTALLING_USER" ] && [ "$INSTALLING_USER" != "root" ] && [ -n "$USER_HOME" ]; then
-    rm -f "$USER_HOME/.local/bin/vietc" "$USER_HOME/.local/bin/vietc-daemon" \
-          "$USER_HOME/.local/bin/vietc-cli" "$USER_HOME/.local/bin/vietc-tray" \
-          "$USER_HOME/.local/bin/vietc-start" \
-          "$USER_HOME/.config/autostart/vietc.desktop" 2>/dev/null || true
+    rm -f "$USER_HOME/.local/bin/dboard" "$USER_HOME/.local/bin/dboard-daemon" \
+          "$USER_HOME/.local/bin/dboard-cli" "$USER_HOME/.local/bin/dboard-tray" \
+          "$USER_HOME/.local/bin/dboard-start" \
+          "$USER_HOME/.config/autostart/dboard.desktop" 2>/dev/null || true
 fi
 
 # Udev rules & uinput kernel module (active-seat uaccess; preserve distro input group on event*)
 mkdir -p /etc/modules-load.d
-echo "uinput" > /etc/modules-load.d/vietc.conf
+echo "uinput" > /etc/modules-load.d/dboard.conf
 modprobe uinput 2>/dev/null || true
-rm -f /etc/udev/rules.d/99-vietc.rules
-cat > /etc/udev/rules.d/70-vietc.rules << 'EOF'
+rm -f /etc/udev/rules.d/99-dboard.rules
+cat > /etc/udev/rules.d/70-dboard.rules << 'EOF'
 KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", GROUP="root", MODE="0600"
-SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_KEYBOARD}=="1", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_MOUSE}=="1", TAG+="uaccess"
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHPAD}=="1", TAG+="uaccess"
 EOF
 chmod o-rw /dev/uinput /dev/input/event* 2>/dev/null || true
 udevadm control --reload-rules 2>/dev/null || true
@@ -466,28 +470,28 @@ gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
 # Desktop launcher
 if [ "$FROM_SOURCE" = true ]; then
     mkdir -p /usr/share/applications
-    cp packaging/deb/vietc.desktop /usr/share/applications/
+    cp packaging/deb/dboard.desktop /usr/share/applications/
 else
-    if [ -f "$PKG_DIR/desktop/vietc.desktop" ]; then
+    if [ -f "$PKG_DIR/desktop/dboard.desktop" ]; then
         mkdir -p /usr/share/applications
-        cp "$PKG_DIR/desktop/vietc.desktop" /usr/share/applications/
-    elif [ -f "$INSTALL_DIR/usr/share/applications/vietc.desktop" ]; then
+        cp "$PKG_DIR/desktop/dboard.desktop" /usr/share/applications/
+    elif [ -f "$INSTALL_DIR/usr/share/applications/dboard.desktop" ]; then
         mkdir -p /usr/share/applications
-        cp "$INSTALL_DIR/usr/share/applications/vietc.desktop" /usr/share/applications/
+        cp "$INSTALL_DIR/usr/share/applications/dboard.desktop" /usr/share/applications/
     fi
 fi
 
 # Systemd user service
 mkdir -p /usr/lib/systemd/user
-cat > /usr/lib/systemd/user/vietc.service << 'EOF'
+cat > /usr/lib/systemd/user/dboard.service << 'EOF'
 [Unit]
-Description=VietC Vietnamese Input Daemon (evdev/uinput)
+Description=Dboard Vietnamese Input Daemon (evdev/uinput)
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/vietc-daemon
+ExecStart=/usr/bin/dboard-daemon
 Restart=on-failure
 RestartSec=3
 KillMode=process
@@ -503,44 +507,54 @@ WantedBy=graphical-session.target
 EOF
 
 # Configuration
-mkdir -p /etc/vietc
+mkdir -p /etc/dboard
 if [ "$FROM_SOURCE" = true ]; then
-    cp vietc.toml /etc/vietc/config.toml
+    cp dboard.toml /etc/dboard/config.toml
 elif [ -f "$PKG_DIR/config/config.toml" ]; then
-    cp "$PKG_DIR/config/config.toml" /etc/vietc/config.toml
-elif [ -f "$INSTALL_DIR/etc/vietc/config.toml" ]; then
-    cp "$INSTALL_DIR/etc/vietc/config.toml" /etc/vietc/config.toml
+    cp "$PKG_DIR/config/config.toml" /etc/dboard/config.toml
+elif [ -f "$INSTALL_DIR/etc/dboard/config.toml" ]; then
+    cp "$INSTALL_DIR/etc/dboard/config.toml" /etc/dboard/config.toml
 fi
 
 if [ -n "$USER_HOME" ] && [ "$INSTALLING_USER" != "root" ]; then
-    INSTALLING_GROUP="$(id -gn "$INSTALLING_USER" 2>/dev/null || echo "$INSTALLING_USER")"
-    if [ ! -f "$USER_HOME/.config/vietc/config.toml" ] && [ -f /etc/vietc/config.toml ]; then
-        mkdir -p "$USER_HOME/.config/vietc"
-        chmod 700 "$USER_HOME/.config/vietc" 2>/dev/null || true
-        cp /etc/vietc/config.toml "$USER_HOME/.config/vietc/config.toml" 2>/dev/null || true
-        chmod 600 "$USER_HOME/.config/vietc/config.toml" 2>/dev/null || true
-        chown -R "$INSTALLING_USER:$INSTALLING_GROUP" "$USER_HOME/.config/vietc" 2>/dev/null || true
-    fi
+    run_as_installing_user() {
+        if command -v runuser >/dev/null 2>&1; then
+            runuser -u "$INSTALLING_USER" -- "$@"
+        elif command -v su >/dev/null 2>&1; then
+            su "$INSTALLING_USER" -s /bin/bash -c '"$@"' -- _ "$@"
+        else
+            sudo -u "$INSTALLING_USER" "$@"
+        fi
+    }
 
-    rm -f "$USER_HOME/.config/systemd/user/vietc.service" \
-          "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service" \
-          "$USER_HOME/.config/systemd/user/default.target.wants/vietc.service" 2>/dev/null || true
+    run_as_installing_user bash -c '
+        set -euo pipefail
+        USER_HOME="$1"
+        if [ ! -e "$USER_HOME/.config/dboard/config.toml" ] && [ ! -L "$USER_HOME/.config/dboard/config.toml" ] && [ -f /etc/dboard/config.toml ]; then
+            mkdir -p "$USER_HOME/.config/dboard"
+            chmod 700 "$USER_HOME/.config/dboard" 2>/dev/null || true
+            install -m 600 /etc/dboard/config.toml "$USER_HOME/.config/dboard/config.toml" 2>/dev/null || true
+        fi
 
-    DROPIN_DIR="$USER_HOME/.config/systemd/user/vietc.service.d"
-    if [ -d "$DROPIN_DIR" ]; then
-        for dropin in "$DROPIN_DIR"/*.conf; do
-            [ -f "$dropin" ] || continue
-            if grep -Eq '^[[:space:]]*ExecStart[[:space:]]*=' "$dropin"; then
-                rm -f "$dropin"
-            fi
-        done
-        rmdir "$DROPIN_DIR" 2>/dev/null || true
-    fi
+        rm -f "$USER_HOME/.config/systemd/user/dboard.service" \
+              "$USER_HOME/.config/systemd/user/graphical-session.target.wants/dboard.service" \
+              "$USER_HOME/.config/systemd/user/default.target.wants/dboard.service" 2>/dev/null || true
 
-    mkdir -p "$USER_HOME/.config/systemd/user/graphical-session.target.wants"
-    ln -sf /usr/lib/systemd/user/vietc.service \
-          "$USER_HOME/.config/systemd/user/graphical-session.target.wants/vietc.service"
-    chown -R "$INSTALLING_USER:$INSTALLING_GROUP" "$USER_HOME/.config/systemd/user" 2>/dev/null || true
+        DROPIN_DIR="$USER_HOME/.config/systemd/user/dboard.service.d"
+        if [ -d "$DROPIN_DIR" ] && [ ! -L "$DROPIN_DIR" ]; then
+            for dropin in "$DROPIN_DIR"/*.conf; do
+                [ -f "$dropin" ] || continue
+                if grep -Eq "^[[:space:]]*ExecStart[[:space:]]*=" "$dropin"; then
+                    rm -f "$dropin"
+                fi
+            done
+            rmdir "$DROPIN_DIR" 2>/dev/null || true
+        fi
+
+        mkdir -p "$USER_HOME/.config/systemd/user/graphical-session.target.wants"
+        ln -sf /usr/lib/systemd/user/dboard.service \
+              "$USER_HOME/.config/systemd/user/graphical-session.target.wants/dboard.service"
+    ' -- "$USER_HOME"
 
     U_UID="$(id -u "$INSTALLING_USER" 2>/dev/null || true)"
     if command -v systemctl >/dev/null 2>&1 && [ -n "$U_UID" ]; then
@@ -587,10 +601,10 @@ if [ -n "$USER_HOME" ] && [ "$INSTALLING_USER" != "root" ]; then
             systemctl --user daemon-reload 2>/dev/null || true
         sudo -u "$INSTALLING_USER" XDG_RUNTIME_DIR="/run/user/$U_UID" \
             DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
-            systemctl --user enable vietc.service 2>/dev/null || true
+            systemctl --user enable dboard.service 2>/dev/null || true
         sudo -u "$INSTALLING_USER" XDG_RUNTIME_DIR="/run/user/$U_UID" \
             DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
-            systemctl --user restart vietc.service 2>/dev/null || true
+            systemctl --user restart dboard.service 2>/dev/null || true
     fi
 fi
 

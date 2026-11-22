@@ -2,14 +2,14 @@ use std::fs;
 
 use crate::log::log_info;
 
-fn is_vietc_virtual_device_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("vietc")
+fn is_dboard_virtual_device_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("dboard")
 }
 
 pub fn is_valid_keyboard(device: &evdev::Device) -> bool {
     let dev_name = device.name().unwrap_or("unknown").to_string();
     let dev_name_lower = dev_name.to_lowercase();
-    if is_vietc_virtual_device_name(&dev_name) {
+    if is_dboard_virtual_device_name(&dev_name) {
         return false;
     }
     if dev_name_lower.contains("touchpad") || dev_name_lower.contains("trackpoint") {
@@ -39,12 +39,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vietc_uinput_device_names_are_never_capture_candidates() {
-        assert!(is_vietc_virtual_device_name("vietc"));
-        assert!(is_vietc_virtual_device_name("VietC"));
-        assert!(!is_vietc_virtual_device_name("vietc-test-vni-word"));
-        assert!(!is_vietc_virtual_device_name("vietc-vk"));
-        assert!(!is_vietc_virtual_device_name(
+    fn dboard_uinput_device_names_are_never_capture_candidates() {
+        assert!(is_dboard_virtual_device_name("dboard"));
+        assert!(is_dboard_virtual_device_name("Dboard"));
+        assert!(!is_dboard_virtual_device_name("dboard-test-vni-word"));
+        assert!(!is_dboard_virtual_device_name("dboard-vk"));
+        assert!(!is_dboard_virtual_device_name(
             "AT Translated Set 2 keyboard"
         ));
     }
@@ -85,7 +85,7 @@ pub fn get_device_phys_id(path: &std::path::Path) -> Option<String> {
     // Previous code used parent.parent() which collapsed all virtual uinput
     // devices (e.g. /sys/devices/virtual/input/inputXX) to the same
     // "sysfs:/sys/devices/virtual/input", causing only the first virtual
-    // keyboard to be grabbed and subsequent ones (e.g. vietc-vk, tests) to be
+    // keyboard to be grabbed and subsequent ones (e.g. dboard-vk, tests) to be
     // ignored → raw input, no conversion, and apparent double/loss.
     if let Ok(canonical) = fs::canonicalize(dev_path) {
         let canon_str = canonical.display().to_string();
@@ -138,7 +138,7 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
                                         seen_phys_ids.insert(pid);
                                     }
                                     log_info(&format!(
-                                        "[vietc] Found keyboard (by-path): {} ({})",
+                                        "[dboard] Found keyboard (by-path): {} ({})",
                                         real_path.display(),
                                         dev_name
                                     ));
@@ -187,7 +187,7 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
                                         seen_phys_ids.insert(pid);
                                     }
                                     log_info(&format!(
-                                        "[vietc] Found keyboard (by-id): {} ({})",
+                                        "[dboard] Found keyboard (by-id): {} ({})",
                                         real_path.display(),
                                         dev_name
                                     ));
@@ -237,7 +237,7 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
                                         seen_phys_ids.insert(pid);
                                     }
                                     log_info(&format!(
-                                        "[vietc] Found keyboard (bluetooth/direct): {} ({})",
+                                        "[dboard] Found keyboard (bluetooth/direct): {} ({})",
                                         real_path.display(),
                                         dev_name
                                     ));
@@ -261,7 +261,7 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
 
     if !devices.is_empty() {
         log_info(&format!(
-            "[vietc] Opened {} keyboard device(s)",
+            "[dboard] Opened {} keyboard device(s)",
             devices.len()
         ));
         return Ok(devices);
@@ -303,7 +303,7 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
             .into())
         }
     } else if dir.exists() {
-        log_info("[vietc] No keyboard device found at startup — waiting for hotplug");
+        log_info("[dboard] No keyboard device found at startup — waiting for hotplug");
         Ok(Vec::new())
     } else {
         Err("No keyboard device found".into())
@@ -386,4 +386,24 @@ pub fn discover_new_keyboards(
         &mut out,
     );
     out
+}
+
+/// Returns true if the physical device currently reports any key held down.
+pub fn has_held_keys(dev: &evdev::Device) -> bool {
+    dev.get_key_state()
+        .is_ok_and(|keys| keys.iter().next().is_some())
+}
+
+/// Bounded startup wait so physically held keys (e.g. Enter on `systemctl restart`)
+/// release to the compositor before `EVIOCGRAB` takes ownership of the device.
+pub fn wait_until_keys_released(dev: &evdev::Device, max_wait_ms: u32) {
+    let steps = max_wait_ms / 10;
+    for _ in 0..steps {
+        if !has_held_keys(dev) {
+            return;
+        }
+        unsafe {
+            libc::poll(std::ptr::null_mut(), 0, 10);
+        }
+    }
 }

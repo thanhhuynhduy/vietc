@@ -6,7 +6,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 pub fn default_log_path() -> PathBuf {
     if let Ok(state_home) = std::env::var("XDG_STATE_HOME") {
         if !state_home.is_empty() {
-            return PathBuf::from(state_home).join("vietc").join("vietc.log");
+            return PathBuf::from(state_home).join("dboard").join("dboard.log");
         }
     }
     if let Ok(home) = std::env::var("HOME") {
@@ -14,16 +14,16 @@ pub fn default_log_path() -> PathBuf {
             let state_dir = PathBuf::from(&home)
                 .join(".local")
                 .join("state")
-                .join("vietc");
+                .join("dboard");
             if state_dir.exists() || fs::create_dir_all(&state_dir).is_ok() {
-                return state_dir.join("vietc.log");
+                return state_dir.join("dboard.log");
             }
-            let config_dir = PathBuf::from(home).join(".config").join("vietc");
-            return config_dir.join("vietc.log");
+            let config_dir = PathBuf::from(home).join(".config").join("dboard");
+            return config_dir.join("dboard.log");
         }
     }
     let uid = unsafe { libc::getuid() };
-    PathBuf::from(format!("/tmp/vietc-{}.log", uid))
+    PathBuf::from(format!("/tmp/dboard-{}.log", uid))
 }
 
 pub fn init(
@@ -80,7 +80,7 @@ pub fn init(
     let (journald_layer, stderr_layer) = match tracing_journald::layer() {
         Ok(journald) => (Some(journald), None),
         Err(error) => {
-            eprintln!("[vietc] native journald logging unavailable ({error}); using stderr");
+            eprintln!("[dboard] native journald logging unavailable ({error}); using stderr");
             (
                 None,
                 Some(tracing_subscriber::fmt::layer().with_target(true)),

@@ -2,22 +2,24 @@
 use crate::bamboo::{BambooEngine, TelexUndo};
 use crate::bigram::evaluate_retroactive_first_word;
 use crate::engine_helpers::{
-    active_telex_transform, adapt_macro_casing, case_shape, is_flush_char, is_sentence_boundary,
-    match_casing, resolve_coda_edit_canon,
+    active_telex_transform, adapt_macro_casing, build_composition_state,
+    build_surrounding_prev_entry, is_flush_char, is_seedable_surrounding_word,
+    is_sentence_boundary, match_casing, resolve_coda_edit_canon,
 };
-use crate::english::{should_restore_word_decision, EnglishDict, LanguageContext};
+use crate::english::{EnglishDict, LanguageContext};
 use crate::input_method::InputMethod;
 use crate::ring_buffer::{
     visible_to_canonical_raw, BackspaceAcrossBoundary, CommittedRingBuffer, CommittedWordEntry,
 };
 use crate::state::{
     BoundaryState, CompositionState, PhysicalEvent, Replacement, ReplacementReason,
-    SpellingValidity, TransformIdentity, TransformKind, TransitionKind, UndoPolicy,
+    TransformIdentity, TransitionKind,
 };
+use crate::user_dict::{AutoCapState, AutoRestoreUndo, UserDict};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-fn english_dict() -> &'static EnglishDict {
+pub(crate) fn english_dict() -> &'static EnglishDict {
     static DICT: OnceLock<EnglishDict> = OnceLock::new();
     DICT.get_or_init(EnglishDict::new)
 }
@@ -38,14 +40,6 @@ enum TelexBackend {
     BambooRollback,
 }
 
-#[derive(Debug, Clone)]
-struct AutoRestoreUndo {
-    restored_ascii: String,
-    original_vn: String,
-    raw_keys: String,
-    boundary_char: char,
-}
-
 pub struct Engine {
     bamboo: BambooEngine,
     method: InputMethod,
@@ -57,9 +51,13 @@ pub struct Engine {
     recovered_screen_len: Option<usize>,
     paste_mode: bool,
     auto_restore: bool,
+    autocorrect: bool,
+    auto_cap: AutoCapState,
+    user_dict: UserDict,
     prev_context: LanguageContext,
     ring_buffer: CommittedRingBuffer,
     rehydrated_word: bool,
+    rehydrated_edited: bool,
     rehydrated_ascii_only: bool,
     pending_coda_edit_canon: Option<String>,
     pending_restore_undo: Option<AutoRestoreUndo>,
@@ -94,9 +92,13 @@ impl Engine {
             recovered_screen_len: None,
             paste_mode: false,
             auto_restore: true,
+            autocorrect: false,
+            auto_cap: AutoCapState::default(),
+            user_dict: UserDict::new(),
             prev_context: LanguageContext::None,
             ring_buffer: CommittedRingBuffer::new(),
             rehydrated_word: false,
+            rehydrated_edited: false,
             rehydrated_ascii_only: false,
             pending_coda_edit_canon: None,
             pending_restore_undo: None,
@@ -110,48 +112,29 @@ impl Engine {
         }
     }
 
-    pub fn telex_undo_policy(kind: TransformKind) -> Option<UndoPolicy> {
-        match kind {
-            TransformKind::Tone('f' | 's' | 'r' | 'x' | 'j') => Some(UndoPolicy::AppendTrigger),
-            TransformKind::Mark("aw" | "ow" | "uw" | "uo+w" | "ua+w" | "aa" | "ee" | "oo") => {
-                Some(UndoPolicy::AppendTrigger)
-            }
-            TransformKind::StrokeDd => Some(UndoPolicy::ConsumeTrigger),
-            _ => None,
-        }
-    }
-
     pub fn set_auto_restore(&mut self, enabled: bool) {
         self.auto_restore = enabled;
     }
 
-    pub fn should_restore_word(composed: &str, raw: &str) -> bool {
-        Self::should_restore_word_with_context(composed, raw, LanguageContext::None)
+    pub fn set_autocorrect(&mut self, enabled: bool) {
+        self.autocorrect = enabled;
     }
 
-    pub fn should_restore_word_with_context(
-        composed: &str,
-        raw: &str,
-        prev_context: LanguageContext,
-    ) -> bool {
-        Self::should_restore_word_with_bigram(composed, raw, prev_context, None, None)
+    pub fn set_auto_capitalize(&mut self, enabled: bool) {
+        self.auto_cap.enabled = enabled;
+        if !enabled {
+            self.auto_cap.reset();
+        }
     }
 
-    pub(crate) fn should_restore_word_with_bigram(
-        composed: &str,
-        raw: &str,
-        prev_context: LanguageContext,
-        prev_visible_word: Option<&str>,
-        boundary_context: Option<(Option<char>, char)>,
-    ) -> bool {
-        should_restore_word_decision(
-            english_dict(),
-            composed,
-            raw,
-            prev_context,
-            prev_visible_word,
-            boundary_context,
-        )
+    pub fn set_user_dict(&mut self, dict: UserDict) {
+        self.user_dict = dict;
+    }
+
+    pub fn take_user_dict_for_save(&mut self) -> Option<String> {
+        self.user_dict
+            .take_dirty()
+            .then(|| self.user_dict.serialize())
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -184,30 +167,7 @@ impl Engine {
         if self.uses_recomposition() {
             match_casing(raw, &crate::telex::resolve_and_render(raw))
         } else {
-            let mut tmp = BambooEngine::new(self.method);
-            let mut replayed = String::new();
-            for rk in raw.chars() {
-                if let Some(undo) = tmp.undo_telex_transform(rk, &replayed) {
-                    let consumed_lit = if undo == TelexUndo::ConsumeTrigger {
-                        replayed.chars().last()
-                    } else {
-                        None
-                    };
-                    replayed.push(rk);
-                    match undo {
-                        TelexUndo::AppendTrigger => tmp.append_literal(rk),
-                        TelexUndo::ConsumeTrigger => {
-                            if let Some(lit) = consumed_lit {
-                                tmp.append_literal(lit);
-                            }
-                        }
-                    }
-                } else {
-                    replayed.push(rk);
-                    let _ = tmp.process_key(rk);
-                }
-            }
-            match_casing(raw, &tmp.get_output())
+            crate::engine_helpers::compose_with_bamboo(self.method, raw)
         }
     }
 
@@ -262,6 +222,7 @@ impl Engine {
         self.previous_screen_len = None;
         self.recovered_screen_len = None;
         self.rehydrated_word = false;
+        self.rehydrated_edited = false;
         self.rehydrated_ascii_only = false;
         self.pending_coda_edit_canon = None;
         self.override_keep_vietnamese = false;
@@ -275,6 +236,7 @@ impl Engine {
         self.ring_buffer.clear();
         self.pending_restore_undo = None;
         self.last_boundary_char = None;
+        self.auto_cap.reset();
     }
 
     pub fn reset_visible_revision(&mut self) {
@@ -283,20 +245,47 @@ impl Engine {
         self.recovered_screen_len = None;
     }
 
+    pub fn seed_surrounding_context(
+        &mut self,
+        word_at_caret: Option<&str>,
+        prev_word: Option<&str>,
+        after_sentence_boundary: bool,
+    ) -> bool {
+        if !(self.raw_buffer.is_empty() && self.pasted_prefix.is_empty()) {
+            return false;
+        }
+        let mut seeded = false;
+        if after_sentence_boundary {
+            self.auto_cap.arm();
+            self.prev_context = LanguageContext::None;
+            seeded = true;
+        } else if let Some(pw) = prev_word {
+            let (entry, ctx) = build_surrounding_prev_entry(pw, english_dict());
+            self.prev_context = ctx;
+            self.ring_buffer.push(entry);
+            seeded = true;
+        }
+        if let Some(word) = word_at_caret.filter(|w| is_seedable_surrounding_word(w)) {
+            if let Some(raw) = visible_to_canonical_raw(word, self.method)
+                .filter(|r| self.compose_candidate(r) == word)
+            {
+                self.raw_buffer = raw;
+                self.replay_bamboo_from_raw();
+                self.rehydrated_word = true;
+                self.rehydrated_ascii_only = false;
+                self.boundary = BoundaryState::Composing;
+                return true;
+            }
+        }
+        seeded
+    }
+
     pub fn invalidate_composition(&mut self) {
-        self.bamboo.reset();
-        self.raw_buffer.clear();
-        self.pasted_prefix.clear();
-        self.previous_screen_len = None;
-        self.recovered_screen_len = None;
+        self.clear_word_only();
         self.prev_context = LanguageContext::None;
         self.ring_buffer.clear();
-        self.rehydrated_word = false;
-        self.rehydrated_ascii_only = false;
-        self.pending_coda_edit_canon = None;
         self.pending_restore_undo = None;
-        self.override_keep_vietnamese = false;
-        self.active_transform = None;
+        self.auto_cap.reset();
         self.boundary = BoundaryState::Invalidated;
         self.last_transition = Some(TransitionKind::Invalidate);
     }
@@ -318,16 +307,12 @@ impl Engine {
     }
 
     pub fn flush(&mut self) -> Option<EngineEvent> {
-        if self.paste_mode && !self.raw_buffer.is_empty() {
-            let has_unicode = !self.raw_buffer.is_ascii();
-            if has_unicode {
-                let word = self.raw_buffer.clone();
-                self.raw_buffer.clear();
-                self.pasted_prefix.clear();
-                self.bamboo.reset();
-                self.paste_mode = false;
-                return Some(EngineEvent::Flush(word));
-            }
+        if self.paste_mode && !self.raw_buffer.is_empty() && !self.raw_buffer.is_ascii() {
+            let word = std::mem::take(&mut self.raw_buffer);
+            self.pasted_prefix.clear();
+            self.bamboo.reset();
+            self.paste_mode = false;
+            return Some(EngineEvent::Flush(word));
         }
         None
     }
@@ -390,42 +375,30 @@ impl Engine {
     }
 
     fn replay_bamboo_from_raw(&mut self) {
-        self.bamboo.reset();
-        let mut replayed_raw = String::new();
-        for raw_key in self.raw_buffer.chars() {
-            if let Some(undo) = self.bamboo.undo_telex_transform(raw_key, &replayed_raw) {
-                let consumed_stroke_literal = if undo == TelexUndo::ConsumeTrigger {
-                    replayed_raw.chars().last()
-                } else {
-                    None
-                };
-                replayed_raw.push(raw_key);
-                match undo {
-                    TelexUndo::AppendTrigger => self.bamboo.append_literal(raw_key),
-                    TelexUndo::ConsumeTrigger => {
-                        if let Some(literal) = consumed_stroke_literal {
-                            self.bamboo.append_literal(literal);
-                        }
-                    }
-                }
-            } else {
-                replayed_raw.push(raw_key);
-                let _ = self.bamboo.process_key(raw_key);
-            }
-        }
+        crate::engine_helpers::replay_bamboo(&mut self.bamboo, &self.raw_buffer);
     }
 
     fn handle_backspace(&mut self) -> Option<EngineEvent> {
+        self.auto_cap.reset();
         if self.raw_buffer.is_empty() && self.pasted_prefix.is_empty() {
             if let Some(undo) = self.pending_restore_undo.take() {
                 let _ = self.ring_buffer.pop_last();
+                if undo.is_autocorrect {
+                    self.user_dict.record_keep_raw(&undo.raw_keys);
+                } else {
+                    self.user_dict.record_keep_vn(&undo.raw_keys);
+                }
                 let delete_len =
                     undo.restored_ascii.chars().count() + undo.boundary_char.len_utf8().min(1);
                 self.raw_buffer = undo.raw_keys;
-                self.replay_bamboo_from_raw();
+                if !undo.is_autocorrect {
+                    self.replay_bamboo_from_raw();
+                } else {
+                    self.bamboo.reset();
+                }
                 self.override_keep_vietnamese = true;
-                self.rehydrated_word = false;
-                self.rehydrated_ascii_only = false;
+                self.rehydrated_word = undo.is_autocorrect;
+                self.rehydrated_ascii_only = undo.is_autocorrect;
                 self.active_transform = None;
                 self.boundary = BoundaryState::Composing;
                 self.last_transition = Some(TransitionKind::Edit);
@@ -479,11 +452,13 @@ impl Engine {
                     self.raw_buffer = canon_raw;
                     self.replay_bamboo_from_raw();
                     self.rehydrated_word = true;
+                    self.rehydrated_edited = false;
                     self.rehydrated_ascii_only = false;
                 } else {
                     self.raw_buffer = entry.visible_word;
                     self.bamboo.reset();
                     self.rehydrated_word = true;
+                    self.rehydrated_edited = false;
                     self.rehydrated_ascii_only = true;
                 }
                 self.active_transform = None;
@@ -502,6 +477,7 @@ impl Engine {
         // deleting 1 visible char on screen takes exactly 1 native Backspace (`None`),
         // while keeping the remaining prefix live for Vietnamese tone/mark additions.
         if self.rehydrated_word && self.pasted_prefix.is_empty() {
+            self.rehydrated_edited = true;
             if self.rehydrated_ascii_only {
                 let _ = self.raw_buffer.pop();
                 if self.raw_buffer.is_empty() {
@@ -556,14 +532,18 @@ impl Engine {
         self.replay_bamboo_from_raw();
         let popped_visible = self.composed_tail();
 
+        let popped_tail_is_coda_consonant = base_visible.chars().last().is_some_and(|c| {
+            c.is_ascii_alphabetic()
+                && !matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y')
+        });
         if !base_visible.is_ascii()
             && self.pasted_prefix.is_empty()
-            && (self.pending_coda_edit_canon.is_some()
-                || popped_visible.chars().count() == prev_len)
+            && (popped_visible.chars().count() == prev_len
+                || (self.pending_coda_edit_canon.is_some() && popped_tail_is_coda_consonant))
         {
             let mut truncated = base_visible;
             let _ = truncated.pop();
-            self.pending_coda_edit_canon = (!truncated.is_empty())
+            self.pending_coda_edit_canon = (!truncated.is_empty() && !truncated.is_ascii())
                 .then(|| visible_to_canonical_raw(&truncated, self.method))
                 .flatten();
         } else {
@@ -597,6 +577,9 @@ impl Engine {
         self.pending_restore_undo = None;
 
         if is_flush_char(ch) {
+            let prev_boundary = self.last_boundary_char;
+            self.last_boundary_char = Some(ch);
+            self.auto_cap.on_flush_char(ch);
             if self.raw_buffer.is_empty() && self.pasted_prefix.is_empty() {
                 self.ring_buffer.append_delimiter_or_clear(ch);
                 if is_sentence_boundary(ch) {
@@ -659,23 +642,44 @@ impl Engine {
             self.clear_word_only();
             self.last_transition = Some(TransitionKind::Commit);
 
-            let prev_boundary = self.last_boundary_char;
-            self.last_boundary_char = Some(ch);
-
             if prev_len > 0 {
-                let should_restore = self.auto_restore && !user_override && {
-                    let prev_vis = self.ring_buffer.last().map(|e| e.visible_word.as_str());
-                    Self::should_restore_word_with_bigram(
+                let should_restore = self.auto_restore
+                    && !user_override
+                    && !self.user_dict.is_keep_vn(&raw)
+                    && crate::lm::decide_should_restore(
+                        english_dict(),
                         &previous,
                         &raw,
                         prior_context,
-                        prev_vis,
+                        self.ring_buffer.last_two(),
                         Some((prev_boundary, ch)),
+                    );
+
+                let autocorrected = if self.autocorrect
+                    && ch == ' '
+                    && !had_pasted_prefix
+                    && !user_override
+                    && !self.user_dict.is_keep_raw(&raw)
+                    && !matches!(prev_boundary, Some('_' | '/' | '\\' | '.'))
+                {
+                    crate::autocorrect::suggest_correction(
+                        english_dict(),
+                        &self.user_dict,
+                        &previous,
+                        &raw,
+                        self.method,
+                        prior_context,
+                        |r| self.compose_candidate(r),
                     )
+                } else {
+                    None
                 };
+                let should_restore = should_restore && autocorrected.is_none();
 
                 let final_word = if should_restore {
                     raw.clone()
+                } else if let Some(ref fixed) = autocorrected {
+                    fixed.clone()
                 } else {
                     previous.clone()
                 };
@@ -685,7 +689,7 @@ impl Engine {
                     LanguageContext::English
                 } else {
                     english_dict().classify_committed_word_with_prior(
-                        &previous,
+                        &final_word,
                         &raw,
                         prior_context,
                     )
@@ -704,7 +708,7 @@ impl Engine {
                         ) {
                             let _ = self.ring_buffer.pop_last();
                             let effective_w2 = if w1_restored && !user_override {
-                                raw.clone()
+                                autocorrected.unwrap_or_else(|| raw.clone())
                             } else {
                                 final_word
                             };
@@ -759,6 +763,8 @@ impl Engine {
 
                 self.prev_context = committed_context;
                 if ch == ' ' && !had_pasted_prefix {
+                    self.user_dict
+                        .maybe_learn_committed(&final_word, &raw, english_dict());
                     self.ring_buffer.push(CommittedWordEntry {
                         raw_keys: raw.clone(),
                         visible_word: final_word,
@@ -774,18 +780,29 @@ impl Engine {
 
                 if should_restore {
                     let was_valid_vn = !previous.is_ascii()
-                        && crate::spelling::is_valid_vietnamese_syllable(&previous)
-                        && crate::spelling::is_in_vietnamese_dictionary(&previous);
+                        && crate::spelling::is_valid_vietnamese_syllable(&previous);
                     if ch == ' ' && was_valid_vn {
                         self.pending_restore_undo = Some(AutoRestoreUndo {
                             restored_ascii: raw.clone(),
                             original_vn: previous,
                             raw_keys: raw.clone(),
                             boundary_char: ch,
+                            is_autocorrect: false,
                         });
                     }
                     self.previous_screen_len = Some(prev_len);
                     return Some(self.replacement(prev_len, raw, ReplacementReason::AutoRestore));
+                }
+                if let Some(fixed) = autocorrected {
+                    self.pending_restore_undo = Some(AutoRestoreUndo {
+                        restored_ascii: fixed.clone(),
+                        original_vn: raw.clone(),
+                        raw_keys: raw,
+                        boundary_char: ch,
+                        is_autocorrect: true,
+                    });
+                    self.previous_screen_len = Some(prev_len);
+                    return Some(self.replacement(prev_len, fixed, ReplacementReason::AutoRestore));
                 }
             }
             return None;
@@ -799,29 +816,23 @@ impl Engine {
         }
         if self.rehydrated_word {
             self.rehydrated_word = false;
-            let current = self.composed_tail();
-            let cand = self.compose_candidate(&format!("{}{}", self.raw_buffer, ch));
-            let is_tone_strip = (self.method == InputMethod::Telex
-                && ch.eq_ignore_ascii_case(&'z'))
-                || (self.method == InputMethod::Vni && ch == '0');
-            let is_valid_mod = cand != current
-                && crate::spelling::is_valid_vietnamese_prefix(&cand)
-                && (is_tone_strip || crate::spelling::is_in_vietnamese_dictionary_or_prefix(&cand));
-            if !is_valid_mod {
-                if let Some(resolved) =
-                    resolve_coda_edit_canon(&self.raw_buffer, ch, self.method, |r| {
-                        self.compose_candidate(r)
-                    })
-                {
-                    let edited = self.compose_candidate(&format!("{resolved}{ch}"));
-                    if crate::spelling::is_in_vietnamese_dictionary_or_prefix(&edited) {
+            if !std::mem::replace(&mut self.rehydrated_edited, false) {
+                let current = self.composed_tail();
+                match crate::engine_helpers::evaluate_guarded_rehydration(
+                    &self.raw_buffer,
+                    &current,
+                    ch,
+                    self.method,
+                    |r| self.compose_candidate(r),
+                ) {
+                    crate::engine_helpers::RehydrationDecision::Keep => {}
+                    crate::engine_helpers::RehydrationDecision::ReplaceRaw(resolved) => {
                         self.raw_buffer = resolved;
                         self.replay_bamboo_from_raw();
-                    } else {
+                    }
+                    crate::engine_helpers::RehydrationDecision::ClearWord => {
                         self.clear_word_only();
                     }
-                } else {
-                    self.clear_word_only();
                 }
             }
         }
@@ -832,6 +843,7 @@ impl Engine {
             && self.pasted_prefix.is_empty()
             && !self.macros.keys().any(|k| k.starts_with(&ch.to_string()))
         {
+            self.auto_cap.reset();
             self.prev_context = LanguageContext::None;
             self.ring_buffer.clear();
             return None;
@@ -884,12 +896,14 @@ impl Engine {
             self.last_transition = Some(TransitionKind::UndoActive);
             let output = self.composed_tail();
             self.previous_screen_len = Some(prev_len);
-            return Some(self.replacement(
-                prev_len,
-                match_casing(&self.raw_buffer, &output),
-                ReplacementReason::UndoTransform,
-            ));
+            return Some(self.replacement(prev_len, output, ReplacementReason::UndoTransform));
         }
+
+        let cap_override = self.auto_cap.maybe_capitalize(
+            ch,
+            self.raw_buffer.is_empty() && self.pasted_prefix.is_empty(),
+        );
+        let ch = cap_override.unwrap_or(ch);
 
         self.raw_buffer.push(ch);
         if matches!(
@@ -901,7 +915,7 @@ impl Engine {
 
         if self.bamboo.process_key(ch).is_some() {
             let expected = format!("{}{}", previous, ch);
-            let cased = match_casing(&self.raw_buffer, &self.composed_tail());
+            let cased = self.composed_tail();
             if cased != expected
                 || had_recovered_screen_len
                 || (self.active_transform.is_some() && cased != previous)
@@ -950,6 +964,15 @@ impl Engine {
             }
         }
 
+        if cap_override.is_some() {
+            self.previous_screen_len = Some(prev_len);
+            return Some(self.replacement(
+                prev_len,
+                self.composed_tail(),
+                ReplacementReason::ApplyTransform,
+            ));
+        }
+
         self.previous_screen_len = None;
         None
     }
@@ -959,23 +982,13 @@ impl Engine {
     }
 
     pub fn state(&self) -> CompositionState {
-        let visible = self.visible_output();
-        let raw_keys = format!("{}{}", self.pasted_prefix, self.raw_buffer);
-        CompositionState {
-            case_shape: case_shape(&raw_keys),
-            raw_keys,
-            validity: if visible.is_empty() {
-                SpellingValidity::Unknown
-            } else if crate::spelling::is_valid_vietnamese_syllable(&visible) {
-                SpellingValidity::Valid
-            } else {
-                SpellingValidity::Invalid
-            },
-            visible,
-            active_transform: self.active_transform.clone(),
-            boundary: self.boundary,
-            generation: self.generation,
-            last_transition: self.last_transition,
-        }
+        build_composition_state(
+            format!("{}{}", self.pasted_prefix, self.raw_buffer),
+            self.visible_output(),
+            self.active_transform.clone(),
+            self.boundary,
+            self.generation,
+            self.last_transition,
+        )
     }
 }

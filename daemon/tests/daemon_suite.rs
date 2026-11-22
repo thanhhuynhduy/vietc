@@ -4,7 +4,7 @@
 //! These tests exercise the full Viet+ pipeline using a virtual
 //! /dev/uinput keyboard. They require root for device access.
 //!
-//! Run with: `sudo cargo test -p vietc-daemon`
+//! Run with: `sudo cargo test -p dboard-daemon`
 
 mod common;
 mod runtime;
@@ -23,7 +23,7 @@ fn virtual_keyboard_create_destroy() {
         return;
     }
 
-    let mut kb = VirtualKeyboard::create("vietc-test-create-destroy")
+    let mut kb = VirtualKeyboard::create("dboard-test-create-destroy")
         .expect("failed to create virtual keyboard");
     kb.type_char('a').expect("failed to type char");
     eprintln!("[test] Virtual keyboard created and typed 'a' OK");
@@ -74,12 +74,12 @@ fn vni_simple_word_grabbed() {
 
     // Clean up any previous daemon processes that might conflict
     let _ = std::process::Command::new("pkill")
-        .args(["-x", "vietc-daemon"])
+        .args(["-x", "dboard-daemon"])
         .output();
 
     // Create virtual keyboard before spawning daemon
     let mut kb =
-        VirtualKeyboard::create("vietc-test-vni-word").expect("failed to create virtual keyboard");
+        VirtualKeyboard::create("dboard-test-vni-word").expect("failed to create virtual keyboard");
 
     // Wait for the /dev/input/eventX node to appear
     kb.wait_for_devnode(Duration::from_secs(3));
@@ -140,11 +140,11 @@ fn vni_simple_word_nongrabbed() {
     }
 
     let _ = std::process::Command::new("pkill")
-        .args(["-x", "vietc-daemon"])
+        .args(["-x", "dboard-daemon"])
         .output();
 
     let mut kb =
-        VirtualKeyboard::create("vietc-test-vni-ng").expect("failed to create virtual keyboard");
+        VirtualKeyboard::create("dboard-test-vni-ng").expect("failed to create virtual keyboard");
     kb.wait_for_devnode(Duration::from_secs(3));
 
     // Non-grabbed mode

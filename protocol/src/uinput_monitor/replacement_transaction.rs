@@ -191,8 +191,8 @@ mod clipboard_burst_tests {
         let mut state = ClipboardBurstState::default();
 
         assert_eq!(
-            state.begin_injection(Some("clipboard A".to_string()), "vietc A", 1),
-            ClipboardAction::WriteInjected("vietc A".to_string())
+            state.begin_injection(Some("clipboard A".to_string()), "dboard A", 1),
+            ClipboardAction::WriteInjected("dboard A".to_string())
         );
         let id = state.transaction_id().unwrap();
         assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
@@ -200,14 +200,14 @@ mod clipboard_burst_tests {
         assert!(state.transition(id, ReplacementPhase::TargetObserved));
         assert!(state.transition(id, ReplacementPhase::Applied));
         assert_eq!(
-            state.finish_restore(Some("vietc A")),
+            state.finish_restore(Some("dboard A")),
             ClipboardAction::Restore("clipboard A".to_string())
         );
         assert!(state.complete_restore(id));
 
         assert_eq!(
-            state.begin_injection(Some("clipboard B".to_string()), "vietc B", 1),
-            ClipboardAction::WriteInjected("vietc B".to_string())
+            state.begin_injection(Some("clipboard B".to_string()), "dboard B", 1),
+            ClipboardAction::WriteInjected("dboard B".to_string())
         );
         let id = state.transaction_id().unwrap();
         assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
@@ -215,7 +215,7 @@ mod clipboard_burst_tests {
         assert!(state.transition(id, ReplacementPhase::TargetObserved));
         assert!(state.transition(id, ReplacementPhase::Applied));
         assert_eq!(
-            state.finish_restore(Some("vietc B")),
+            state.finish_restore(Some("dboard B")),
             ClipboardAction::Restore("clipboard B".to_string())
         );
     }
@@ -224,7 +224,7 @@ mod clipboard_burst_tests {
     fn user_clipboard_change_during_wait_is_not_overwritten() {
         let mut state = ClipboardBurstState::default();
 
-        state.begin_injection(Some("clipboard A".to_string()), "vietc A", 1);
+        state.begin_injection(Some("clipboard A".to_string()), "dboard A", 1);
         let id = state.transaction_id().unwrap();
         assert!(state.transition(id, ReplacementPhase::ClipboardWritten));
         assert!(state.transition(id, ReplacementPhase::PasteDispatched));

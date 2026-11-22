@@ -306,6 +306,19 @@ impl BambooEngine {
                             if target_mark == marked {
                                 self.composition[idx].base_char = base;
                                 self.composition[idx].mark_applied = None;
+                                if target_mark == 'ơ'
+                                    && idx > 0
+                                    && self.composition[idx - 1].mark_applied == Some('ư')
+                                {
+                                    self.composition[idx - 1].base_char =
+                                        if self.composition[idx - 1].is_upper {
+                                            'U'
+                                        } else {
+                                            'u'
+                                        };
+                                    self.composition[idx - 1].mark_applied = None;
+                                }
+                                self.undone_in_word = true;
                                 self.composition.push(Transformation {
                                     base_char: ch,
                                     mark_applied: None,
@@ -461,16 +474,36 @@ impl BambooEngine {
         if lower.is_ascii_alphabetic() {
             let len = self.composition.len();
             if len >= 3
-                && self.composition[len - 2].mark_applied == Some('ơ')
-                && self.composition[len - 3].base_char == 'u'
-                && self.composition[len - 3].mark_applied.is_none()
                 && !(len >= 4
                     && self.composition[len - 4]
                         .base_char
                         .eq_ignore_ascii_case(&'q'))
             {
-                self.composition[len - 3].base_char = 'ư';
-                self.composition[len - 3].mark_applied = Some('ư');
+                if self.composition[len - 2].mark_applied == Some('ơ')
+                    && self.composition[len - 3]
+                        .base_char
+                        .eq_ignore_ascii_case(&'u')
+                    && self.composition[len - 3].mark_applied.is_none()
+                {
+                    self.composition[len - 3].base_char = if self.composition[len - 3].is_upper {
+                        'Ư'
+                    } else {
+                        'ư'
+                    };
+                    self.composition[len - 3].mark_applied = Some('ư');
+                } else if self.composition[len - 2]
+                    .base_char
+                    .eq_ignore_ascii_case(&'o')
+                    && self.composition[len - 2].mark_applied.is_none()
+                    && self.composition[len - 3].mark_applied == Some('ư')
+                {
+                    self.composition[len - 2].base_char = if self.composition[len - 2].is_upper {
+                        'Ơ'
+                    } else {
+                        'ơ'
+                    };
+                    self.composition[len - 2].mark_applied = Some('ơ');
+                }
             }
             let last_syllable = self.last_syllable_range();
             let existing_tone = self.composition[last_syllable.clone()]
@@ -593,19 +626,31 @@ impl BambooEngine {
                 continue;
             };
 
-            for transformation in self.composition.iter_mut().rev() {
-                if transformation
+            for idx in (0..self.composition.len()).rev() {
+                if self.composition[idx]
                     .mark_applied
                     .map(|ch| ch.to_ascii_lowercase())
                     == Some(result)
-                    && transformation.tone_applied.is_none()
+                    && self.composition[idx].tone_applied.is_none()
                 {
-                    transformation.base_char = if transformation.is_upper {
+                    self.composition[idx].base_char = if self.composition[idx].is_upper {
                         base_char.to_ascii_uppercase()
                     } else {
                         base_char
                     };
-                    transformation.mark_applied = None;
+                    self.composition[idx].mark_applied = None;
+                    if result == 'ơ'
+                        && idx > 0
+                        && self.composition[idx - 1].mark_applied == Some('ư')
+                    {
+                        self.composition[idx - 1].base_char = if self.composition[idx - 1].is_upper
+                        {
+                            'U'
+                        } else {
+                            'u'
+                        };
+                        self.composition[idx - 1].mark_applied = None;
+                    }
                     self.undone_in_word = true;
                     return Some(match undo_behavior {
                         UndoBehavior::AppendTrigger => TelexUndo::AppendTrigger,

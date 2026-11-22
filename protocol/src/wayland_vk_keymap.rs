@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Complete standards-compliant XKB v1 keymap for VietC's persistent Wayland
+//! Complete standards-compliant XKB v1 keymap for Dboard's persistent Wayland
 //! virtual keyboard (`zwp_virtual_keyboard_v1`).
 //!
 //! Design invariants:
@@ -14,6 +14,8 @@
 //!    (>= 112) that trigger Chromium DomCode collisions (`KEY_UNDO` 131, `KEY_COMPOSE` 127).
 
 use std::fmt::Write;
+
+use crate::layout::char_to_evdev_and_shift;
 
 pub(crate) const XKB_MOD_SHIFT: u32 = 1 << 0;
 pub(crate) const XKB_MOD_LOCK: u32 = 1 << 1;
@@ -147,103 +149,33 @@ pub(crate) fn char_to_vk_stroke(ch: char) -> Option<VkKeyStroke> {
         }
     }
 
-    let (evdev_code, modifiers) = match ch {
-        'a'..='z' => (ascii_letter_evdev(ch), 0),
-        'A'..='Z' => (ascii_letter_evdev(ch.to_ascii_lowercase()), XKB_MOD_SHIFT),
-        '1' => (2, 0),
-        '!' => (2, XKB_MOD_SHIFT),
-        '2' => (3, 0),
-        '@' => (3, XKB_MOD_SHIFT),
-        '3' => (4, 0),
-        '#' => (4, XKB_MOD_SHIFT),
-        '4' => (5, 0),
-        '$' => (5, XKB_MOD_SHIFT),
-        '5' => (6, 0),
-        '%' => (6, XKB_MOD_SHIFT),
-        '6' => (7, 0),
-        '^' => (7, XKB_MOD_SHIFT),
-        '7' => (8, 0),
-        '&' => (8, XKB_MOD_SHIFT),
-        '8' => (9, 0),
-        '*' => (9, XKB_MOD_SHIFT),
-        '9' => (10, 0),
-        '(' => (10, XKB_MOD_SHIFT),
-        '0' => (11, 0),
-        ')' => (11, XKB_MOD_SHIFT),
-        '-' => (12, 0),
-        '_' => (12, XKB_MOD_SHIFT),
-        '=' => (13, 0),
-        '+' => (13, XKB_MOD_SHIFT),
-        '\t' => (15, 0),
-        '[' => (26, 0),
-        '{' => (26, XKB_MOD_SHIFT),
-        ']' => (27, 0),
-        '}' => (27, XKB_MOD_SHIFT),
-        '\n' => (28, 0),
-        ';' => (39, 0),
-        ':' => (39, XKB_MOD_SHIFT),
-        '\'' => (40, 0),
-        '"' => (40, XKB_MOD_SHIFT),
-        '`' => (41, 0),
-        '~' => (41, XKB_MOD_SHIFT),
-        '\\' => (43, 0),
-        '|' => (43, XKB_MOD_SHIFT),
-        ',' => (51, 0),
-        '<' => (51, XKB_MOD_SHIFT),
-        '.' => (52, 0),
-        '>' => (52, XKB_MOD_SHIFT),
-        '/' => (53, 0),
-        '?' => (53, XKB_MOD_SHIFT),
-        ' ' => (57, 0),
-        _ => return None,
-    };
-
+    let (evdev_code, needs_shift) = char_to_evdev_and_shift(ch)?;
     Some(VkKeyStroke {
         evdev_code,
-        modifiers,
+        modifiers: if needs_shift { XKB_MOD_SHIFT } else { 0 },
     })
 }
 
-fn ascii_letter_evdev(lower: char) -> u32 {
-    match lower {
-        'q' => 16,
-        'w' => 17,
-        'e' => 18,
-        'r' => 19,
-        't' => 20,
-        'y' => 21,
-        'u' => 22,
-        'i' => 23,
-        'o' => 24,
-        'p' => 25,
-        'a' => 30,
-        's' => 31,
-        'd' => 32,
-        'f' => 33,
-        'g' => 34,
-        'h' => 35,
-        'j' => 36,
-        'k' => 37,
-        'l' => 38,
-        'z' => 44,
-        'x' => 45,
-        'c' => 46,
-        'v' => 47,
-        'b' => 48,
-        'n' => 49,
-        'm' => 50,
-        _ => unreachable!(),
-    }
-}
-
-/// Returns `true` if `keycode` is a standard typing, editing, or navigation key
-/// defined in our virtual-keyboard XKB keymap (excluding system modifiers, CapsLock,
-/// and physical Numpad keys so compositor shortcuts, hardware LEDs, and NumLock OFF
-/// keypad navigation stay 100% native on uinput).
+/// Returns `true` if `keycode` is a standard typing, editing, navigation, or
+/// NumLock-independent Numpad delimiter key defined in our virtual-keyboard XKB
+/// keymap (excluding system modifiers, CapsLock, and NumLock-dependent keypad
+/// digits so compositor shortcuts, hardware LEDs, and NumLock OFF navigation
+/// stay 100% native on uinput).
 pub(crate) fn is_vk_typing_or_nav_keycode(keycode: u16) -> bool {
     matches!(
         keycode,
-        1..=28 | 30..=43 | 44..=53 | 57 | 59..=68 | 87..=88 | 102..=111
+        1..=28
+            | 30..=43
+            | 44..=53
+            | 55
+            | 57
+            | 59..=68
+            | 74
+            | 78
+            | 86..=88
+            | 96
+            | 98
+            | 102..=111
     )
 }
 
@@ -307,6 +239,7 @@ const STANDARD_KEYS: &[(&str, u32, &str, &str)] = &[
     ("KP3", 81, "ONE_LEVEL", "[ 3 ]"),
     ("KP0", 82, "ONE_LEVEL", "[ 0 ]"),
     ("KPDL", 83, "ONE_LEVEL", "[ period ]"),
+    ("LSGT", 86, "TWO_LEVEL", "[ less, greater ]"),
     ("FK11", 87, "ONE_LEVEL", "[ F11 ]"),
     ("FK12", 88, "ONE_LEVEL", "[ F12 ]"),
     ("KPEN", 96, "TWO_LEVEL", "[ Return, Return ]"),
@@ -330,7 +263,7 @@ const STANDARD_KEYS: &[(&str, u32, &str, &str)] = &[
 pub(crate) fn build_xkb_keymap() -> String {
     let mut out = String::with_capacity(16_384);
     out.push_str("xkb_keymap {\n");
-    out.push_str("xkb_keycodes \"vietc_vk\" {\n");
+    out.push_str("xkb_keycodes \"dboard_vk\" {\n");
     out.push_str("    minimum = 8;\n");
     out.push_str("    maximum = 255;\n");
     for &(name, evdev, _, _) in STANDARD_KEYS {
@@ -342,7 +275,7 @@ pub(crate) fn build_xkb_keymap() -> String {
     out.push_str("};\n");
 
     out.push_str(
-        r#"xkb_types "vietc_vk" {
+        r#"xkb_types "dboard_vk" {
     virtual_modifiers NumLock, Alt, Super, Meta;
     type "ONE_LEVEL" {
         modifiers= none;
@@ -361,7 +294,7 @@ pub(crate) fn build_xkb_keymap() -> String {
         level_name[Level1]= "Base";
         level_name[Level2]= "Caps";
     };
-    type "VIETC_EIGHT_LEVEL" {
+    type "DBOARD_EIGHT_LEVEL" {
         modifiers = Shift + Lock + Mod5 + Mod3;
         map[none] = Level1;
         map[Shift] = Level2;
@@ -385,7 +318,7 @@ pub(crate) fn build_xkb_keymap() -> String {
         level_name[Level8] = "8";
     };
 };
-xkb_compatibility "vietc_vk" {
+xkb_compatibility "dboard_vk" {
     interpret VoidSymbol { repeat= False; };
     interpret.repeat= True;
     interpret Shift_L {
@@ -408,10 +341,10 @@ xkb_compatibility "vietc_vk" {
         action= SetMods(modifiers=Mod3);
     };
 };
-xkb_symbols "vietc_vk" {
-    name[Group1] = "English (US)";
+xkb_symbols "dboard_vk" {
 "#,
     );
+    out.push_str("    name[Group1] = \"English (US)\";\n");
 
     for &(name, _, ty, syms) in STANDARD_KEYS {
         let _ = writeln!(
@@ -420,6 +353,7 @@ xkb_symbols "vietc_vk" {
         );
     }
     for (i, &(name, _, lower, upper)) in EIGHT_LEVEL_KEYS.iter().enumerate() {
+        let ty = "DBOARD_EIGHT_LEVEL";
         let mut syms = format!("[ {lower}, {upper}");
         for slot in 0..3 {
             let pair_idx = i * 3 + slot;
@@ -438,7 +372,7 @@ xkb_symbols "vietc_vk" {
         syms.push_str(" ]");
         let _ = writeln!(
             out,
-            "    key <{name}> {{ type[Group1] = \"VIETC_EIGHT_LEVEL\", symbols[Group1] = {syms} }};"
+            "    key <{name}> {{ type[Group1] = \"{ty}\", symbols[Group1] = {syms} }};"
         );
     }
 
@@ -563,9 +497,10 @@ mod tests {
 
             let ctx = ctx_new(0);
             assert!(!ctx.is_null());
+
             let keymap_src = CString::new(build_xkb_keymap()).unwrap();
             let km = km_new(ctx, keymap_src.as_ptr(), 1, 0);
-            assert!(!km.is_null(), "libxkbcommon rejected build_xkb_keymap()");
+            assert!(!km.is_null(), "libxkbcommon rejected US QWERTY keymap");
 
             for (expected_idx, name) in [
                 (0u32, c"Shift"),
@@ -583,20 +518,18 @@ mod tests {
             let state = st_new(km);
             assert!(!state.is_null());
 
-            // Verify every Vietnamese char decodes identically
             for &(lo, up) in &VIETNAMESE_PAIRS {
                 for &ch in &[lo, up] {
                     let stroke = char_to_vk_stroke(ch).unwrap();
                     st_mask(state, stroke.modifiers, 0, 0, 0, 0, 0);
                     let mut buf = [0 as c_char; 16];
                     let len = st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
-                    assert!(len > 0);
+                    assert!(len > 0, "failed len for {ch}");
                     let decoded = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
                     assert_eq!(decoded, ch.to_string(), "mismatch for {ch}");
                 }
             }
 
-            // Verify all 95 printable ASCII characters
             for byte in 0x20u8..=0x7eu8 {
                 let ch = byte as char;
                 let stroke = char_to_vk_stroke(ch).unwrap();
@@ -612,6 +545,24 @@ mod tests {
             km_unref(km);
             ctx_unref(ctx);
             libc::dlclose(lib);
+        }
+    }
+
+    #[test]
+    fn numpad_delimiters_route_via_vk_while_numlock_digits_stay_on_uinput() {
+        // Invariant 3: NumLock-independent Numpad delimiters share the VK channel
+        for code in [55u16, 74, 78, 96, 98] {
+            assert!(
+                is_vk_typing_or_nav_keycode(code),
+                "expected Numpad delimiter keycode {code} to route via VK"
+            );
+        }
+        // NumLock-dependent keypad digits/dot stay native on uinput
+        for code in [71u16, 72, 73, 75, 76, 77, 79, 80, 81, 82, 83] {
+            assert!(
+                !is_vk_typing_or_nav_keycode(code),
+                "expected NumLock-dependent keycode {code} to stay on uinput"
+            );
         }
     }
 }

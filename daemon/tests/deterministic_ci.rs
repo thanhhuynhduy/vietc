@@ -12,7 +12,6 @@ const ARTIFACT_SCHEMA_VERSION: u32 = 1;
 enum DeliveryMode {
     Grabbed,
     Forwarded,
-    X11,
     Clipboard,
 }
 
@@ -181,11 +180,10 @@ impl DeterministicFailureArtifact {
     }
 }
 
-fn modes() -> [DeliveryMode; 4] {
+fn modes() -> [DeliveryMode; 3] {
     [
         DeliveryMode::Grabbed,
         DeliveryMode::Forwarded,
-        DeliveryMode::X11,
         DeliveryMode::Clipboard,
     ]
 }

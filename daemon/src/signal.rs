@@ -10,6 +10,8 @@ pub fn install_signal_handlers() {
     use std::mem;
     unsafe {
         let _ = libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        // Never allow terminal Ctrl+Z (SIGTSTP) to suspend the daemon while holding EVIOCGRAB.
+        let _ = libc::signal(libc::SIGTSTP, libc::SIG_IGN);
         let mut act: libc::sigaction = mem::zeroed();
         libc::sigemptyset(&mut act.sa_mask);
         act.sa_flags = 0;
@@ -111,7 +113,7 @@ mod phase3_tests {
     #[test]
     fn contender_cannot_acquire_lock_when_pid_text_is_stale() {
         let directory = tempfile::tempdir().unwrap();
-        let lock_path = directory.path().join("vietc.lock");
+        let lock_path = directory.path().join("dboard.lock");
 
         let holder = acquire_instance_lock(&lock_path).unwrap();
         std::fs::write(&lock_path, "999999").unwrap();
@@ -125,7 +127,7 @@ mod phase3_tests {
     #[test]
     fn dropping_guard_releases_kernel_lock() {
         let directory = tempfile::tempdir().unwrap();
-        let lock_path = directory.path().join("vietc.lock");
+        let lock_path = directory.path().join("dboard.lock");
 
         let holder = acquire_instance_lock(&lock_path).unwrap();
         drop(holder);
@@ -137,7 +139,7 @@ mod phase3_tests {
     #[test]
     fn pid_is_written_through_the_locked_file_descriptor() {
         let directory = tempfile::tempdir().unwrap();
-        let lock_path = directory.path().join("vietc.lock");
+        let lock_path = directory.path().join("dboard.lock");
 
         let guard = acquire_instance_lock(&lock_path).unwrap();
         let file = OpenOptions::new().read(true).open(&lock_path).unwrap();

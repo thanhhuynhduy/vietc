@@ -19,23 +19,23 @@ fn exe_dir() -> PathBuf {
 
 fn find_daemon_binary() -> String {
     for candidate in [
-        "/usr/bin/vietc-daemon",
-        "/usr/bin/vietc",
-        "/usr/local/bin/vietc-daemon",
-        "/usr/local/bin/vietc",
-        "/app/bin/vietc-daemon",
+        "/usr/bin/dboard-daemon",
+        "/usr/bin/dboard",
+        "/usr/local/bin/dboard-daemon",
+        "/usr/local/bin/dboard",
+        "/app/bin/dboard-daemon",
     ] {
         if std::path::Path::new(candidate).exists() {
             return candidate.to_string();
         }
     }
     let dir = exe_dir();
-    for candidate in [dir.join("vietc-daemon"), dir.join("vietc")] {
+    for candidate in [dir.join("dboard-daemon"), dir.join("dboard")] {
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
         }
     }
-    "vietc-daemon".to_string()
+    "dboard-daemon".to_string()
 }
 
 fn is_daemon_running() -> bool {
@@ -43,8 +43,8 @@ fn is_daemon_running() -> bool {
     let lock_path = std::env::var("XDG_RUNTIME_DIR")
         .ok()
         .filter(|dir| !dir.is_empty() && std::path::Path::new(dir).is_dir())
-        .map(|dir| format!("{}/vietc-daemon.lock", dir))
-        .unwrap_or_else(|| format!("/tmp/vietc-daemon-{}.lock", uid));
+        .map(|dir| format!("{}/dboard-daemon.lock", dir))
+        .unwrap_or_else(|| format!("/tmp/dboard-daemon-{}.lock", uid));
     if let Ok(path_c) = std::ffi::CString::new(lock_path) {
         let fd = unsafe { libc::open(path_c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         if fd >= 0 {
@@ -68,7 +68,7 @@ fn is_daemon_running() -> bool {
             .map(|s| s.success())
             .unwrap_or(false)
     };
-    check("vietc") || check("vietc-daemon")
+    check("dboard") || check("dboard-daemon")
 }
 
 fn reap_in_background(
@@ -84,7 +84,7 @@ fn supervise_daemon(child: std::process::Child) {
     reap_in_background(child, move |result| {
         let _ = DAEMON_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
         if !result.is_ok_and(|status| status.success()) {
-            eprintln!("[vietc-tray] Supervised daemon exited unsuccessfully");
+            eprintln!("[dboard-tray] Supervised daemon exited unsuccessfully");
         }
     });
 }
@@ -94,14 +94,14 @@ fn launch_unprivileged(binary: &str) {
     if !STOPPING.load(Ordering::SeqCst) {
         match std::process::Command::new(binary).spawn() {
             Ok(child) => supervise_daemon(child),
-            Err(error) => eprintln!("[vietc-tray] Could not start daemon: {error}"),
+            Err(error) => eprintln!("[dboard-tray] Could not start daemon: {error}"),
         }
     }
 }
 
 fn try_start_systemd_user_service() -> bool {
     let ok = std::process::Command::new("systemctl")
-        .args(["--user", "start", "vietc.service"])
+        .args(["--user", "start", "dboard.service"])
         .status()
         .is_ok_and(|s| s.success());
     if ok {
@@ -115,14 +115,14 @@ fn start_daemon() {
     if is_daemon_running() {
         return;
     }
-    // Prefer systemd user service (`vietc.service`) so closing the optional tray
+    // Prefer systemd user service (`dboard.service`) so closing the optional tray
     // icon never interrupts typing, and Wayland/AT-SPI/uaccess stay in user session.
     if try_start_systemd_user_service() {
-        eprintln!("[vietc-tray] Attached to systemd user service vietc.service");
+        eprintln!("[dboard-tray] Attached to systemd user service dboard.service");
         return;
     }
     let daemon_bin = find_daemon_binary();
-    eprintln!("[vietc-tray] Starting unprivileged daemon: {}", daemon_bin);
+    eprintln!("[dboard-tray] Starting unprivileged daemon: {}", daemon_bin);
     launch_unprivileged(&daemon_bin);
 }
 
@@ -131,16 +131,16 @@ pub fn stop_daemon() {
     let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let pid = DAEMON_PID.load(Ordering::SeqCst);
     // Only stop a daemon directly spawned by this tray process (`DAEMON_PID > 0`).
-    // Never `pkill` a `vietc.service` instance managed by systemd.
+    // Never `pkill` a `dboard.service` instance managed by systemd.
     if pid > 0 {
-        eprintln!("[vietc-tray] Stopping tray-spawned daemon (PID {})", pid);
+        eprintln!("[dboard-tray] Stopping tray-spawned daemon (PID {})", pid);
         unsafe {
             libc::kill(pid, libc::SIGTERM);
         }
         for _ in 0..20 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             if unsafe { libc::kill(pid, 0) } != 0 {
-                eprintln!("[vietc-tray] Daemon exited");
+                eprintln!("[dboard-tray] Daemon exited");
                 return;
             }
         }
@@ -198,9 +198,9 @@ fn main() {
             handle_termination_signal as *const () as libc::sighandler_t,
         );
     }
-    ensure_single_instance("vietc-tray");
+    ensure_single_instance("dboard-tray");
 
-    eprintln!("[vietc-tray] Starting");
+    eprintln!("[dboard-tray] Starting");
     start_daemon();
     tray::run();
     stop_daemon();

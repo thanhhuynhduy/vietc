@@ -3,7 +3,7 @@ use crate::config;
 use ksni::{menu::*, MenuItem, Tray};
 
 fn is_flatpak() -> bool {
-    std::path::Path::new("/app/bin/vietc-daemon").exists()
+    std::path::Path::new("/app/bin/dboard-daemon").exists()
 }
 
 fn ipc_file_path(name: &str) -> std::path::PathBuf {
@@ -19,15 +19,15 @@ fn ipc_file_path(name: &str) -> std::path::PathBuf {
         })
         .or_else(dirs::config_dir)
     {
-        return config_dir.join("vietc").join(name);
+        return config_dir.join("dboard").join(name);
     }
     if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
         if !rt.is_empty() && std::path::Path::new(&rt).is_dir() {
-            return std::path::PathBuf::from(rt).join("vietc").join(name);
+            return std::path::PathBuf::from(rt).join("dboard").join(name);
         }
     }
     let uid = unsafe { libc::getuid() };
-    std::path::PathBuf::from(format!("/tmp/vietc-{}-{}", name, uid))
+    std::path::PathBuf::from(format!("/tmp/dboard-{}-{}", name, uid))
 }
 
 fn write_ipc_file(name: &str, value: &str) {
@@ -133,16 +133,16 @@ fn ensure_icons() {
     if let Some(home) = dirs::home_dir() {
         let base = home.join(".local/share/icons");
         let _ = std::fs::create_dir_all(&base);
-        let _ = std::fs::write(base.join("vietc-vn.svg"), svg_vn);
-        let _ = std::fs::write(base.join("vietc-tlx.svg"), svg_tlx);
-        let _ = std::fs::write(base.join("vietc-en.svg"), svg_en);
+        let _ = std::fs::write(base.join("dboard-vn.svg"), svg_vn);
+        let _ = std::fs::write(base.join("dboard-tlx.svg"), svg_tlx);
+        let _ = std::fs::write(base.join("dboard-en.svg"), svg_en);
 
         for dir in &["scalable", "256x256", "128x128", "64x64", "48x48", "32x32"] {
             let apps = base.join("hicolor").join(dir).join("apps");
             let _ = std::fs::create_dir_all(&apps);
-            let _ = std::fs::write(apps.join("vietc-vn.svg"), svg_vn);
-            let _ = std::fs::write(apps.join("vietc-tlx.svg"), svg_tlx);
-            let _ = std::fs::write(apps.join("vietc-en.svg"), svg_en);
+            let _ = std::fs::write(apps.join("dboard-vn.svg"), svg_vn);
+            let _ = std::fs::write(apps.join("dboard-tlx.svg"), svg_tlx);
+            let _ = std::fs::write(apps.join("dboard-en.svg"), svg_en);
         }
     }
 }
@@ -153,30 +153,93 @@ struct VietTray {
     autostart: bool,
 }
 
+impl VietTray {
+    fn cycle_mode(&mut self) {
+        let cfg = config::Config::load();
+        let modes: Vec<String> = cfg
+            .toggle_modes
+            .iter()
+            .map(|m| m.trim().to_ascii_lowercase())
+            .filter(|m| matches!(m.as_str(), "en" | "vn" | "vni" | "telex"))
+            .collect();
+        let (next_mode, next_im): (String, String) =
+            if modes.len() >= 2 && modes.iter().any(|m| m == "vni" || m == "telex") {
+                let cur_idx = modes
+                    .iter()
+                    .position(|m| {
+                        (m == "en" && self.mode == "en")
+                            || (m == "vn" && self.mode == "vn")
+                            || (self.mode == "vn" && m == &self.im)
+                    })
+                    .unwrap_or(0);
+                let target = &modes[(cur_idx + 1) % modes.len()];
+                match target.as_str() {
+                    "en" => ("en".into(), self.im.clone()),
+                    "vni" => ("vn".into(), "vni".into()),
+                    "telex" => ("vn".into(), "telex".into()),
+                    _ => ("vn".into(), self.im.clone()),
+                }
+            } else if self.mode == "en" {
+                ("vn".into(), self.im.clone())
+            } else {
+                ("en".into(), self.im.clone())
+            };
+        write_status(&next_mode);
+        write_method(&next_im);
+        self.mode = next_mode;
+        self.im = next_im;
+    }
+
+    fn toggle_shortcut_label() -> String {
+        let key = config::Config::load().toggle_key;
+        let trimmed = key.trim();
+        if trimmed.contains('+') {
+            trimmed
+                .split('+')
+                .map(|part| {
+                    let mut chars = part.trim().chars();
+                    match chars.next() {
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" + ")
+        } else {
+            let mut chars = trimmed.chars();
+            let cap = match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => "Space".into(),
+            };
+            format!("Ctrl + {cap}")
+        }
+    }
+}
+
 impl Tray for VietTray {
     fn id(&self) -> String {
-        "io.github.vietc.Tray".into()
+        "io.github.dboard.Tray".into()
     }
     fn title(&self) -> String {
-        "VietC".into()
+        "Dboard".into()
     }
 
     fn icon_name(&self) -> String {
         let is_tlx = self.mode == "vn" && self.im == "telex";
         if is_flatpak() {
             if is_tlx {
-                "io.github.vietc.VietPlus.vietc-tlx".into()
+                "io.github.dboard.dboard-tlx".into()
             } else if self.mode == "vn" {
-                "io.github.vietc.VietPlus.vietc-vn".into()
+                "io.github.dboard.dboard-vn".into()
             } else {
-                "io.github.vietc.VietPlus.vietc-en".into()
+                "io.github.dboard.dboard-en".into()
             }
         } else if is_tlx {
-            "vietc-tlx".into()
+            "dboard-tlx".into()
         } else if self.mode == "vn" {
-            "vietc-vn".into()
+            "dboard-vn".into()
         } else {
-            "vietc-en".into()
+            "dboard-en".into()
         }
     }
 
@@ -203,17 +266,7 @@ impl Tray for VietTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let (next_mode, next_im) = if self.mode == "en" {
-            ("vn", "vni")
-        } else if self.im == "vni" {
-            ("vn", "telex")
-        } else {
-            ("en", "telex")
-        };
-        write_status(next_mode);
-        write_method(next_im);
-        self.mode = next_mode.to_string();
-        self.im = next_im.to_string();
+        self.cycle_mode();
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -245,19 +298,9 @@ impl Tray for VietTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "Switch Mode (Ctrl + Space)".into(),
+                label: format!("Switch Mode ({})", Self::toggle_shortcut_label()),
                 activate: Box::new(|this: &mut VietTray| {
-                    let (next_mode, next_im) = if this.mode == "en" {
-                        ("vn", "vni")
-                    } else if this.im == "vni" {
-                        ("vn", "telex")
-                    } else {
-                        ("en", "telex")
-                    };
-                    write_status(next_mode);
-                    write_method(next_im);
-                    this.mode = next_mode.to_string();
-                    this.im = next_im.to_string();
+                    this.cycle_mode();
                 }),
                 ..Default::default()
             }
@@ -298,7 +341,7 @@ impl Tray for VietTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
-                label: "About: VietC".into(),
+                label: "About: Dboard".into(),
                 activate: Box::new(|_| {
                     if let Ok(mut child) = std::process::Command::new("xdg-open")
                         .arg("https://github.com/thanhhuynhduy/vietc")

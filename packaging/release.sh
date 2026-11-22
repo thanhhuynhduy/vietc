@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# VietC — Release Packaging Script (.deb + Linux Tarball)
+# Dboard — Release Packaging Script (.deb + Linux Tarball)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +12,7 @@ if [ -z "$VERSION" ] || [[ "$VERSION" == --* ]]; then
 fi
 
 echo "========================================================"
-echo "  VietC Release Packaging — v${VERSION}"
+echo "  Dboard Release Packaging — v${VERSION}"
 echo "========================================================"
 
 echo -e "\n[1/2] Building Debian/Ubuntu .deb package..."
@@ -25,6 +25,6 @@ echo -e "\n========================================================"
 echo "  Release v${VERSION} Packaging Completed!"
 echo "========================================================"
 echo "Generated Artifacts:"
-echo "  - Debian .deb:  packaging/deb/vietc_${VERSION}-1_amd64.deb"
-echo "  - Tarball:      target/dist/vietc_${VERSION}_linux_amd64.tar.gz"
+echo "  - Debian .deb:  packaging/deb/dboard_${VERSION}-1_amd64.deb"
+echo "  - Tarball:      target/dist/dboard_${VERSION}_linux_amd64.tar.gz"
 echo "========================================================"

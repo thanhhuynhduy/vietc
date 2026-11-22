@@ -1,8 +1,8 @@
 [package]
-name = "vietc-engine"
+name = "dboard-engine"
 version.workspace = true
 edition.workspace = true
-description = "VietC Gboard-style Bilingual Vietnamese/English IME Engine"
+description = "Dboard Gboard-style Bilingual Vietnamese/English IME Engine"
 license.workspace = true
 
 [features]

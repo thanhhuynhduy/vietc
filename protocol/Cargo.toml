@@ -1,8 +1,8 @@
 [package]
-name = "vietc-protocol"
+name = "dboard-protocol"
 version.workspace = true
 edition.workspace = true
-description = "VietC uinput and clipboard injection backends"
+description = "Dboard uinput and clipboard injection backends"
 license.workspace = true
 
 [dependencies]
@@ -13,8 +13,7 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = tru
 wayland-scanner = { version = "0.31", optional = true }
 
 [features]
-default = ["x11", "wayland-protocol"]
-x11 = []
+default = ["wayland-protocol"]
 wayland-protocol = [
     "dep:wayland-client",
     "dep:wayland-protocols",

@@ -12,7 +12,7 @@ Cargo.lock
 *.deb
 *.AppImage
 *.cdx.json
-packaging/deb/vietc_*/
+packaging/deb/dboard_*/
 status
 /dist/
 target/

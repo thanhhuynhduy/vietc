@@ -1,8 +1,8 @@
 //! Regression tests for tone placement on syllables whose onset contains a
 //! glide letter ("qu", "gi") and on the "uê"/"uơ" vowel clusters.
 
+use dboard_engine::{Engine, InputMethod};
 use std::collections::HashMap;
-use vietc_engine::{Engine, InputMethod};
 
 fn telex(keys: &str) -> String {
     Engine::replay_keystrokes(

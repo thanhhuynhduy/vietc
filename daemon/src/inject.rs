@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use vietc_protocol::inject::InjectResult;
-use vietc_protocol::KeyInjector;
+use dboard_protocol::inject::InjectResult;
+use dboard_protocol::KeyInjector;
 
 use crate::commands::{OutputCommand, TransactionOutcome};
 use crate::display;
@@ -11,7 +11,7 @@ use crate::log::log_info;
 static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 fn injection_trace_enabled() -> bool {
-    std::env::var_os("VIETC_INJECTION_TRACE").is_some()
+    std::env::var_os("DBOARD_INJECTION_TRACE").is_some()
 }
 
 pub fn execute_commands(
@@ -34,7 +34,7 @@ pub fn execute_commands(
 
             if trace {
                 log_info(&format!(
-                    "[vietc] injection transaction start: id={} delete={} insert_scalars={} insert_bytes={} expected_revision={} actual_revision={} generation={} reason={:?}",
+                    "[dboard] injection transaction start: id={} delete={} insert_scalars={} insert_bytes={} expected_revision={} actual_revision={} generation={} reason={:?}",
                     transaction_id,
                     replacement.delete_before_cursor,
                     replacement.insert.chars().count(),
@@ -49,7 +49,7 @@ pub fn execute_commands(
             if replacement.expected_visible_revision != *visible_revision {
                 if trace {
                     log_info(&format!(
-                        "[vietc] injection transaction stale: id={} elapsed_us={} expected_revision={} actual_revision={}",
+                        "[dboard] injection transaction stale: id={} elapsed_us={} expected_revision={} actual_revision={}",
                         transaction_id,
                         started.elapsed().as_micros(),
                         replacement.expected_visible_revision,
@@ -71,7 +71,7 @@ pub fn execute_commands(
             if replacement_result != InjectResult::Success {
                 if trace {
                     log_info(&format!(
-                        "[vietc] injection transaction failed: id={} phase=replace elapsed_us={} result={}",
+                        "[dboard] injection transaction failed: id={} phase=replace elapsed_us={} result={}",
                         transaction_id,
                         replacement_elapsed.as_micros(),
                         replacement_result,
@@ -84,7 +84,7 @@ pub fn execute_commands(
             if flush_result != InjectResult::Success {
                 if trace {
                     log_info(&format!(
-                        "[vietc] injection transaction failed: id={} phase=flush replace_us={} elapsed_us={} result={}",
+                        "[dboard] injection transaction failed: id={} phase=flush replace_us={} elapsed_us={} result={}",
                         transaction_id,
                         replacement_elapsed.as_micros(),
                         started.elapsed().as_micros(),
@@ -97,7 +97,7 @@ pub fn execute_commands(
             *visible_revision += 1;
             if trace {
                 log_info(&format!(
-                    "[vietc] injection transaction applied: id={} replace_us={} elapsed_us={} visible_revision={}",
+                    "[dboard] injection transaction applied: id={} replace_us={} elapsed_us={} visible_revision={}",
                     transaction_id,
                     replacement_elapsed.as_micros(),
                     started.elapsed().as_micros(),
@@ -136,29 +136,27 @@ pub fn execute_commands(
 }
 
 pub fn create_injector(
-    _display: display::DisplayServer,
+    display: display::DisplayServer,
 ) -> Result<Box<dyn KeyInjector>, Box<dyn std::error::Error>> {
-    match vietc_protocol::uinput_monitor::UinputInjector::new("vietc") {
+    create_injector_with_locks(display, false, false)
+}
+
+pub fn create_injector_with_locks(
+    _display: display::DisplayServer,
+    initial_caps_lock: bool,
+    initial_num_lock: bool,
+) -> Result<Box<dyn KeyInjector>, Box<dyn std::error::Error>> {
+    match dboard_protocol::uinput_monitor::UinputInjector::new_with_locks(
+        "dboard",
+        initial_caps_lock,
+        initial_num_lock,
+    ) {
         Ok(injector) => {
-            log_info("[vietc] Using uinput injection");
+            log_info("[dboard] Using uinput + Wayland virtual keyboard injection");
             return Ok(Box::new(injector));
         }
         Err(e) => {
-            log_info(&format!("[vietc] uinput not available: {}", e));
-        }
-    }
-
-    #[cfg(feature = "x11")]
-    if std::env::var("DISPLAY").is_ok() {
-        // On Wayland-with-XWayland, XTEST injection is rootless (like ibus-x11).
-        match vietc_protocol::x11_inject::X11Injector::new() {
-            Ok(injector) => {
-                log_info("[vietc] Using X11 injection (fallback)");
-                return Ok(Box::new(injector));
-            }
-            Err(e) => {
-                log_info(&format!("[vietc] X11 not available: {}", e));
-            }
+            log_info(&format!("[dboard] uinput not available: {}", e));
         }
     }
 
@@ -168,8 +166,8 @@ pub fn create_injector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dboard_protocol::inject::InjectResult;
     use std::cell::Cell;
-    use vietc_protocol::inject::InjectResult;
 
     struct ScriptedInjector {
         replacement_result: InjectResult,
@@ -201,13 +199,13 @@ mod tests {
     }
 
     fn replacement(expected_revision: u64) -> OutputCommand {
-        OutputCommand::Replace(vietc_engine::Replacement {
-            version: vietc_engine::Replacement::VERSION,
+        OutputCommand::Replace(dboard_engine::Replacement {
+            version: dboard_engine::Replacement::VERSION,
             delete_before_cursor: 1,
             insert: "á".to_string(),
             expected_visible_revision: expected_revision,
             transform_generation: 1,
-            reason: vietc_engine::ReplacementReason::ApplyTransform,
+            reason: dboard_engine::ReplacementReason::ApplyTransform,
         })
     }
 
@@ -303,7 +301,6 @@ mod tests {
     enum DeliveryMode {
         Grabbed,
         Forwarded,
-        X11,
         Clipboard,
     }
 
@@ -320,10 +317,7 @@ mod tests {
         visible.push_str(insert);
 
         match mode {
-            DeliveryMode::Grabbed
-            | DeliveryMode::Forwarded
-            | DeliveryMode::X11
-            | DeliveryMode::Clipboard => visible,
+            DeliveryMode::Grabbed | DeliveryMode::Forwarded | DeliveryMode::Clipboard => visible,
         }
     }
 
@@ -332,7 +326,6 @@ mod tests {
         for mode in [
             DeliveryMode::Grabbed,
             DeliveryMode::Forwarded,
-            DeliveryMode::X11,
             DeliveryMode::Clipboard,
         ] {
             assert_eq!(

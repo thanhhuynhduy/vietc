@@ -1,5 +1,5 @@
+use dboard_engine::{Engine, EngineEvent, EventStore, InputEvent, InputMethod};
 use std::io::{self, BufRead, Write};
-use vietc_engine::{Engine, EngineEvent, EventStore, InputEvent, InputMethod};
 
 struct CliState {
     engine: Engine,
@@ -164,7 +164,7 @@ fn main() -> io::Result<()> {
 }
 
 fn print_help() {
-    println!("Viet+ IME - Test Harness");
+    println!("Dboard IME - Test Harness");
     println!("=========================");
     println!("Type text with VNI/Telex to see engine output.");
     println!();

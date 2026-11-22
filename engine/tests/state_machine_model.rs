@@ -1,4 +1,4 @@
-use vietc_engine::{
+use dboard_engine::{
     BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, Replacement,
     ReplacementReason, SpellingValidity, TransformIdentity, TransformKind, TransitionKind,
     UndoPolicy,

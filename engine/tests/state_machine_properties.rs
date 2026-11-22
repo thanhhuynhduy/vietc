@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-use std::collections::HashMap;
-use vietc_engine::{
+use dboard_engine::{
     BoundaryState, CaseShape, Engine, EngineEvent, InputMethod, PhysicalEvent, ReplacementReason,
     SpellingValidity, TransformKind, TransitionKind, UndoPolicy,
 };
+use std::collections::HashMap;
 
 const SMOKE_SEEDS: [u64; 8] = [
     0x4154_5858,
@@ -17,11 +17,11 @@ const SMOKE_SEEDS: [u64; 8] = [
 ];
 
 fn property_budget() -> usize {
-    std::env::var("VIETC_PROPERTY_CASES")
+    std::env::var("DBOARD_PROPERTY_CASES")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| {
-            if std::env::var("VIETC_PROPERTY_PROFILE").as_deref() == Ok("exhaustive") {
+            if std::env::var("DBOARD_PROPERTY_PROFILE").as_deref() == Ok("exhaustive") {
                 4096
             } else {
                 64
@@ -30,7 +30,7 @@ fn property_budget() -> usize {
 }
 
 fn property_seeds() -> Vec<u64> {
-    if std::env::var("VIETC_PROPERTY_PROFILE").as_deref() == Ok("exhaustive") {
+    if std::env::var("DBOARD_PROPERTY_PROFILE").as_deref() == Ok("exhaustive") {
         (0..256)
             .map(|index| {
                 0x5649_4554_4300_0000_u64 ^ (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)

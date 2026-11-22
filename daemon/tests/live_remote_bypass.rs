@@ -1,6 +1,6 @@
 //! Live check: a remote-desktop window (app_id containing "rustdesk") must get
 //! raw keys and no clipboard paste, while a normal local window still gets
-//! composed Vietnamese. Needs the real vietc.service.
+//! composed Vietnamese. Needs the real dboard.service.
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -48,7 +48,7 @@ impl Vk {
             s.id.bustype = 3;
             s.id.vendor = 0x1d6b;
             s.id.product = 0x0106;
-            for (i, b) in b"vietc-live-remote-kbd".iter().enumerate() {
+            for (i, b) in b"dboard-live-remote-kbd".iter().enumerate() {
                 s.name[i] = *b as libc::c_char;
             }
             assert_eq!(libc::ioctl(fd, 0x405c5503, &s), 0);
@@ -132,7 +132,7 @@ fn wl_paste() -> Option<String> {
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, real browser and desktop clipboard"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1, DBOARD_CONTROLLED_DISPLAY=1, real browser and desktop clipboard"]
 fn remote_desktop_window_is_bypassed() {
     let pages: Arc<Mutex<HashMap<String, String>>> = Arc::default();
     let p2 = pages.clone();
@@ -202,7 +202,7 @@ fn remote_desktop_window_is_bypassed() {
     for (host, expect_raw) in [("rustdesk.localhost", true), ("127.0.0.1", false)] {
         let mut edge = Command::new("microsoft-edge")
             .args([
-                &format!("--user-data-dir=/tmp/vietc-edge-remote-{host}"),
+                &format!("--user-data-dir=/tmp/dboard-edge-remote-{host}"),
                 "--new-window",
                 &format!("--app=http://{host}:18941/"),
                 "--no-first-run",

@@ -1,4 +1,4 @@
-use vietc_engine::{Engine, EngineEvent, InputMethod};
+use dboard_engine::{Engine, EngineEvent, InputMethod};
 
 fn trace(input: &str, method: InputMethod) {
     let mut e = Engine::new(method);

@@ -1,4 +1,4 @@
-use vietc_engine::{Engine, EngineEvent, InputMethod};
+use dboard_engine::{Engine, EngineEvent, InputMethod};
 
 fn type_key(engine: &mut Engine, screen: &mut String, key: char) {
     match engine.process_key(key) {
@@ -111,13 +111,15 @@ fn vni_tone_retargeting_does_not_create_double_tone_vowels() {
     }
     assert_eq!(screen, "hòa");
     assert_eq!(engine.buffer(), "hòa");
-    assert!(!vietc_engine::spelling::is_valid_vietnamese_syllable("hóà"));
+    assert!(!dboard_engine::spelling::is_valid_vietnamese_syllable(
+        "hóà"
+    ));
 }
 
 #[test]
 fn paste_followed_by_backspace_or_tone_key_does_not_reinterpret_paste_as_telex() {
     // A02: PhysicalEvent::Paste must not be re-parsed as Telex raw keys on Backspace or follow-up keys
-    use vietc_engine::PhysicalEvent;
+    use dboard_engine::PhysicalEvent;
     let mut engine = Engine::new(InputMethod::Telex);
     assert_eq!(engine.reduce(PhysicalEvent::Paste("as".to_string())), None);
     let _ = engine.reduce(PhysicalEvent::Backspace);
@@ -134,7 +136,7 @@ fn paste_followed_by_backspace_or_tone_key_does_not_reinterpret_paste_as_telex()
 fn replacement_failure_recovery_protects_document_prefix_on_backspace() {
     // A11: After ReplacementFailed when replacing "a" -> "á" (1 char on screen, 2 raw keys "as"),
     // Backspace must only delete the 1 on-screen char and never eat into the document prefix.
-    use vietc_engine::PhysicalEvent;
+    use dboard_engine::PhysicalEvent;
     let mut engine = Engine::new(InputMethod::Telex);
     let mut doc = String::from("PRE|");
 
@@ -180,7 +182,7 @@ fn replacement_failure_recovery_protects_document_prefix_on_backspace() {
 fn metadata_boundary_and_active_transform_invariants_hold() {
     // A05: BoundaryState transitions to Composing after Committed + printable key,
     // and active_transform reports Mark("aw") for "asw" and Mark("uo+w") for "UOW".
-    use vietc_engine::{BoundaryState, TransformKind};
+    use dboard_engine::{BoundaryState, TransformKind};
 
     let mut engine = Engine::new(InputMethod::Telex);
     engine.process_key('a');
@@ -211,7 +213,7 @@ fn metadata_boundary_and_active_transform_invariants_hold() {
 #[test]
 fn telex_parser_recognizes_qu_and_gi_glides_as_valid() {
     // A06: Words with onset glides "qu" and "gi" must parse as ParseStatus::Complete
-    use vietc_engine::telex::{parse, ParseStatus};
+    use dboard_engine::telex::{parse, ParseStatus};
     for word in ["qua", "gia", "quyen", "gieng"] {
         let parsed = parse(word);
         assert_eq!(parsed.status(), ParseStatus::Complete, "word={word}");
@@ -402,7 +404,7 @@ fn qa_audit_tone_overwrite_undo_rehydrated_prefix_digit_space_and_buffer_bound()
     assert_eq!(engine5.buffer(), "éw");
     assert_eq!(
         engine5.state().active_transform.map(|t| t.kind),
-        Some(vietc_engine::TransformKind::Tone('s'))
+        Some(dboard_engine::TransformKind::Tone('s'))
     );
 
     // 5. Unbounded key hold (>64 chars) is bounded in O(1) without freeze or panic,

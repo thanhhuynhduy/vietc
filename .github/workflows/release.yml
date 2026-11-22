@@ -63,7 +63,7 @@ jobs:
 
       - name: Smoke-test Debian package in clean container
         run: |
-          PACKAGE=$(find packaging/deb -maxdepth 1 -type f -name 'vietc_*.deb' -print -quit)
+          PACKAGE=$(find packaging/deb -maxdepth 1 -type f -name 'dboard_*.deb' -print -quit)
           test -n "$PACKAGE"
           bash scripts/package-smoke-test.sh "$PACKAGE"
 

@@ -223,6 +223,20 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
                 'o' | 'u' => VowelMark::Horn,
                 _ => VowelMark::None,
             };
+            // Compound `-ươ-` when the user types `uw` before `o` (`tuwoi -> tươi`,
+            // `dduwocj -> được`, `truwongf -> trường`): `ưo` is never valid Vietnamese.
+            if base == 'u'
+                && last + 1 == i
+                && i + 1 < raw.len()
+                && !consumed[i + 1]
+                && lower(raw[i + 1]) == 'o'
+                && marks[i + 1] == VowelMark::None
+            {
+                let is_qu_glide = last > 0 && lower(raw[last - 1]) == 'q';
+                if !is_qu_glide {
+                    marks[i + 1] = VowelMark::Horn;
+                }
+            }
             consumed[i] = marks[last] != VowelMark::None;
         }
     }

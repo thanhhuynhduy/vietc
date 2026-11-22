@@ -23,19 +23,52 @@ use wayland_client::{
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
 };
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
+};
 
 use crate::focus::SharedFocusSnapshot;
 use crate::log::log_info;
 
-/// `zcosmic_toplevel_handle_v1::State::Activated`.
+/// `State::Activated` (`2`) in both `zcosmic_toplevel_handle_v1` and
+/// `zwlr_foreign_toplevel_handle_v1`.
 const STATE_ACTIVATED: u32 = 2;
 const RETRY_DELAY: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToplevelBackend {
+    Cosmic,
+    Wlr,
+}
+
+fn select_backend(
+    has_cosmic_info: bool,
+    has_foreign_list: bool,
+    has_wlr_manager: bool,
+) -> Option<ToplevelBackend> {
+    if has_cosmic_info && has_foreign_list {
+        Some(ToplevelBackend::Cosmic)
+    } else if has_wlr_manager {
+        Some(ToplevelBackend::Wlr)
+    } else {
+        None
+    }
+}
 
 struct Toplevel {
     serial: u64,
     foreign: ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
     cosmic: zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
     app_id: Option<String>,
+    title: Option<String>,
+    activated: bool,
+}
+
+struct WlrToplevel {
+    serial: u64,
+    handle: zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+    app_id: Option<String>,
+    title: Option<String>,
     activated: bool,
 }
 
@@ -78,9 +111,14 @@ fn plan_publish(last: &Published, active: Option<(u64, Option<String>)>) -> (Pub
 }
 
 struct Tracker {
+    cosmic_info_global: Option<(u32, u32)>,
+    foreign_list_global: Option<(u32, u32)>,
+    wlr_manager_global: Option<(u32, u32)>,
     info: Option<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>,
     list: Option<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
+    wlr_manager: Option<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1>,
     toplevels: Vec<Toplevel>,
+    wlr_toplevels: Vec<WlrToplevel>,
     next_serial: u64,
     published: Published,
     focus: SharedFocusSnapshot,
@@ -89,9 +127,14 @@ struct Tracker {
 impl Tracker {
     fn new(focus: SharedFocusSnapshot) -> Self {
         Self {
+            cosmic_info_global: None,
+            foreign_list_global: None,
+            wlr_manager_global: None,
             info: None,
             list: None,
+            wlr_manager: None,
             toplevels: Vec::new(),
+            wlr_toplevels: Vec::new(),
             next_serial: 1,
             published: Published::default(),
             focus,
@@ -99,19 +142,40 @@ impl Tracker {
     }
 
     fn publish(&mut self) {
-        let active = self
+        let active_full = self
             .toplevels
             .iter()
             .find(|toplevel| toplevel.activated)
-            .map(|toplevel| (toplevel.serial, toplevel.app_id.clone()));
+            .map(|toplevel| {
+                (
+                    toplevel.serial,
+                    toplevel.app_id.clone(),
+                    toplevel.title.clone(),
+                )
+            })
+            .or_else(|| {
+                self.wlr_toplevels
+                    .iter()
+                    .find(|toplevel| toplevel.activated)
+                    .map(|toplevel| {
+                        (
+                            toplevel.serial,
+                            toplevel.app_id.clone(),
+                            toplevel.title.clone(),
+                        )
+                    })
+            });
+        let active_title = active_full.as_ref().and_then(|(_, _, t)| t.clone());
+        crate::password_detector::record_compositor_window_title(active_title);
+        let active = active_full.map(|(serial, app_id, _)| (serial, app_id));
         let (action, next) = plan_publish(&self.published, active);
         self.published = next;
         match action {
             Publish::Nothing => {}
             Publish::NewWindow { serial, app_id } => {
-                crate::password_detector::clear_atspi_password_flag();
+                crate::password_detector::clear_atspi_password_flag_on_window_switch();
                 log_info(&format!(
-                    "[vietc] toplevel activated: serial={serial} app_id={app_id:?}"
+                    "[dboard] toplevel activated: serial={serial} app_id={app_id:?}"
                 ));
                 let mut focus = self.focus.lock().unwrap_or_else(|p| p.into_inner());
                 focus.observe(Some(format!("toplevel:{serial}")), app_id);
@@ -130,11 +194,11 @@ impl Tracker {
 impl Dispatch<WlRegistry, ()> for Tracker {
     fn event(
         state: &mut Self,
-        registry: &WlRegistry,
+        _: &WlRegistry,
         event: wl_registry::Event,
         _: &(),
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
             name,
@@ -144,10 +208,13 @@ impl Dispatch<WlRegistry, ()> for Tracker {
         {
             match interface.as_str() {
                 "zcosmic_toplevel_info_v1" => {
-                    state.info = Some(registry.bind(name, version.min(2), qh, ()));
+                    state.cosmic_info_global = Some((name, version));
                 }
                 "ext_foreign_toplevel_list_v1" => {
-                    state.list = Some(registry.bind(name, version.min(1), qh, ()));
+                    state.foreign_list_global = Some((name, version));
+                }
+                "zwlr_foreign_toplevel_manager_v1" => {
+                    state.wlr_manager_global = Some((name, version));
                 }
                 _ => {}
             }
@@ -176,6 +243,7 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for Tr
                 foreign: toplevel,
                 cosmic,
                 app_id: None,
+                title: None,
                 activated: false,
             });
         }
@@ -206,6 +274,11 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
             ext_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
                 if let Some(toplevel) = state.toplevels.iter_mut().find(|t| &t.foreign == handle) {
                     toplevel.app_id = Some(app_id).filter(|value| !value.is_empty());
+                }
+            }
+            ext_foreign_toplevel_handle_v1::Event::Title { title } => {
+                if let Some(toplevel) = state.toplevels.iter_mut().find(|t| &t.foreign == handle) {
+                    toplevel.title = Some(title).filter(|value| !value.is_empty());
                 }
             }
             ext_foreign_toplevel_handle_v1::Event::Closed => {
@@ -253,6 +326,83 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for Track
     }
 }
 
+impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()> for Tracker {
+    fn event(
+        state: &mut Self,
+        _: &zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+        event: zwlr_foreign_toplevel_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel } = event {
+            let serial = state.next_serial;
+            state.next_serial += 1;
+            state.wlr_toplevels.push(WlrToplevel {
+                serial,
+                handle: toplevel,
+                app_id: None,
+                title: None,
+                activated: false,
+            });
+        }
+    }
+
+    event_created_child!(
+        Tracker,
+        zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
+        [
+            zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE => (
+                zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+                ()
+            ),
+        ]
+    );
+}
+
+impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> for Tracker {
+    fn event(
+        state: &mut Self,
+        handle: &zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+        event: zwlr_foreign_toplevel_handle_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
+                if let Some(toplevel) = state.wlr_toplevels.iter_mut().find(|t| &t.handle == handle)
+                {
+                    toplevel.app_id = Some(app_id).filter(|value| !value.is_empty());
+                }
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::Title { title } => {
+                if let Some(toplevel) = state.wlr_toplevels.iter_mut().find(|t| &t.handle == handle)
+                {
+                    toplevel.title = Some(title).filter(|value| !value.is_empty());
+                }
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::State { state: raw } => {
+                if let Some(toplevel) = state.wlr_toplevels.iter_mut().find(|t| &t.handle == handle)
+                {
+                    toplevel.activated = raw
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|&chunk| u32::from_ne_bytes(chunk) == STATE_ACTIVATED);
+                }
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::Closed => {
+                if let Some(index) = state.wlr_toplevels.iter().position(|t| &t.handle == handle) {
+                    let closed = state.wlr_toplevels.remove(index);
+                    closed.handle.destroy();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 enum RunError {
     /// Compositor lacks the toplevel protocols; retrying is pointless.
     Unsupported,
@@ -264,20 +414,47 @@ fn run_once(focus: SharedFocusSnapshot) -> Result<(), RunError> {
         Connection::connect_to_env().map_err(|error| RunError::Transient(error.to_string()))?;
     let mut queue = connection.new_event_queue();
     let qh = queue.handle();
-    let _registry = connection.display().get_registry(&qh, ());
+    let registry = connection.display().get_registry(&qh, ());
     let mut tracker = Tracker::new(focus);
 
     queue
         .roundtrip(&mut tracker)
         .map_err(|error| RunError::Transient(error.to_string()))?;
-    if tracker.info.is_none() || tracker.list.is_none() {
-        return Err(RunError::Unsupported);
+    let backend = select_backend(
+        tracker.cosmic_info_global.is_some(),
+        tracker.foreign_list_global.is_some(),
+        tracker.wlr_manager_global.is_some(),
+    )
+    .ok_or(RunError::Unsupported)?;
+
+    match backend {
+        ToplevelBackend::Cosmic => {
+            let (info_name, info_ver) = tracker.cosmic_info_global.unwrap();
+            let (list_name, list_ver) = tracker.foreign_list_global.unwrap();
+            tracker.info = Some(registry.bind(info_name, info_ver.min(2), &qh, ()));
+            tracker.list = Some(registry.bind(list_name, list_ver.min(1), &qh, ()));
+        }
+        ToplevelBackend::Wlr => {
+            let (mgr_name, mgr_ver) = tracker.wlr_manager_global.unwrap();
+            tracker.wlr_manager = Some(registry.bind(mgr_name, mgr_ver.min(3), &qh, ()));
+        }
     }
+
     queue
         .roundtrip(&mut tracker)
         .map_err(|error| RunError::Transient(error.to_string()))?;
+    if backend == ToplevelBackend::Cosmic {
+        // COSMIC creates zcosmic_toplevel_handle_v1 objects inside the second
+        // roundtrip; one extra roundtrip ensures initial State/AppId arrive
+        // before the first publish().
+        queue
+            .roundtrip(&mut tracker)
+            .map_err(|error| RunError::Transient(error.to_string()))?;
+    }
     tracker.publish();
-    log_info("[vietc] Compositor toplevel focus tracker active");
+    log_info(&format!(
+        "[dboard] Compositor toplevel focus tracker active ({backend:?})"
+    ));
 
     loop {
         queue
@@ -298,13 +475,13 @@ pub fn spawn_toplevel_focus_tracker(focus: SharedFocusSnapshot) {
             Ok(()) => return,
             Err(RunError::Unsupported) => {
                 log_info(
-                    "[vietc] Compositor has no toplevel-info protocol; using AT-SPI focus only",
+                    "[dboard] Compositor has no toplevel-info protocol; using AT-SPI focus only",
                 );
                 return;
             }
             Err(RunError::Transient(error)) => {
                 log_info(&format!(
-                    "[vietc] toplevel tracker disconnected: {error}; retrying"
+                    "[dboard] toplevel tracker disconnected: {error}; retrying"
                 ));
                 std::thread::sleep(RETRY_DELAY);
             }
@@ -367,5 +544,27 @@ mod tests {
         let (action, next) = plan_publish(&last, None);
         assert!(matches!(action, Publish::Nothing));
         assert_eq!(next, last);
+    }
+
+    #[test]
+    fn backend_selection_prefers_cosmic_and_falls_back_to_wlr() {
+        use super::{select_backend, ToplevelBackend};
+        assert_eq!(
+            select_backend(true, true, true),
+            Some(ToplevelBackend::Cosmic)
+        );
+        assert_eq!(
+            select_backend(true, true, false),
+            Some(ToplevelBackend::Cosmic)
+        );
+        assert_eq!(
+            select_backend(false, true, true),
+            Some(ToplevelBackend::Wlr)
+        );
+        assert_eq!(
+            select_backend(false, false, true),
+            Some(ToplevelBackend::Wlr)
+        );
+        assert_eq!(select_backend(false, false, false), None);
     }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy/rollback a locally built vietc-daemon candidate for the *current user's*
+# Deploy/rollback a locally built dboard-daemon candidate for the *current user's*
 # systemd service. Run as the desktop user (NOT as root); sudo is requested only
 # for the /usr/bin replacement. Nothing runs automatically.
 #
@@ -9,12 +9,12 @@
 #   scripts/candidate-deploy.sh status
 set -euo pipefail
 
-CANDIDATE="${VIETC_CANDIDATE:-target/release/vietc}"
-INSTALLED=/usr/bin/vietc-daemon
-SERVICE=vietc.service
-CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/vietc/config.toml"
-LOG="${XDG_STATE_HOME:-$HOME/.local/state}/vietc/vietc.log"
-BACKUP_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/vietc-rollback"
+CANDIDATE="${DBOARD_CANDIDATE:-target/release/dboard}"
+INSTALLED=/usr/bin/dboard-daemon
+SERVICE=dboard.service
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/dboard/config.toml"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/dboard/dboard.log"
+BACKUP_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/dboard-rollback"
 
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" -ne 0 ] || die "run as your desktop user, not root (the service is a user service)"
@@ -26,9 +26,9 @@ do_backup() {
     local dir="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$dir"
     chmod 700 "$BACKUP_ROOT" "$dir"
-    cp -p "$INSTALLED" "$dir/vietc-daemon"
+    cp -p "$INSTALLED" "$dir/dboard-daemon"
     [ -f "$CONFIG" ] && cp -p "$CONFIG" "$dir/config.toml"
-    sha256sum "$dir/vietc-daemon" > "$dir/SHA256SUMS"
+    sha256sum "$dir/dboard-daemon" > "$dir/SHA256SUMS"
     echo "backup: $dir"
     echo "  binary sha256: $(cut -d' ' -f1 "$dir/SHA256SUMS")"
 }
@@ -58,7 +58,7 @@ case "${1:-}" in
 backup)
     do_backup ;;
 install)
-    [ -f "$CANDIDATE" ] || die "candidate $CANDIDATE missing (cargo build --release -p vietc-daemon --locked --offline)"
+    [ -f "$CANDIDATE" ] || die "candidate $CANDIDATE missing (cargo build --release -p dboard-daemon --locked --offline)"
     [ -n "$(latest_backup)" ] || do_backup
     BK="$(latest_backup)"
     echo "rollback point: $BK"
@@ -70,9 +70,9 @@ install)
     restart_and_check ;;
 rollback)
     BK="${2:-$(latest_backup)}"
-    [ -n "$BK" ] && [ -f "$BK/vietc-daemon" ] || die "no backup found in $BACKUP_ROOT"
+    [ -n "$BK" ] && [ -f "$BK/dboard-daemon" ] || die "no backup found in $BACKUP_ROOT"
     (cd "$BK" && sha256sum -c SHA256SUMS >/dev/null) || die "backup checksum mismatch: $BK"
-    replace_binary "$BK/vietc-daemon"
+    replace_binary "$BK/dboard-daemon"
     restart_and_check
     echo "rolled back to $BK (config is untouched; saved copy: $BK/config.toml)" ;;
 status)

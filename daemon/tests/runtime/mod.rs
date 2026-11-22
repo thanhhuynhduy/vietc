@@ -27,7 +27,7 @@ impl RuntimeCapabilities {
         mut read_var: impl FnMut(&str) -> Option<String>,
         uinput_available: bool,
     ) -> Self {
-        let explicit_opt_in = read_var("VIETC_RUNTIME_TESTS").as_deref() == Some("1");
+        let explicit_opt_in = read_var("DBOARD_RUNTIME_TESTS").as_deref() == Some("1");
         let display_available =
             read_var("DISPLAY").is_some() || read_var("WAYLAND_DISPLAY").is_some();
 
@@ -466,7 +466,7 @@ impl RuntimeEnvironment {
             "kitty",
         ];
 
-        let runtime_opt_in = read_var("VIETC_RUNTIME_TESTS").as_deref() == Some("1");
+        let runtime_opt_in = read_var("DBOARD_RUNTIME_TESTS").as_deref() == Some("1");
         let session_type = read_var("XDG_SESSION_TYPE").unwrap_or_else(|| "unknown".to_string());
         let desktop = read_var("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "unknown".to_string());
         let display_available =
@@ -610,7 +610,7 @@ fn runtime_prerequisite(
 ) -> Option<(&'static str, RuntimeMatrixStatus)> {
     if !environment.runtime_opt_in {
         Some((
-            "VIETC_RUNTIME_TESTS=1 was not supplied",
+            "DBOARD_RUNTIME_TESTS=1 was not supplied",
             RuntimeMatrixStatus::Skipped,
         ))
     } else if !environment.display_available {
@@ -937,13 +937,13 @@ fn evaluate_runtime_matrix(environment: &RuntimeEnvironment) -> RuntimeMatrixRes
 #[test]
 fn deterministic_controlled_runtime_evidence_parser_requires_complete_fields() {
     let parsed = parse_controlled_runtime_evidence(
-        "target=Chromium\nstatus=PASS\nreason=verified\nexpected_text=\"vietc\"\nobserved_text=\"vietc\"\nprocess_healthy=true\nclipboard_preserved=true\nmodifiers_released=true\n",
+        "target=Chromium\nstatus=PASS\nreason=verified\nexpected_text=\"dboard\"\nobserved_text=\"dboard\"\nprocess_healthy=true\nclipboard_preserved=true\nmodifiers_released=true\n",
     )
     .expect("complete controlled evidence must parse");
 
     assert!(parsed.is_verified_pass());
     assert!(parse_controlled_runtime_evidence(
-        "status=PASS\nreason=incomplete\nexpected_text=\"vietc\"\nobserved_text=\"vietc\"\n"
+        "status=PASS\nreason=incomplete\nexpected_text=\"dboard\"\nobserved_text=\"dboard\"\n"
     )
     .is_err());
 }
@@ -989,8 +989,8 @@ fn deterministic_controlled_runtime_evidence_mapping_rejects_false_passes() {
     }
 }
 
-const CONTROLLED_FIXTURE_MARKER: &str = "vietc-controlled-runtime-fixture-v1";
-const CONTROLLED_TEXT: &str = "vietc-runtime-controlled-text";
+const CONTROLLED_FIXTURE_MARKER: &str = "dboard-controlled-runtime-fixture-v1";
+const CONTROLLED_TEXT: &str = "dboard-runtime-controlled-text";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RuntimeProcessRole {
@@ -1142,7 +1142,7 @@ fn run_command_with_timeout(
 
 #[derive(Debug, PartialEq, Eq)]
 struct RuntimeObservation {
-    inject_result: vietc_protocol::inject::InjectResult,
+    inject_result: dboard_protocol::inject::InjectResult,
     expected_text: String,
     observed_text: String,
 }
@@ -1179,7 +1179,7 @@ impl FakeWaylandBackend {
         self.attempts.borrow_mut().push("wtype");
         if self.wtype_result {
             return RuntimeObservation {
-                inject_result: vietc_protocol::inject::InjectResult::Success,
+                inject_result: dboard_protocol::inject::InjectResult::Success,
                 expected_text: text.to_string(),
                 observed_text: text.to_string(),
             };
@@ -1187,9 +1187,9 @@ impl FakeWaylandBackend {
 
         self.attempts.borrow_mut().push("clipboard");
         let inject_result = if self.clipboard_result {
-            vietc_protocol::inject::InjectResult::Success
+            dboard_protocol::inject::InjectResult::Success
         } else {
-            vietc_protocol::inject::InjectResult::Failed
+            dboard_protocol::inject::InjectResult::Failed
         };
         let observed_text = if self.clipboard_result {
             text.to_string()
@@ -1279,17 +1279,17 @@ impl FakeX11Selection {
         }
     }
 
-    fn wait_for_request(&mut self, timeout: Duration) -> vietc_protocol::inject::InjectResult {
+    fn wait_for_request(&mut self, timeout: Duration) -> dboard_protocol::inject::InjectResult {
         let deadline = std::time::Instant::now() + timeout;
 
         loop {
             self.polls += 1;
             if self.supported_after_polls == Some(self.polls) {
                 self.served_targets.push("UTF8_STRING");
-                return vietc_protocol::inject::InjectResult::Success;
+                return dboard_protocol::inject::InjectResult::Success;
             }
             if std::time::Instant::now() >= deadline {
-                return vietc_protocol::inject::InjectResult::Failed;
+                return dboard_protocol::inject::InjectResult::Failed;
             }
             std::thread::yield_now();
         }
@@ -1414,7 +1414,7 @@ fn deterministic_wayland_fallback_reports_success_only_after_observable_insert()
 
     assert_eq!(
         observation.inject_result,
-        vietc_protocol::inject::InjectResult::Success
+        dboard_protocol::inject::InjectResult::Success
     );
     assert_eq!(observation.observed_text, "thời");
     assert_eq!(backend.attempts(), ["wtype", "clipboard"]);
@@ -1431,7 +1431,7 @@ fn deterministic_wayland_failure_preserves_existing_text_when_all_backends_fail(
 
     assert_eq!(
         observation.inject_result,
-        vietc_protocol::inject::InjectResult::Failed
+        dboard_protocol::inject::InjectResult::Failed
     );
     assert_eq!(
         observation.observed_text, "tho",
@@ -1475,7 +1475,7 @@ fn deterministic_x11_supported_selection_request_observes_success() {
 
     let result = selection.wait_for_request(Duration::from_millis(50));
 
-    assert_eq!(result, vietc_protocol::inject::InjectResult::Success);
+    assert_eq!(result, dboard_protocol::inject::InjectResult::Success);
     assert_eq!(selection.served_targets(), ["UTF8_STRING"]);
 }
 
@@ -1486,7 +1486,7 @@ fn deterministic_x11_missing_selection_request_times_out_with_failure() {
 
     let result = selection.wait_for_request(Duration::from_millis(20));
 
-    assert_eq!(result, vietc_protocol::inject::InjectResult::Failed);
+    assert_eq!(result, dboard_protocol::inject::InjectResult::Failed);
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "missing SelectionRequest must fail within the configured deadline"
@@ -1736,7 +1736,7 @@ fn protocol_misuse_is_rejected_without_claiming_application_success() {
         validate_protocol_fixture(
             FakeDisplayServer::X11,
             Some("STRING"),
-            Some("VIETC_SELECTION"),
+            Some("DBOARD_SELECTION"),
             true,
         ),
         ProtocolFixtureResult::Rejected("unsupported X11 selection target")
@@ -1782,7 +1782,7 @@ fn ctrl_v_fallback_has_control_and_observable_treatment_outcomes() {
     assert_eq!(treatment.observed_text, "thời");
     assert_eq!(
         treatment.inject_result,
-        vietc_protocol::inject::InjectResult::Success
+        dboard_protocol::inject::InjectResult::Success
     );
 }
 
@@ -2133,7 +2133,7 @@ fn run_wayland_wtype_success(timeout: Duration) -> Result<RuntimeObservation, Ru
         }
     }
 
-    let expected_text = format!("vietc-wayland-runtime-{}", std::process::id());
+    let expected_text = format!("dboard-wayland-runtime-{}", std::process::id());
     let mut dialog = std::process::Command::new("zenity")
         .args([
             "--entry",
@@ -2233,9 +2233,9 @@ fn run_wayland_wtype_success(timeout: Duration) -> Result<RuntimeObservation, Ru
     };
     let observed_text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let inject_result = if output.status.success() && observed_text == expected_text {
-        vietc_protocol::inject::InjectResult::Success
+        dboard_protocol::inject::InjectResult::Success
     } else {
-        vietc_protocol::inject::InjectResult::Failed
+        dboard_protocol::inject::InjectResult::Failed
     };
     Ok(RuntimeObservation {
         inject_result,
@@ -2248,7 +2248,7 @@ fn run_wayland_wtype_success(timeout: Duration) -> Result<RuntimeObservation, Ru
 fn runtime_gate_requires_an_explicit_environment_flag() {
     let capabilities = RuntimeCapabilities::from_environment(
         |name| match name {
-            "VIETC_RUNTIME_TESTS" => None,
+            "DBOARD_RUNTIME_TESTS" => None,
             "DISPLAY" => Some(":1".to_string()),
             "WAYLAND_DISPLAY" => Some("wayland-1".to_string()),
             _ => None,
@@ -2265,7 +2265,7 @@ fn runtime_gate_requires_an_explicit_environment_flag() {
 fn runtime_gate_reports_missing_display_without_pretending_to_pass() {
     let capabilities = RuntimeCapabilities::from_environment(
         |name| match name {
-            "VIETC_RUNTIME_TESTS" => Some("1".to_string()),
+            "DBOARD_RUNTIME_TESTS" => Some("1".to_string()),
             _ => None,
         },
         true,
@@ -2280,7 +2280,7 @@ fn runtime_gate_reports_missing_display_without_pretending_to_pass() {
 fn runtime_gate_reports_missing_uinput_without_pretending_to_pass() {
     let capabilities = RuntimeCapabilities::from_environment(
         |name| match name {
-            "VIETC_RUNTIME_TESTS" => Some("1".to_string()),
+            "DBOARD_RUNTIME_TESTS" => Some("1".to_string()),
             "WAYLAND_DISPLAY" => Some("wayland-1".to_string()),
             _ => None,
         },
@@ -2750,7 +2750,7 @@ fn runtime_scenario_catalog_separates_deterministic_and_privileged_coverage() {
 fn privileged_runtime_gate_accepts_only_a_complete_environment() {
     let capabilities = RuntimeCapabilities::from_environment(
         |name| match name {
-            "VIETC_RUNTIME_TESTS" => Some("1".to_string()),
+            "DBOARD_RUNTIME_TESTS" => Some("1".to_string()),
             "DISPLAY" => Some(":1".to_string()),
             "WAYLAND_DISPLAY" => Some("wayland-1".to_string()),
             _ => None,
@@ -2767,7 +2767,7 @@ fn privileged_runtime_gate_accepts_only_a_complete_environment() {
 fn runtime_matrix_reports_separate_capabilities_with_reason_and_owner() {
     let environment = RuntimeEnvironment::detect_with(
         |name| match name {
-            "VIETC_RUNTIME_TESTS" => Some("1".to_string()),
+            "DBOARD_RUNTIME_TESTS" => Some("1".to_string()),
             "XDG_SESSION_TYPE" => Some("wayland".to_string()),
             "XDG_CURRENT_DESKTOP" => Some("GNOME".to_string()),
             "WAYLAND_DISPLAY" => Some("wayland-0".to_string()),
@@ -2872,7 +2872,7 @@ fn runtime_matrix_artifact_uses_only_supported_statuses_and_records_metadata() {
 
 #[test]
 fn tool_version_reports_missing_when_program_cannot_be_spawned() {
-    let program = format!("vietc-runtime-missing-tool-{}", std::process::id());
+    let program = format!("dboard-runtime-missing-tool-{}", std::process::id());
 
     assert_eq!(tool_version(&program), "missing");
 }
@@ -3154,7 +3154,7 @@ fn controlled_display_available(environment: &RuntimeEnvironment) -> bool {
     environment.runtime_opt_in
         && environment.display_available
         && environment.uinput_available
-        && std::env::var("VIETC_CONTROLLED_DISPLAY").as_deref() == Ok("1")
+        && std::env::var("DBOARD_CONTROLLED_DISPLAY").as_deref() == Ok("1")
 }
 
 fn detected_terminal(environment: &RuntimeEnvironment) -> Option<&'static str> {
@@ -3341,7 +3341,7 @@ fn process_role_from_command_line(
         || command_line.contains("gpu-process")
     {
         RuntimeProcessRole::Helper
-    } else if command_line.contains("vietc") {
+    } else if command_line.contains("dboard") {
         RuntimeProcessRole::Daemon
     } else {
         RuntimeProcessRole::Helper
@@ -3553,7 +3553,7 @@ fn deterministic_fake_process_commands_classify_browser_renderer_daemon_and_help
         RuntimeTargetKind::Chromium,
         102,
         Some(100),
-        "vietc --runtime-fixture",
+        "dboard --runtime-fixture",
         100,
     );
     let helper = process_role_from_command_line(
@@ -3713,7 +3713,7 @@ fn deterministic_target_manifest_records_flags_backend_sequence_and_pid_roles() 
 fn deterministic_real_target_gate_requires_controlled_opt_in_display() {
     let environment = RuntimeEnvironment::detect_with(
         |name| match name {
-            "VIETC_RUNTIME_TESTS" => Some("1".to_string()),
+            "DBOARD_RUNTIME_TESTS" => Some("1".to_string()),
             "DISPLAY" => Some(":99".to_string()),
             "XDG_SESSION_TYPE" => Some("x11".to_string()),
             _ => None,
@@ -3723,7 +3723,7 @@ fn deterministic_real_target_gate_requires_controlled_opt_in_display() {
     );
     assert!(
         !controlled_display_available(&environment),
-        "VIETC_CONTROLLED_DISPLAY=1 must be independently required"
+        "DBOARD_CONTROLLED_DISPLAY=1 must be independently required"
     );
 }
 
@@ -3735,7 +3735,7 @@ struct RuntimeTargetResult {
 }
 
 fn requested_runtime_targets() -> Option<std::collections::HashSet<String>> {
-    std::env::var("VIETC_RUNTIME_TARGETS").ok().map(|value| {
+    std::env::var("DBOARD_RUNTIME_TARGETS").ok().map(|value| {
         value
             .split(',')
             .map(str::trim)
@@ -3807,7 +3807,7 @@ fn deterministic_toolkit_executable_detection_uses_zenity_and_python3() {
 #[test]
 fn deterministic_toolkit_observable_output_parses_stdout_only() {
     assert_eq!(
-        parse_toolkit_observable_output("\n vietc-runtime-controlled-text\n"),
+        parse_toolkit_observable_output("\n dboard-runtime-controlled-text\n"),
         Ok(CONTROLLED_TEXT.to_string())
     );
     assert_eq!(
@@ -4543,7 +4543,7 @@ fn copy_observable_target_text_with_checkpoints(
     timeout: Duration,
     mut completed: Option<&mut Vec<FirefoxCheckpoint>>,
 ) -> Result<String, RuntimeCommandError> {
-    let sentinel = "vietc-clipboard-sentinel";
+    let sentinel = "dboard-clipboard-sentinel";
     let mut writer = if environment.session_type == "wayland" {
         std::process::Command::new("wl-copy")
     } else {
@@ -4866,7 +4866,7 @@ fn execute_controlled_scenario(
             ]);
 
             let mut keyboard =
-                common::virtual_keyboard::VirtualKeyboard::create("vietc-firefox-checkpoint-vk")
+                common::virtual_keyboard::VirtualKeyboard::create("dboard-firefox-checkpoint-vk")
                     .map_err(|_| RuntimeCommandError::FirefoxTextareaFocusFailed)?;
             keyboard
                 .wait_for_devnode(operation_timeout)
@@ -4878,7 +4878,7 @@ fn execute_controlled_scenario(
                 .map_err(|_| RuntimeCommandError::FirefoxTextareaFocusFailed)?;
             firefox_checkpoints.push(FirefoxCheckpoint::TextareaFocus);
 
-            const FOCUS_PROBE: &str = "vietc-focus-probe";
+            const FOCUS_PROBE: &str = "dboard-focus-probe";
             keyboard
                 .type_text(FOCUS_PROBE)
                 .map_err(|_| RuntimeCommandError::FirefoxAsciiFocusProbeFailed)?;
@@ -5073,7 +5073,7 @@ fn run_controlled_runtime_target(
     if !controlled_display_available(environment) {
         return RuntimeTargetResult {
             status: RuntimeMatrixStatus::Unavailable,
-            reason: "controlled display capability is unavailable; require VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, a display, and writable /dev/uinput".to_string(),
+            reason: "controlled display capability is unavailable; require DBOARD_RUNTIME_TESTS=1, DBOARD_CONTROLLED_DISPLAY=1, a display, and writable /dev/uinput".to_string(),
             observation: None,
         };
     }
@@ -5405,7 +5405,7 @@ fn run_controlled_runtime_target(
 fn deterministic_runtime_target_without_controlled_display_never_spawns_or_passes() {
     let environment = RuntimeEnvironment::detect_with(
         |name| match name {
-            "VIETC_RUNTIME_TESTS" => Some("1".to_string()),
+            "DBOARD_RUNTIME_TESTS" => Some("1".to_string()),
             "DISPLAY" => Some(":99".to_string()),
             "XDG_SESSION_TYPE" => Some("x11".to_string()),
             _ => None,
@@ -5426,12 +5426,12 @@ fn deterministic_runtime_target_without_controlled_display_never_spawns_or_passe
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, a controlled GUI session, writable /dev/uinput, and installed target applications"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1, DBOARD_CONTROLLED_DISPLAY=1, a controlled GUI session, writable /dev/uinput, and installed target applications"]
 fn privileged_runtime_targets_execute_controlled_scenarios() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(
         controlled_display_available(&environment),
-        "controlled runtime requires VIETC_RUNTIME_TESTS=1 and VIETC_CONTROLLED_DISPLAY=1"
+        "controlled runtime requires DBOARD_RUNTIME_TESTS=1 and DBOARD_CONTROLLED_DISPLAY=1"
     );
     let requested_targets = requested_runtime_targets();
     let artifact_directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -5502,12 +5502,12 @@ fn privileged_runtime_targets_execute_controlled_scenarios() {
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1; records the real desktop/runtime prerequisite matrix"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1; records the real desktop/runtime prerequisite matrix"]
 fn privileged_runtime_matrix_records_exact_ready_and_skip_evidence() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(
         environment.runtime_opt_in,
-        "set VIETC_RUNTIME_TESTS=1 to execute the privileged runtime matrix"
+        "set DBOARD_RUNTIME_TESTS=1 to execute the privileged runtime matrix"
     );
 
     let results = evaluate_runtime_matrix(&environment);
@@ -5567,13 +5567,13 @@ fn privileged_runtime_matrix_records_exact_ready_and_skip_evidence() {
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, a real Wayland compositor, and writable /dev/uinput"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1, a real Wayland compositor, and writable /dev/uinput"]
 fn wayland_wtype_success_is_observable_at_runtime() {
     let result = run_wayland_wtype_success(Duration::from_secs(30))
         .expect("Wayland wtype runtime scenario must complete without harness errors");
     assert_eq!(
         result.inject_result,
-        vietc_protocol::inject::InjectResult::Success
+        dboard_protocol::inject::InjectResult::Success
     );
     assert_eq!(result.observed_text, result.expected_text);
     assert!(
@@ -5749,7 +5749,7 @@ fn activate_stress_browser(
 #[allow(dead_code)]
 fn switch_stress_browser(timeout: Duration) -> Result<(), RuntimeCommandError> {
     let mut keyboard =
-        common::virtual_keyboard::VirtualKeyboard::create("vietc-phase6-focus-switch-vk")
+        common::virtual_keyboard::VirtualKeyboard::create("dboard-phase6-focus-switch-vk")
             .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
     keyboard
         .wait_for_devnode(timeout)
@@ -5770,7 +5770,7 @@ fn inject_controlled_keys(
 ) -> Result<(), RuntimeCommandError> {
     if environment.session_type == "wayland" {
         let mut keyboard =
-            common::virtual_keyboard::VirtualKeyboard::create("vietc-phase6-runtime-vk")
+            common::virtual_keyboard::VirtualKeyboard::create("dboard-phase6-runtime-vk")
                 .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
         keyboard
             .wait_for_devnode(timeout)
@@ -5865,7 +5865,7 @@ fn launch_stress_browser(
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, Chromium, a running vietc daemon, and writable /dev/uinput"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1, DBOARD_CONTROLLED_DISPLAY=1, Chromium, a running dboard daemon, and writable /dev/uinput"]
 fn privileged_focus_switch_stress_is_observable_end_to_end() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(controlled_display_available(&environment));
@@ -5990,7 +5990,7 @@ fn privileged_focus_switch_stress_is_observable_end_to_end() {
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, Chromium, a running vietc daemon, and writable /dev/uinput"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1, DBOARD_CONTROLLED_DISPLAY=1, Chromium, a running dboard daemon, and writable /dev/uinput"]
 fn privileged_fast_input_stress_is_observable_end_to_end() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(controlled_display_available(&environment));
@@ -6036,7 +6036,7 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
         )?;
 
         let mut backspace =
-            common::virtual_keyboard::VirtualKeyboard::create("vietc-phase6-backspace-vk")
+            common::virtual_keyboard::VirtualKeyboard::create("dboard-phase6-backspace-vk")
                 .map_err(|_| RuntimeCommandError::InputInjectionFailed)?;
         backspace
             .wait_for_devnode(timeout)
@@ -6057,7 +6057,7 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
 
         let status_path = dirs::config_dir()
             .ok_or(RuntimeCommandError::PrerequisiteMissing)?
-            .join("vietc/status");
+            .join("dboard/status");
         std::fs::write(&status_path, "en").map_err(|_| RuntimeCommandError::ScenarioFailed)?;
         std::thread::sleep(Duration::from_secs(1));
         prepare_controlled_browser_target(&mut cdp)?;
@@ -6089,7 +6089,7 @@ fn privileged_fast_input_stress_is_observable_end_to_end() {
     })();
 
     if let Some(config_dir) = dirs::config_dir() {
-        let _ = std::fs::write(config_dir.join("vietc/status"), "vn");
+        let _ = std::fs::write(config_dir.join("dboard/status"), "vn");
     }
     let _ = cdp.command("Browser.close", serde_json::json!({}));
     let teardown = child.terminate_and_reap(Duration::from_secs(5));
@@ -6104,7 +6104,7 @@ const MIN_LONG_TEXT_KEY_DELAY_MS: u64 = 40;
 const MAX_LONG_TEXT_KEY_DELAY_MS: u64 = 250;
 
 fn long_text_key_delay_ms() -> u64 {
-    std::env::var("VIETC_LONG_TEXT_KEY_DELAY_MS")
+    std::env::var("DBOARD_LONG_TEXT_KEY_DELAY_MS")
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|delay| (MIN_LONG_TEXT_KEY_DELAY_MS..=MAX_LONG_TEXT_KEY_DELAY_MS).contains(delay))
@@ -6157,7 +6157,7 @@ fn render_long_text_artifact(
 }
 
 fn selected_long_text_targets() -> Result<Vec<RuntimeTargetKind>, String> {
-    let configured = std::env::var("VIETC_LONG_TEXT_TARGETS")
+    let configured = std::env::var("DBOARD_LONG_TEXT_TARGETS")
         .unwrap_or_else(|_| "cosmic-edit,microsoft-edge,firefox".to_string());
     configured
         .split(',')
@@ -6167,7 +6167,9 @@ fn selected_long_text_targets() -> Result<Vec<RuntimeTargetKind>, String> {
             "cosmic-edit" => Ok(RuntimeTargetKind::CosmicEdit),
             "microsoft-edge" => Ok(RuntimeTargetKind::Edge),
             "firefox" => Ok(RuntimeTargetKind::Firefox),
-            _ => Err(format!("unsupported VIETC_LONG_TEXT_TARGETS value: {name}")),
+            _ => Err(format!(
+                "unsupported DBOARD_LONG_TEXT_TARGETS value: {name}"
+            )),
         })
         .collect()
 }
@@ -6352,7 +6354,7 @@ fn observe_long_text_target(
         }
         RuntimeTargetKind::CosmicEdit => {
             let mut save =
-                common::virtual_keyboard::VirtualKeyboard::create("vietc-long-text-save")
+                common::virtual_keyboard::VirtualKeyboard::create("dboard-long-text-save")
                     .map_err(|_| RuntimeCommandError::TargetCopyFailed)?;
             save.wait_for_devnode(timeout)
                 .ok_or(RuntimeCommandError::TargetCopyFailed)?;
@@ -6380,7 +6382,7 @@ fn observe_long_text_target(
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, COSMIC Wayland, COSMIC Edit, a running vietc daemon, and writable /dev/uinput"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1, DBOARD_CONTROLLED_DISPLAY=1, COSMIC Wayland, COSMIC Edit, a running dboard daemon, and writable /dev/uinput"]
 fn privileged_cosmic_edit_types_vietnamese_end_to_end() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(controlled_display_available(&environment));
@@ -6438,7 +6440,7 @@ fn privileged_cosmic_edit_types_vietnamese_end_to_end() {
 }
 
 #[test]
-#[ignore = "requires VIETC_RUNTIME_TESTS=1, VIETC_CONTROLLED_DISPLAY=1, COSMIC Wayland, COSMIC Edit, Microsoft Edge, Firefox, a running vietc daemon, and writable /dev/uinput"]
+#[ignore = "requires DBOARD_RUNTIME_TESTS=1, DBOARD_CONTROLLED_DISPLAY=1, COSMIC Wayland, COSMIC Edit, Microsoft Edge, Firefox, a running dboard daemon, and writable /dev/uinput"]
 fn privileged_long_text_is_exact_in_cosmic_edit_edge_and_firefox() {
     let environment = RuntimeEnvironment::detect_current();
     assert!(controlled_display_available(&environment));

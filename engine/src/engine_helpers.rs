@@ -89,11 +89,111 @@ pub(crate) fn active_telex_transform(
     mark.map(|(kind, policy)| (kind, trigger, policy))
 }
 
+pub(crate) fn build_surrounding_prev_entry(
+    prev_word: &str,
+    dict: &crate::english::EnglishDict,
+) -> (
+    crate::ring_buffer::CommittedWordEntry,
+    crate::english::LanguageContext,
+) {
+    let ctx = dict.classify_committed_word_with_prior(
+        prev_word,
+        prev_word,
+        crate::english::LanguageContext::None,
+    );
+    let entry = crate::ring_buffer::CommittedWordEntry {
+        raw_keys: prev_word.to_string(),
+        visible_word: prev_word.to_string(),
+        trailing_delimiters: " ".to_string(),
+        prior_context: crate::english::LanguageContext::None,
+        committed_context: ctx,
+        was_auto_restored: ctx == crate::english::LanguageContext::English,
+        user_override_vn: false,
+    };
+    (entry, ctx)
+}
+
+pub(crate) fn build_composition_state(
+    raw_keys: String,
+    visible: String,
+    active_transform: Option<crate::state::TransformIdentity>,
+    boundary: crate::state::BoundaryState,
+    generation: u64,
+    last_transition: Option<crate::state::TransitionKind>,
+) -> crate::state::CompositionState {
+    crate::state::CompositionState {
+        case_shape: case_shape(&raw_keys),
+        raw_keys,
+        validity: if visible.is_empty() {
+            crate::state::SpellingValidity::Unknown
+        } else if crate::spelling::is_valid_vietnamese_syllable(&visible) {
+            crate::state::SpellingValidity::Valid
+        } else {
+            crate::state::SpellingValidity::Invalid
+        },
+        visible,
+        active_transform,
+        boundary,
+        generation,
+        last_transition,
+    }
+}
+
 pub(crate) fn is_sentence_boundary(ch: char) -> bool {
     matches!(
         ch,
         '.' | '!' | '?' | ':' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '\n' | '\r' | '\t' | '…'
     )
+}
+
+pub(crate) fn replay_bamboo(bamboo: &mut crate::bamboo::BambooEngine, raw: &str) {
+    bamboo.reset();
+    let mut replayed = String::new();
+    for rk in raw.chars() {
+        if let Some(undo) = bamboo.undo_telex_transform(rk, &replayed) {
+            let consumed_lit = if undo == crate::bamboo::TelexUndo::ConsumeTrigger {
+                replayed.chars().last()
+            } else {
+                None
+            };
+            replayed.push(rk);
+            match undo {
+                crate::bamboo::TelexUndo::AppendTrigger => bamboo.append_literal(rk),
+                crate::bamboo::TelexUndo::ConsumeTrigger => {
+                    if let Some(lit) = consumed_lit {
+                        bamboo.append_literal(lit);
+                    }
+                }
+            }
+        } else {
+            replayed.push(rk);
+            let _ = bamboo.process_key(rk);
+        }
+    }
+}
+
+pub(crate) fn compose_with_bamboo(method: crate::input_method::InputMethod, raw: &str) -> String {
+    let mut tmp = crate::bamboo::BambooEngine::new(method);
+    replay_bamboo(&mut tmp, raw);
+    match_casing(raw, &tmp.get_output())
+}
+
+pub(crate) fn telex_undo_policy(kind: TransformKind) -> Option<UndoPolicy> {
+    match kind {
+        TransformKind::Tone('f' | 's' | 'r' | 'x' | 'j') => Some(UndoPolicy::AppendTrigger),
+        TransformKind::Mark("aw" | "ow" | "uw" | "uo+w" | "ua+w" | "aa" | "ee" | "oo") => {
+            Some(UndoPolicy::AppendTrigger)
+        }
+        TransformKind::StrokeDd => Some(UndoPolicy::ConsumeTrigger),
+        _ => None,
+    }
+}
+
+pub(crate) fn is_seedable_surrounding_word(visible_word: &str) -> bool {
+    !visible_word.is_empty()
+        && visible_word.chars().count() <= 24
+        && visible_word.chars().all(char::is_alphabetic)
+        && crate::spelling::is_valid_vietnamese_prefix(visible_word)
 }
 
 pub(crate) fn is_flush_char(ch: char) -> bool {
@@ -169,7 +269,10 @@ pub(crate) fn adapt_macro_casing(raw_shortcut: &str, expansion: &str) -> String 
 }
 
 pub(crate) fn is_vn_d_abbreviation(composed: &str, raw_lower: &str) -> bool {
-    if (!composed.contains('Đ') && !composed.contains('đ')) || raw_lower == "ddos" {
+    if (!composed.contains('Đ') && !composed.contains('đ'))
+        || raw_lower == "ddos"
+        || raw_lower.bytes().any(|b| b.is_ascii_digit())
+    {
         return false;
     }
     let alpha: Vec<char> = composed.chars().filter(|c| c.is_alphabetic()).collect();
@@ -241,6 +344,39 @@ pub(crate) fn resolve_coda_edit_canon(
         }
     }
     None
+}
+
+pub(crate) enum RehydrationDecision {
+    Keep,
+    ReplaceRaw(String),
+    ClearWord,
+}
+
+/// Evaluate Invariant 1 (Guarded Rehydration) when a character `ch` is typed
+/// immediately after Backspace deleted the trailing Space of a committed word.
+pub(crate) fn evaluate_guarded_rehydration(
+    raw_buffer: &str,
+    current_visible: &str,
+    ch: char,
+    method: crate::InputMethod,
+    compose: impl Fn(&str) -> String,
+) -> RehydrationDecision {
+    let cand = compose(&format!("{raw_buffer}{ch}"));
+    let is_tone_strip = (method == crate::InputMethod::Telex && ch.eq_ignore_ascii_case(&'z'))
+        || (method == crate::InputMethod::Vni && ch == '0');
+    let is_valid_mod = cand != current_visible
+        && crate::spelling::is_valid_vietnamese_prefix(&cand)
+        && (is_tone_strip || crate::spelling::is_in_vietnamese_dictionary_or_prefix(&cand));
+    if is_valid_mod {
+        return RehydrationDecision::Keep;
+    }
+    if let Some(resolved) = resolve_coda_edit_canon(raw_buffer, ch, method, &compose) {
+        let edited = compose(&format!("{resolved}{ch}"));
+        if crate::spelling::is_in_vietnamese_dictionary_or_prefix(&edited) {
+            return RehydrationDecision::ReplaceRaw(resolved);
+        }
+    }
+    RehydrationDecision::ClearWord
 }
 
 impl crate::Engine {
@@ -371,5 +507,34 @@ impl crate::Engine {
             }
         }
         commands
+    }
+
+    pub fn seed_surrounding_word(&mut self, visible_word: &str) -> bool {
+        self.seed_surrounding_context(Some(visible_word), None, false)
+    }
+
+    pub fn telex_undo_policy(
+        kind: crate::state::TransformKind,
+    ) -> Option<crate::state::UndoPolicy> {
+        crate::engine_helpers::telex_undo_policy(kind)
+    }
+
+    pub fn should_restore_word(composed: &str, raw: &str) -> bool {
+        Self::should_restore_word_with_context(composed, raw, crate::english::LanguageContext::None)
+    }
+
+    pub fn should_restore_word_with_context(
+        composed: &str,
+        raw: &str,
+        prev_context: crate::english::LanguageContext,
+    ) -> bool {
+        crate::english::should_restore_word_decision(
+            crate::engine::english_dict(),
+            composed,
+            raw,
+            prev_context,
+            None,
+            None,
+        )
     }
 }

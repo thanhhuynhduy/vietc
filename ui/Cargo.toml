@@ -1,14 +1,14 @@
 [workspace]
 
 [package]
-name = "vietc-tray"
+name = "dboard-tray"
 version = "0.2.0"
 edition = "2021"
-description = "VietC system tray icon"
+description = "Dboard system tray icon"
 license = "MIT"
 
 [[bin]]
-name = "vietc-tray"
+name = "dboard-tray"
 path = "src/main.rs"
 
 [dependencies]

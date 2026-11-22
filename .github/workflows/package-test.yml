@@ -52,7 +52,7 @@ jobs:
 
       - name: Locate Debian package
         run: |
-          PACKAGE=$(find packaging/deb -maxdepth 1 -type f -name 'vietc_*_amd64.deb' -print -quit)
+          PACKAGE=$(find packaging/deb -maxdepth 1 -type f -name 'dboard_*_amd64.deb' -print -quit)
           test -n "$PACKAGE"
           echo "PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
 
@@ -62,7 +62,7 @@ jobs:
       - name: Upload tested package
         uses: actions/upload-artifact@v4
         with:
-          name: vietc-debian-smoke-${{ github.sha }}
+          name: dboard-debian-smoke-${{ github.sha }}
           path: ${{ env.PACKAGE }}
           if-no-files-found: error
           retention-days: 7

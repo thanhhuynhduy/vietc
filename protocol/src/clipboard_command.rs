@@ -62,14 +62,15 @@ pub(crate) fn run_copy(mut command: Command, bytes: &[u8], timeout: Duration) ->
     false
 }
 
-/// Captures child stdout with a bounded timeout and byte limit without deadlocking
-/// when stdout exceeds the OS pipe buffer (~64 KiB).
+/// Captures child stdout (and bounded stderr up to 8 KiB) with a bounded timeout
+/// and byte limit without deadlocking when pipes exceed the OS buffer (~64 KiB).
 pub(crate) fn run_capture(
     mut command: Command,
     timeout: Duration,
     max_bytes: usize,
 ) -> Option<std::process::Output> {
     use std::io::Read;
+    const MAX_STDERR_BYTES: usize = 8192;
     let deadline = Instant::now().checked_add(timeout)?;
     if Instant::now() >= deadline {
         return None;
@@ -77,53 +78,107 @@ pub(crate) fn run_capture(
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .ok()?;
     let mut stdout = child.stdout.take()?;
-    let fd = stdout.as_raw_fd();
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
+    let mut stderr = child.stderr.take()?;
+    for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
     }
 
     let mut out = Vec::new();
+    let mut err_out = Vec::new();
     let mut chunk = [0u8; 8192];
-    let mut eof = false;
-    while !eof {
+    let mut stdout_eof = false;
+    let mut stderr_eof = false;
+    while !stdout_eof || !stderr_eof {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
             return None;
         }
-        match stdout.read(&mut chunk) {
-            Ok(0) => eof = true,
-            Ok(n) => {
-                if out.len().saturating_add(n) > max_bytes {
+        let mut progressed = false;
+        if !stdout_eof {
+            match stdout.read(&mut chunk) {
+                Ok(0) => {
+                    stdout_eof = true;
+                    progressed = true;
+                }
+                Ok(n) => {
+                    if out.len().saturating_add(n) > max_bytes {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return None;
+                    }
+                    out.extend_from_slice(&chunk[..n]);
+                    progressed = true;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => progressed = true,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => {
                     let _ = child.kill();
                     let _ = child.wait();
                     return None;
                 }
-                out.extend_from_slice(&chunk[..n]);
             }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                if pause_events(fd, libc::POLLIN, deadline).is_err() {
+        }
+        if !stderr_eof {
+            match stderr.read(&mut chunk) {
+                Ok(0) => {
+                    stderr_eof = true;
+                    progressed = true;
+                }
+                Ok(n) => {
+                    // Drain stderr completely to avoid child pipe deadlock, storing up to MAX_STDERR_BYTES.
+                    let room = MAX_STDERR_BYTES.saturating_sub(err_out.len());
+                    if room > 0 {
+                        err_out.extend_from_slice(&chunk[..n.min(room)]);
+                    }
+                    progressed = true;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => progressed = true,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(_) => {
+                    stderr_eof = true;
+                    progressed = true;
+                }
+            }
+        }
+        if !progressed && (!stdout_eof || !stderr_eof) {
+            let mut pfds = [
+                libc::pollfd {
+                    fd: if stdout_eof { -1 } else { stdout.as_raw_fd() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if stderr_eof { -1 } else { stderr.as_raw_fd() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let millis = remaining.as_millis().saturating_add(1).min(10) as i32;
+            let result =
+                unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, millis) };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
                     let _ = child.kill();
                     let _ = child.wait();
                     return None;
                 }
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
             }
         }
     }
     drop(stdout);
+    drop(stderr);
 
     loop {
         if Instant::now() >= deadline {
@@ -136,7 +191,7 @@ pub(crate) fn run_capture(
                 return Some(std::process::Output {
                     status,
                     stdout: out,
-                    stderr: Vec::new(),
+                    stderr: err_out,
                 });
             }
             Ok(None) => {
@@ -262,10 +317,33 @@ mod tests {
     #[test]
     fn rejects_spawn_failure_and_expired_deadline() {
         assert!(!run_copy(
-            Command::new("/nonexistent/vietc-copy-helper"),
+            Command::new("/nonexistent/dboard-copy-helper"),
             b"",
             Duration::from_secs(1)
         ));
         assert!(!run_copy(shell("exit 0"), b"", Duration::ZERO));
+    }
+
+    #[test]
+    fn run_capture_preserves_bounded_stderr_for_empty_clipboard_detection() {
+        let output = run_capture(
+            shell("printf 'Nothing is copied\\n' >&2; exit 1"),
+            Duration::from_secs(2),
+            1024,
+        )
+        .expect("capture should return non-zero output with stderr");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Nothing is copied"));
+
+        // Large stderr (>64 KiB) must be drained without deadlocking and capped in memory.
+        let big = run_capture(
+            shell("head -c 131072 /dev/zero | tr '\\0' 'e' >&2; printf 'ok'"),
+            Duration::from_secs(2),
+            1024,
+        )
+        .expect("large stderr must not deadlock");
+        assert!(big.status.success());
+        assert_eq!(big.stdout, b"ok");
+        assert_eq!(big.stderr.len(), 8192);
     }
 }

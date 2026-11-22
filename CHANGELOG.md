@@ -4,17 +4,17 @@
 
 ### Security
 - Removed unverified third-party binary auto-updater (`git.khoavo.myds.me`) and AppImage self-overwrite code from `ui/src/tray.rs`.
-- Standardized purely on `systemd-logind` active-seat `uaccess` rules (`70-vietc.rules` with `MODE="0600", GROUP="root"`); removed `input` group modifications (`usermod`/`adduser`) from installer and Debian packaging.
+- Standardized purely on `systemd-logind` active-seat `uaccess` rules (`70-dboard.rules` with `MODE="0600", GROUP="root"`); removed `input` group modifications (`usermod`/`adduser`) from installer and Debian packaging.
 - Rewrote AT-SPI2 password field detection (`daemon/src/password_detector.rs`) to traverse the accessible tree and check `ROLE_PASSWORD_TEXT` accurately, and extended `/proc` descendant inspection for `sudo`, `passwd`, `pkexec`, `su`, `doas`, `ssh`, `gpg`, and `cryptsetup`.
 - Removed plaintext keystroke and pasted-text logging from `evdev_loop.rs` and `uinput_monitor.rs`.
-- Moved daemon single-instance lockfile to `$XDG_RUNTIME_DIR/vietc-daemon.lock` so `PrivateTmp=yes` services and manual invocations share the same lock namespace.
+- Moved daemon single-instance lockfile to `$XDG_RUNTIME_DIR/dboard-daemon.lock` so `PrivateTmp=yes` services and manual invocations share the same lock namespace.
 
 ### Added
-- **Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1`) Zero-Clipboard Backend (`vietc-protocol`):**
-  - Persistent 8-level XKB keymap (`VIETC_EIGHT_LEVEL`) uploaded once via `memfd_create`, mapping all 134 Vietnamese Unicode characters within safe evdev keycodes `1..=111` (eliminating Chromium/Electron DomCode collisions and clipboard churn).
+- **Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1`) Zero-Clipboard Backend (`dboard-protocol`):**
+  - Persistent 8-level XKB keymap (`DBOARD_EIGHT_LEVEL`) uploaded once via `memfd_create`, mapping all 134 Vietnamese Unicode characters within safe evdev keycodes `1..=111` (eliminating Chromium/Electron DomCode collisions and clipboard churn).
   - Monotonic timestamp FIFO, Shift handoff between `zwp_virtual_keyboard_v1` and `uinput`, and Atomic Space delimiter dispatch to prevent sticky words at high WPM.
   - Chrome/Edge Omnibox Inline Autocomplete Selection Shield (`KEY_DELETE` pre-clear on both typing transforms and `Backspace` edits).
-- **Gboard-inspired Dual-Hypothesis Bilingual Engine (`vietc-engine`):**
+- **Gboard-inspired Dual-Hypothesis Bilingual Engine (`dboard-engine`):**
   - Preceding-word Bigram context (`LanguageContext`), retroactive 2-word disambiguation (`"Lát nữa"`, `"Lots of"`, `"Mã số"`, `"Too much"`), and Unigram collision tiers (`english_dominant_collisions` vs `vietnamese_dominant_collisions`).
   - Guarded `Backspace`-across-`Space` rehydration (`CommittedRingBuffer`) and Gboard Space-Undo after auto-restore.
   - Character-granular coda replacement on mid-word `Backspace` after free-order tone triggers (`vieetj` + `Backspace` + `c` → `việc`, `dduowngf` + `Backspace*2` + `cj` → `được`).
@@ -23,33 +23,33 @@
 
 ### Changed
 - **Old-Style Vietnamese Tone Placement (`Kiểu cũ`):** Open diphthongs `oa`, `oe`, `uy` place tones on the first vowel (`hòa`, `khỏe`, `thủy`) and automatically shift to the second vowel when closed by a coda consonant (`hoàn`, `toán`, `huỳnh`, `tuýt`).
-- Unified pure `evdev` + `zwp_virtual_keyboard_v1` / `uinput` architecture; removed all IBus, Fcitx5, Wayland IM (`zwp_input_method_v2`), X11 XRecord, `vietcctl`, `uinputd`, `vk`, `web`, and legacy PPA/AUR packaging code.
+- Unified pure `evdev` + `zwp_virtual_keyboard_v1` / `uinput` architecture; removed all IBus, Fcitx5, Wayland IM (`zwp_input_method_v2`), X11 XRecord, `dboardctl`, `uinputd`, `vk`, `web`, and legacy PPA/AUR packaging code.
 
 ### Fixed
 - **Exact Toggle Chord Matching (`daemon/src/event.rs`):** `Ctrl+Space` / `Alt+Z` now require an exact modifier set, preventing `Ctrl+Shift+Space` (VS Code Parameter Hints, LibreOffice NBSP), `Ctrl+Alt+Space`, and `Ctrl+Super+Space` from being hijacked.
 - **Consumed-Key Lifecycle under Modifier Overlap (`daemon/src/evdev_loop.rs`):** Handled `KeyUp`/`KeyRepeat` cleanup for `consumed_keys` prior to modifier passthrough, eliminating stale keycode leaks and phantom repeats when releasing a consumed key while holding `Ctrl`/`Alt`/`Meta`.
 - **Wayland Virtual Keyboard Rollover Release Absorption (`protocol/src/wayland_vk.rs`):** Tracked `early_released_bitmap` in `VkSession` so physical `KeyUp` events for rollover keys proactively released by `replace_text` are absorbed cleanly on VK instead of falling through to `/dev/uinput`.
-- **Digraph Coda Backspace, Acronyms, Multi-Tone Overwrite & Telex `z` Guard (`vietc-engine`):**
+- **Digraph Coda Backspace, Acronyms, Multi-Tone Overwrite & Telex `z` Guard (`dboard-engine`):**
   - Extended mid-word coda replacement to 2-character digraph codas `ng`/`nh`/`ch` (`tieengs` + `Backspace` + `t` → `tiết`).
   - Preserved ALLCAPS office/tech acronyms (`AWS`, `DDOS`, `ECS`, `ORM`, `GIF`, `TAR`, `RAR`, `EOF`, `COO`, `OOO`, `POS`, `EST`, `TOS`, `SOW`, `ATS`), double-key undo tech words (`err`, `arr`), multi-tone-overwrite tokens (`nextjs`, `nuxtjs`), and short programming identifiers (`var`, `usr`, `res`, `ref`, `pos`, `eof`).
   - Guarded intentional Telex `z` tone removal against `AutoRestore` on `Space` (`vieetjz ` → `viêt `) without affecting English words containing literal `z` (`setWindowSize`).
-- **Chatter-Safe Key Deduplication Default (`daemon/src/config.rs`, `vietc.toml`):** Lowered `default_dedup_window_ms` from `120ms` to `35ms` in both code defaults and the shipped `vietc.toml` template, and separated `terminal_apps` from `english_apps` so terminal VNI mode works out of the box.
-- **Zero-Blocking Background Password/Title Inspection (`daemon/src/password_detector.rs`, `daemon/src/app_state.rs`, `daemon/src/main.rs`):** Moved window-title and `/proc` `sudo`-descendant queries off the real-time `evdev_loop` thread into the 250ms background watcher (`O(1)` atomic/cache lookup on keystrokes), hardened `vietc.log` permissions (`0o600` + `O_NOFOLLOW`), and redacted plaintext characters from debug logs.
-- **Telex Prior-Tone Consumption, Rehydrated Prefix Edits, Digit-Prefixed Space & 64-Char Buffer Bound (`vietc-engine`):**
+- **Chatter-Safe Key Deduplication Default (`daemon/src/config.rs`, `dboard.toml`):** Lowered `default_dedup_window_ms` from `120ms` to `35ms` in both code defaults and the shipped `dboard.toml` template, and separated `terminal_apps` from `english_apps` so terminal VNI mode works out of the box.
+- **Zero-Blocking Background Password/Title Inspection (`daemon/src/password_detector.rs`, `daemon/src/app_state.rs`, `daemon/src/main.rs`):** Moved window-title and `/proc` `sudo`-descendant queries off the real-time `evdev_loop` thread into the 250ms background watcher (`O(1)` atomic/cache lookup on keystrokes), hardened `dboard.log` permissions (`0o600` + `O_NOFOLLOW`), and redacted plaintext characters from debug logs.
+- **Telex Prior-Tone Consumption, Rehydrated Prefix Edits, Digit-Prefixed Space & 64-Char Buffer Bound (`dboard-engine`):**
   - Consumed overwritten prior tone keys when an adjacent double-tone undo occurs after a consonant (`asnff` → `anf`).
   - Allowed open digraph-coda prefix edits and `z`/`0` tone stripping on words rehydrated across `Space` (`dduowngf ` + `Backspace*2` + `sg` → `đướng`, `tieengs ` + `Backspace` + `z` → `tiêng`).
   - Preserved digit-prefixed Vietnamese words on `Space` (`9nhuw ` → `9như `) and bounded active composition at 64 characters.
-- **Tray/Daemon IPC & Supply-Chain Hardening (`ui/`, `daemon/src/main.rs`, `packaging/deb/build-deb.sh`, `.github/workflows/supply-chain.yml`):** Initialized `~/.config/vietc/method` on daemon boot, probed `vietc-daemon.lock` via `flock`, aligned `.deb` `postinst`/`postrm` ACL & `udevadm` cleanup with `install.sh`/`uninstall.sh`, and added `ui/Cargo.lock` to CI vulnerability/license/SBOM checks.
+- **Tray/Daemon IPC & Supply-Chain Hardening (`ui/`, `daemon/src/main.rs`, `packaging/deb/build-deb.sh`, `.github/workflows/supply-chain.yml`):** Initialized `~/.config/dboard/method` on daemon boot, probed `dboard-daemon.lock` via `flock`, aligned `.deb` `postinst`/`postrm` ACL & `udevadm` cleanup with `install.sh`/`uninstall.sh`, and added `ui/Cargo.lock` to CI vulnerability/license/SBOM checks.
 - **Production Stability & Real-Time `evdev` Hardening (`daemon/`, `engine/`, `protocol/`, `ui/`, `packaging/`, `.github/workflows/`):**
   - Guaranteed physical keyboard `EVIOCGRAB` release prior to `injector` teardown via `GrabReleaseGuard`, offloaded `notify-send` OSD spawning off the real-time `evdev_loop` thread, and eliminated all synchronous subprocess fallbacks on keystrokes.
   - Enabled `O(1)` cached password detection on every key press (`value == 1`) so terminal `sudo`/`ssh`/`passwd` prompts are protected from the very first character, expanded `/proc/<pid>/task/*/children` BFS inspection to 512 processes, and redacted sensitive window titles from logs.
   - Synchronized `match_casing` in `TelexBackend::Recomposition` (`composed_tail` / `compose_candidate`), cleared `ring_buffer` on 64-character buffer overflow, and preserved `recovered_screen_len` across VNI `ReplacementFailed` recovery.
-  - Added `O_CLOEXEC` to `vietc-tray.lock`, converted `write_ipc_file` in both `daemon` and `ui` to atomic temp-file-and-rename, bounded X11 clipboard copy waits via `clipboard_command::run_copy`, auto-detected `amd64`/`arm64` in packaging scripts, and fixed `SHA256SUMS` generation in release workflows.
+  - Added `O_CLOEXEC` to `dboard-tray.lock`, converted `write_ipc_file` in both `daemon` and `ui` to atomic temp-file-and-rename, bounded X11 clipboard copy waits via `clipboard_command::run_copy`, auto-detected `amd64`/`arm64` in packaging scripts, and fixed `SHA256SUMS` generation in release workflows.
 - **Final QA/QC Stability, FFI Soundness, Engine Parity & CI Hardening (`protocol/`, `engine/`, `daemon/`, `ui/`, `cli/`, `packaging/`, `.github/workflows/`):**
   - Eliminated FFI/UB defects: `#[repr(C, align(8))]` on X11 `XEvent`, thread-safe `libc::getpwuid_r` with null checks in `session_environment.rs`, `dlsym` NULL checks + `status == 0` fix for `XGetWindowProperty` in `app_state.rs`, and `geteuid()` root checks across Wayland/session helpers.
   - Fixed 64 KiB pipe buffer deadlock in clipboard backup via non-blocking bounded `clipboard_command::run_capture`, fixed X11 `TARGETS` (`XA_ATOM`) & selection race, propagated `WaylandError::Protocol` in `wayland_vk.rs`, recovered poisoned locks/condvars, and fixed `--no-default-features` compilation with zero warnings.
   - Fixed `BambooEngine` out-of-bounds slice panic on non-flushed Unicode whitespace, VNI free-order `-ươi`/`-ươu` triphthongs (`nguoi72` → `người`, `huou7` → `hươu`), VNI repeated-mark undo (`ban66` → `ban6`), Telex OOV `rs`/`sr` preservation (`kerson`, `varset`), `Engine::flush()` bamboo reset, and VNI open `ươ` rehydration.
-  - Fixed stuck `ATSPI_FOCUSED_IS_PASSWORD` across non-AT-SPI window switches, `visible_revision` sync on password transitions, early-boot `Instant` underflow in `pointer_watcher.rs`, Bluetooth combo keyboard startup skip, non-dedupable nav/edit/modifier keys, atomic `swap(false)` reload flags, `vietc-tray` `SIGINT`/`SIGTERM` clean daemon shutdown & `inotify` retry, and `vietc-cli` `AutoRestore` backspace counting.
+  - Fixed stuck `ATSPI_FOCUSED_IS_PASSWORD` across non-AT-SPI window switches, `visible_revision` sync on password transitions, early-boot `Instant` underflow in `pointer_watcher.rs`, Bluetooth combo keyboard startup skip, non-dedupable nav/edit/modifier keys, atomic `swap(false)` reload flags, `dboard-tray` `SIGINT`/`SIGTERM` clean daemon shutdown & `inotify` retry, and `dboard-cli` `AutoRestore` backspace counting.
   - Fixed `supply-chain.yml` PR branch-protection deadlock and `ui/Cargo.lock` build-time-only advisory policy, added clean-container `.deb` smoke test & `install.sh`/`uninstall.sh` to `release.yml` + `SHA256SUMS`, fixed `package-smoke-test.sh` `ldd` check, fixed `install.sh` offline tarball & `su -c` quoting, and added `--locked` to release packaging scripts.
 
 ---

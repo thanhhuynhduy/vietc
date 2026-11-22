@@ -353,12 +353,12 @@ mod privilege_tests {
         DesktopSession {
             uid: 1000,
             gid: 1000,
-            username: "vietc-user".to_string(),
-            home: PathBuf::from("/home/vietc-user"),
+            username: "dboard-user".to_string(),
+            home: PathBuf::from("/home/dboard-user"),
             xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
             display: Some(":0".to_string()),
             wayland_display: Some("wayland-0".to_string()),
-            xauthority: Some(PathBuf::from("/home/vietc-user/.Xauthority")),
+            xauthority: Some(PathBuf::from("/home/dboard-user/.Xauthority")),
         }
     }
 

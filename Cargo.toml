@@ -9,5 +9,5 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-vietc-engine = { path = "engine" }
-vietc-protocol = { path = "protocol" }
+dboard-engine = { path = "engine" }
+dboard-protocol = { path = "protocol" }

@@ -11,7 +11,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 class DevicePermissionsTests(unittest.TestCase):
     def test_installer_uses_session_access_without_world_permissions(self):
-        for rel in ("install.sh", "packaging/70-vietc.rules"):
+        for rel in ("install.sh", "packaging/70-dboard.rules"):
             with self.subTest(file=rel):
                 source = (ROOT / rel).read_text()
                 rules = re.findall(r'^(?:KERNEL|SUBSYSTEM)==.*$', source, re.MULTILINE)
@@ -25,10 +25,12 @@ class DevicePermissionsTests(unittest.TestCase):
                         self.assertIn('MODE="0600"', rule)
                         self.assertIn('GROUP="root"', rule)
                     else:
-                        # Must not clobber distro GROUP="input" / MODE="0660" on event* devices.
+                        # Must not clobber distro GROUP="input" / MODE="0660" on event* devices,
+                        # and must scope uaccess to keyboard/pointer classes only.
                         self.assertNotIn('GROUP="root"', rule)
                         self.assertNotIn('MODE="0600"', rule)
-        self.assertIn('/etc/udev/rules.d/70-vietc.rules', (ROOT / "install.sh").read_text())
+                        self.assertIn('ENV{ID_INPUT_', rule)
+        self.assertIn('/etc/udev/rules.d/70-dboard.rules', (ROOT / "install.sh").read_text())
 
     def test_upgrade_and_uninstall_revoke_existing_world_access(self):
         for name in ("install.sh", "uninstall.sh"):
@@ -41,7 +43,7 @@ class DevicePermissionsTests(unittest.TestCase):
                     self.assertIn('chmod o-rw -- "$device"', source)
                 self.assertIn("udevadm trigger --action=change --subsystem-match=input", source)
                 self.assertIn("udevadm trigger --action=change --subsystem-match=misc", source)
-        self.assertIn("/etc/udev/rules.d/70-vietc.rules", (ROOT / "uninstall.sh").read_text())
+        self.assertIn("/etc/udev/rules.d/70-dboard.rules", (ROOT / "uninstall.sh").read_text())
 
 
 class InstallerPathTests(unittest.TestCase):
@@ -49,8 +51,8 @@ class InstallerPathTests(unittest.TestCase):
         source = (ROOT / "install.sh").read_text()
         self.assertNotIn("cap_sys_admin", source)
         self.assertNotIn("cap_dac_override", source)
-        self.assertNotRegex(source, r"setcap\s+[^-\n].*vietc-daemon")
-        self.assertIn("setcap -r /usr/bin/vietc-daemon", source)
+        self.assertNotRegex(source, r"setcap\s+[^-\n].*dboard-daemon")
+        self.assertIn("setcap -r /usr/bin/dboard-daemon", source)
 
     def test_scripts_do_not_redownload_mutable_branches_as_root(self):
         for name in ("install.sh", "uninstall.sh"):
@@ -141,7 +143,7 @@ class AclCleanupTests(unittest.TestCase):
 
 class PureEvdevAndUpdaterSecurityTests(unittest.TestCase):
     def test_installer_and_deb_packager_have_zero_ibus_fcitx5_or_input_group(self):
-        for rel in ("install.sh", "packaging/deb/build-deb.sh", "vietc.service", "vietc.toml"):
+        for rel in ("install.sh", "packaging/deb/build-deb.sh", "dboard.service", "dboard.toml"):
             with self.subTest(file=rel):
                 lower = (ROOT / rel).read_text().lower()
                 self.assertNotIn("ibus", lower)
@@ -152,8 +154,8 @@ class PureEvdevAndUpdaterSecurityTests(unittest.TestCase):
     def test_deb_postinst_is_non_interactive_and_uses_70_udev_rules(self):
         deb_script = (ROOT / "packaging/deb/build-deb.sh").read_text()
         self.assertNotIn("zenity", deb_script)
-        self.assertIn("packaging/70-vietc.rules", deb_script)
-        self.assertNotIn("packaging/99-vietc.rules", deb_script)
+        self.assertIn("packaging/70-dboard.rules", deb_script)
+        self.assertNotIn("packaging/99-dboard.rules", deb_script)
 
     def test_tray_has_no_remote_binary_updater(self):
         tray_source = (ROOT / "ui/src/tray.rs").read_text()
@@ -165,7 +167,17 @@ class PureEvdevAndUpdaterSecurityTests(unittest.TestCase):
         installer = (ROOT / "install.sh").read_text()
         self.assertNotIn('WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \\\n', installer)
         self.assertIn('"/run/user/$U_UID"/wayland-[0-9]*', installer)
-        self.assertIn("systemctl --user restart vietc.service", installer)
+        self.assertIn("systemctl --user restart dboard.service", installer)
+
+    def test_offline_tarball_sets_bin_and_pkg_dirs_and_drops_privs_for_user_home(self):
+        installer = (ROOT / "install.sh").read_text()
+        self.assertRegex(
+            installer,
+            r'elif \[ -f "\./bin/dboard-daemon" \]; then\s+INSTALL_DIR="\$\(pwd\)"\s+BIN_DIR="\$INSTALL_DIR/bin"\s+PKG_DIR="\$INSTALL_DIR"',
+        )
+        self.assertIn("run_as_installing_user()", installer)
+        self.assertNotIn('chown -R "$INSTALLING_USER:$INSTALLING_GROUP" "$USER_HOME/.config/dboard"', installer)
+        self.assertNotIn('chown -R "$INSTALLING_USER:$INSTALLING_GROUP" "$USER_HOME/.config/systemd/user"', installer)
 
 
 if __name__ == "__main__":

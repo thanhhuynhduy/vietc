@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# VietC — Linux Mint / Ubuntu test VM setup script
+# Dboard — Linux Mint / Ubuntu test VM setup script
 # Usage: curl -fsSL <url> | bash
 #   or: bash scripts/setup-test-vm.sh
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
-echo -e "${GREEN}=== VietC Test VM Setup ===${NC}"
+echo -e "${GREEN}=== Dboard Test VM Setup ===${NC}"
 
 # 1. Install system deps
 echo -e "${YELLOW}[1/5] Installing system dependencies...${NC}"
@@ -27,10 +27,10 @@ fi
 
 # 3. Clone and build
 echo -e "${YELLOW}[3/5] Cloning and building...${NC}"
-if [ ! -d vietc ]; then
+if [ ! -d dboard ]; then
   git clone https://github.com/thanhhuynhduy/vietc.git
 fi
-cd vietc
+cd dboard
 
 # 4. Install from source
 echo -e "${YELLOW}[4/5] Installing...${NC}"
@@ -40,23 +40,23 @@ sudo bash ./install.sh --from-source
 echo -e "${YELLOW}[5/5] Setup complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}  Re-login to apply uaccess ACLs        ${NC}"
-echo -e "${GREEN}  Optional tray: vietc-tray &           ${NC}"
+echo -e "${GREEN}  Optional tray: dboard-tray &           ${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Quick test:"
-echo "  cargo run --bin vietc-cli"
+echo "  cargo run --bin dboard-cli"
 echo ""
 echo "Deterministic integration harness:"
-echo "  env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p vietc-daemon --test daemon_suite runtime::deterministic_ -- --test-threads=1"
+echo "  env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p dboard-daemon --test daemon_suite runtime::deterministic_ -- --test-threads=1"
 echo ""
 echo "Privileged runtime verification (run inside a disposable target desktop session):"
-echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "  DBOARD_RUNTIME_TESTS=1 cargo test -p dboard-daemon --test daemon_suite \\"
 echo "    runtime::privileged_runtime_matrix_records_exact_ready_and_skip_evidence \\"
 echo "    -- --ignored --nocapture --test-threads=1"
-echo "  VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "  DBOARD_RUNTIME_TESTS=1 DBOARD_CONTROLLED_DISPLAY=1 cargo test -p dboard-daemon --test daemon_suite \\"
 echo "    runtime::privileged_runtime_targets_execute_controlled_scenarios \\"
 echo "    -- --ignored --nocapture --test-threads=1"
-echo "  VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite \\"
+echo "  DBOARD_RUNTIME_TESTS=1 cargo test -p dboard-daemon --test daemon_suite \\"
 echo "    runtime::wayland_wtype_success_is_observable_at_runtime \\"
 echo "    -- --ignored --nocapture --test-threads=1"
 echo ""

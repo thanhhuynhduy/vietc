@@ -16,16 +16,23 @@ use super::inject::{InjectResult, KeyInjector};
 use clipboard::RetainedWaylandPaste;
 use clipboard::{trace_clipboard, ClipInner, ClipState, ClipboardRestorer};
 use key_injection::{
-    char_to_linux_keycode, ioctl, serialize_transaction, strip_vn_diacritic, uinput_setup, EV_KEY,
-    KEYBOARD_KEY_MAX, UINPUT_MAX_NAME_SIZE, UI_DEV_CREATE, UI_DEV_SETUP, UI_SET_EVBIT,
-    UI_SET_KEYBIT,
+    ioctl, serialize_transaction, strip_vn_diacritic, uinput_setup, EV_KEY, KEYBOARD_KEY_MAX,
+    UINPUT_MAX_NAME_SIZE, UI_DEV_CREATE, UI_DEV_SETUP, UI_SET_EVBIT, UI_SET_KEYBIT,
 };
 use replacement_transaction::ClipboardBurstState;
+
+#[cfg(feature = "wayland-protocol")]
+const VK_UNSUPPORTED_MAX_RETRIES: u8 = 5;
+/// Cooldown after releasing Ctrl/Alt/Super on `/dev/uinput` during which new
+/// key presses also route via `/dev/uinput` to preserve strict kernel FIFO order
+/// (prevents VK typing keys from overtaking libinput modifier release -> Ctrl+A).
+const MOD_RELEASE_VK_COOLDOWN_US: u64 = 12_000;
 
 #[cfg(feature = "wayland-protocol")]
 struct WaylandVkSlot {
     vk: Option<crate::wayland_vk::WaylandVirtualKeyboard>,
     disabled: bool,
+    unsupported_attempts: u8,
     last_attempt: Option<std::time::Instant>,
 }
 
@@ -37,14 +44,18 @@ pub struct UinputInjector {
     #[cfg(feature = "wayland-protocol")]
     wayland_vk: Mutex<WaylandVkSlot>,
     #[cfg(feature = "wayland-protocol")]
-    wayland_paste: Mutex<Option<RetainedWaylandPaste>>,
+    wayland_paste: Arc<Mutex<Option<RetainedWaylandPaste>>>,
     #[cfg(feature = "wayland-protocol")]
-    retired_wayland_offers: Mutex<Vec<crate::wayland_clipboard::ClipboardOffer>>,
+    retired_wayland_offers: Arc<Mutex<Vec<crate::wayland_clipboard::ClipboardOffer>>>,
+    #[cfg(feature = "wayland-protocol")]
+    wayland_restore_gen: Arc<AtomicU64>,
     #[cfg(feature = "wayland-protocol")]
     uncertain_focus: Mutex<Option<u64>>,
     transaction_lock: Mutex<()>,
     clip: Arc<ClipState>,
     restorer: ClipboardRestorer,
+    started: std::time::Instant,
+    last_uinput_mod_release_us: AtomicU64,
     caps_lock: std::sync::atomic::AtomicBool,
     num_lock: std::sync::atomic::AtomicBool,
     terminal_app: std::sync::atomic::AtomicBool,
@@ -76,6 +87,14 @@ fn shift_bit(keycode: u16) -> Option<u8> {
 
 impl UinputInjector {
     pub fn new(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_locks(name, false, false)
+    }
+
+    pub fn new_with_locks(
+        name: &str,
+        initial_caps_lock: bool,
+        initial_num_lock: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let _ = std::process::Command::new("modprobe")
             .args(["uinput"])
             .output();
@@ -115,14 +134,17 @@ impl UinputInjector {
 
         #[cfg(feature = "wayland-protocol")]
         let vk_slot = {
-            let disabled = std::env::var_os("VIETC_DISABLE_WAYLAND_VK").is_some();
+            let disabled = std::env::var_os("DBOARD_DISABLE_WAYLAND_VK").is_some();
             let vk = if disabled {
                 None
             } else {
-                match crate::wayland_vk::WaylandVirtualKeyboard::connect() {
+                match crate::wayland_vk::WaylandVirtualKeyboard::connect(
+                    initial_caps_lock,
+                    initial_num_lock,
+                ) {
                     Ok(vk) => {
                         eprintln!(
-                            "[vietc] Wayland zwp_virtual_keyboard_v1 active (zero-clipboard direct Unicode mode)"
+                            "[dboard] Wayland zwp_virtual_keyboard_v1 active (zero-clipboard direct Unicode mode)"
                         );
                         Some(vk)
                     }
@@ -132,6 +154,7 @@ impl UinputInjector {
             WaylandVkSlot {
                 vk,
                 disabled,
+                unsupported_attempts: 0,
                 last_attempt: Some(std::time::Instant::now()),
             }
         };
@@ -154,16 +177,20 @@ impl UinputInjector {
             #[cfg(feature = "wayland-protocol")]
             wayland_vk: Mutex::new(vk_slot),
             #[cfg(feature = "wayland-protocol")]
-            wayland_paste: Mutex::new(None),
+            wayland_paste: Arc::new(Mutex::new(None)),
             #[cfg(feature = "wayland-protocol")]
-            retired_wayland_offers: Mutex::new(Vec::new()),
+            retired_wayland_offers: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(feature = "wayland-protocol")]
+            wayland_restore_gen: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "wayland-protocol")]
             uncertain_focus: Mutex::new(None),
             transaction_lock: Mutex::new(()),
             clip,
             restorer,
-            caps_lock: std::sync::atomic::AtomicBool::new(false),
-            num_lock: std::sync::atomic::AtomicBool::new(false),
+            started: std::time::Instant::now(),
+            last_uinput_mod_release_us: AtomicU64::new(0),
+            caps_lock: std::sync::atomic::AtomicBool::new(initial_caps_lock),
+            num_lock: std::sync::atomic::AtomicBool::new(initial_num_lock),
             terminal_app: std::sync::atomic::AtomicBool::new(false),
             bypass_mode: std::sync::atomic::AtomicBool::new(false),
             uinput_mod_mask: std::sync::atomic::AtomicU8::new(0),
@@ -194,11 +221,32 @@ impl UinputInjector {
                 .is_none_or(|prev| now.duration_since(prev) >= Duration::from_secs(3));
             if can_retry {
                 slot.last_attempt = Some(now);
-                if let Ok(vk) = crate::wayland_vk::WaylandVirtualKeyboard::connect() {
-                    vk.set_caps_lock(self.caps_lock.load(Ordering::Relaxed));
-                    vk.set_num_lock(self.num_lock.load(Ordering::Relaxed));
-                    eprintln!("[vietc] Wayland zwp_virtual_keyboard_v1 connected");
-                    slot.vk = Some(vk);
+                match crate::wayland_vk::WaylandVirtualKeyboard::connect(
+                    self.caps_lock.load(Ordering::Relaxed),
+                    self.num_lock.load(Ordering::Relaxed),
+                ) {
+                    Ok(vk) => {
+                        eprintln!("[dboard] Wayland zwp_virtual_keyboard_v1 connected");
+                        slot.unsupported_attempts = 0;
+                        slot.vk = Some(vk);
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                        eprintln!(
+                            "[dboard] Wayland zwp_virtual_keyboard_v1 denied ({err}); disabling VK retries and using Tier 2 fallback"
+                        );
+                        slot.disabled = true;
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::Unsupported => {
+                        slot.unsupported_attempts = slot.unsupported_attempts.saturating_add(1);
+                        if slot.unsupported_attempts >= VK_UNSUPPORTED_MAX_RETRIES {
+                            eprintln!(
+                                "[dboard] Wayland zwp_virtual_keyboard_v1 unavailable after {} attempts ({err}); disabling VK retries and using Tier 2 fallback",
+                                slot.unsupported_attempts
+                            );
+                            slot.disabled = true;
+                        }
+                    }
+                    Err(_) => {}
                 }
             }
         }
@@ -231,8 +279,28 @@ impl UinputInjector {
         }
     }
 
+    fn record_mod_release(&self) {
+        let now_us = (self.started.elapsed().as_micros() as u64).saturating_add(1);
+        self.last_uinput_mod_release_us
+            .store(now_us, Ordering::Release);
+    }
+
+    fn is_in_mod_release_cooldown(&self) -> bool {
+        let last = self.last_uinput_mod_release_us.load(Ordering::Acquire);
+        if last == 0 {
+            return false;
+        }
+        let now_us = (self.started.elapsed().as_micros() as u64).saturating_add(1);
+        now_us.saturating_sub(last) < MOD_RELEASE_VK_COOLDOWN_US
+    }
+
     #[cfg(feature = "wayland-protocol")]
     fn transfer_uinput_shift_to_vk(&self) {
+        // Only hand Shift over to VK if VK is actually connected and healthy;
+        // otherwise keep Shift held on uinput (Tier 2 fallback).
+        if self.with_wayland_vk(|_| ()).is_none() {
+            return;
+        }
         let bits = self.uinput_shift_mask.swap(0, Ordering::AcqRel);
         if bits == 0 {
             return;
@@ -282,6 +350,7 @@ impl KeyInjector for UinputInjector {
                         self.send_uinput_event_unlocked(EV_KEY, keycode, 0)?;
                         self.send_uinput_event_unlocked(0, 0, 0)
                     });
+                    self.record_mod_release();
                     self.transfer_uinput_shift_to_vk();
                     return if matches!(result, Ok(Ok(()))) {
                         InjectResult::Success
@@ -299,7 +368,8 @@ impl KeyInjector for UinputInjector {
         } else if !bypassed || value == 0 {
             #[cfg(feature = "wayland-protocol")]
             {
-                let mods_active = self.uinput_mod_mask.load(Ordering::Acquire) != 0;
+                let mods_active = self.uinput_mod_mask.load(Ordering::Acquire) != 0
+                    || self.is_in_mod_release_cooldown();
                 if self
                     .with_wayland_vk(|vk| vk.send_key_event(keycode, value, mods_active))
                     .unwrap_or(false)
@@ -343,26 +413,26 @@ impl KeyInjector for UinputInjector {
         }
 
         let caps_active = self.caps_lock.load(Ordering::Relaxed);
-        if let Some(keycode) = char_to_linux_keycode(ch) {
+        if let Some((keycode, base_shift)) = crate::layout::char_to_evdev_and_shift(ch) {
             let needs_shift = if ch.is_ascii_alphabetic() {
-                ch.is_uppercase() ^ caps_active
+                base_shift ^ caps_active
             } else {
-                "~!@#$%^&*()_+{}|:\"<>?".contains(ch)
+                base_shift
             };
-            return if self.send_key_stroke(keycode, needs_shift).is_ok() {
+            return if self.send_key_stroke(keycode as u16, needs_shift).is_ok() {
                 InjectResult::Success
             } else {
                 InjectResult::Failed
             };
         }
         let ascii = strip_vn_diacritic(ch);
-        if let Some(keycode) = char_to_linux_keycode(ascii) {
+        if let Some((keycode, base_shift)) = crate::layout::char_to_evdev_and_shift(ascii) {
             let needs_shift = if ascii.is_ascii_alphabetic() {
-                ascii.is_uppercase() ^ caps_active
+                base_shift ^ caps_active
             } else {
-                ascii.is_uppercase()
+                base_shift
             };
-            return if self.send_key_stroke(keycode, needs_shift).is_ok() {
+            return if self.send_key_stroke(keycode as u16, needs_shift).is_ok() {
                 InjectResult::Success
             } else {
                 InjectResult::Failed
@@ -381,9 +451,11 @@ impl KeyInjector for UinputInjector {
             return InjectResult::Success;
         }
 
-        let is_ascii = s.chars().all(|c| char_to_linux_keycode(c).is_some());
+        let is_layout_direct = s
+            .chars()
+            .all(|c| crate::layout::char_to_evdev_and_shift(c).is_some());
 
-        if is_ascii {
+        if is_layout_direct {
             for ch in s.chars() {
                 let result = self.send_char(ch);
                 if result != InjectResult::Success {
@@ -396,7 +468,7 @@ impl KeyInjector for UinputInjector {
         if self.paste_via_clipboard(s, 0, self.current_focus_generation()) {
             InjectResult::Success
         } else {
-            eprintln!("[vietc] Unicode insertion failed: clipboard unavailable");
+            eprintln!("[dboard] Unicode insertion failed: clipboard unavailable");
             InjectResult::Failed
         }
     }
@@ -571,7 +643,7 @@ impl UinputInjector {
 
         if text
             .chars()
-            .all(|c| char_to_linux_keycode(c).is_some() || c == '\n')
+            .all(|c| crate::layout::char_to_evdev_and_shift(c).is_some() || c == '\n')
         {
             if backspaces > 0 && self.send_backspaces(backspaces).is_err() {
                 return InjectResult::Failed;
@@ -591,7 +663,7 @@ impl UinputInjector {
         if self.paste_via_clipboard(text, backspaces, focus_generation) {
             InjectResult::Success
         } else {
-            eprintln!("[vietc] Unicode insertion failed: clipboard unavailable");
+            eprintln!("[dboard] Unicode insertion failed: clipboard unavailable");
             InjectResult::Failed
         }
     }

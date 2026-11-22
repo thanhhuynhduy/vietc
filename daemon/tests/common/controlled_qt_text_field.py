@@ -2,8 +2,22 @@
 import signal
 import sys
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QDialog, QLineEdit, QVBoxLayout
+try:
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication, QDialog, QLineEdit, QVBoxLayout
+
+    MODALITY = Qt.WindowModality.ApplicationModal
+    STAY_ON_TOP = Qt.WindowType.WindowStaysOnTopHint
+    FOCUS_REASON = Qt.FocusReason.OtherFocusReason
+    EXEC_METHOD = "exec"
+except ImportError:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication, QDialog, QLineEdit, QVBoxLayout
+
+    MODALITY = Qt.ApplicationModal
+    STAY_ON_TOP = Qt.WindowStaysOnTopHint
+    FOCUS_REASON = Qt.OtherFocusReason
+    EXEC_METHOD = "exec_"
 
 
 def main() -> int:
@@ -11,13 +25,13 @@ def main() -> int:
     app.setApplicationName("Vietc controlled Qt runtime")
 
     dialog = QDialog()
-    dialog.setObjectName("vietc-controlled-qt-dialog")
+    dialog.setObjectName("dboard-controlled-qt-dialog")
     dialog.setWindowTitle("Vietc controlled Qt runtime")
-    dialog.setWindowModality(Qt.ApplicationModal)
-    dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    dialog.setWindowModality(MODALITY)
+    dialog.setWindowFlag(STAY_ON_TOP, True)
 
     field = QLineEdit(dialog)
-    field.setObjectName("vietc-controlled-qt-text-field")
+    field.setObjectName("dboard-controlled-qt-text-field")
     field.setPlaceholderText("Controlled fixture text only")
     field.setMinimumWidth(480)
 
@@ -32,11 +46,11 @@ def main() -> int:
     dialog.show()
     dialog.raise_()
     dialog.activateWindow()
-    field.setFocus(Qt.OtherFocusReason)
+    field.setFocus(FOCUS_REASON)
     field.grabKeyboard()
 
     signal.signal(signal.SIGTERM, lambda *_: dialog.reject())
-    dialog.exec_()
+    getattr(dialog, EXEC_METHOD)()
     return 0
 
 

@@ -1,4 +1,4 @@
-.PHONY: build build-x11 build-ui build-dev test test-ci-smoke test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli test-package run run-x11 run-release clean install install-x11 install-ui install-config deb tarball release fmt lint tree
+.PHONY: build build-ui build-dev test test-ci-smoke test-soak test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli test-package run run-release clean install install-ui install-config deb tarball release fmt lint tree
 
 # Build .deb + tarball release artifacts
 release:
@@ -15,17 +15,13 @@ tarball:
 
 # Build and exercise the Debian package in a clean Ubuntu container
 test-package: deb
-	PACKAGE=$$(find packaging/deb -maxdepth 1 -type f -name 'vietc_*_amd64.deb' -print -quit) && \
+	PACKAGE=$$(find packaging/deb -maxdepth 1 -type f -name 'dboard_*_amd64.deb' -print -quit) && \
 	test -n "$$PACKAGE" && \
 	bash scripts/package-smoke-test.sh "$$PACKAGE"
 
-# Build core crates (default features include x11)
+# Build core crates (Pure Wayland)
 build:
 	cargo build --release
-
-# Build explicitly with X11 support
-build-x11:
-	cargo build --release --features x11
 
 # Build tray icon UI (requires libdbus-1-dev)
 build-ui:
@@ -37,7 +33,7 @@ build-dev:
 
 # Run all workspace tests headlessly
 CARGO_FLAGS ?= --locked
-HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY -u VIETC_RUNTIME_TESTS -u VIETC_CONTROLLED_DISPLAY
+HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY -u DBOARD_RUNTIME_TESTS -u DBOARD_CONTROLLED_DISPLAY
 
 test:
 	$(HEADLESS) cargo test --workspace
@@ -50,60 +46,55 @@ test-ci-smoke:
 	python3 scripts/test_build_targets.py
 	bash -n install.sh uninstall.sh packaging/release.sh packaging/build-tarball.sh packaging/deb/build-deb.sh
 	$(HEADLESS) cargo test --workspace --lib --bins $(CARGO_FLAGS)
-	$(HEADLESS) VIETC_PROPERTY_PROFILE=smoke cargo test -p vietc-engine --tests $(CARGO_FLAGS)
-	$(HEADLESS) cargo test -p vietc-daemon --test deterministic_ci --test typing_corpus $(CARGO_FLAGS) -- --test-threads=1
-	$(HEADLESS) cargo test -p vietc-daemon --test daemon_suite runtime::deterministic_ $(CARGO_FLAGS) -- --test-threads=1
+	$(HEADLESS) DBOARD_PROPERTY_PROFILE=smoke cargo test -p dboard-engine --tests $(CARGO_FLAGS)
+	$(HEADLESS) cargo test -p dboard-daemon --test deterministic_ci --test typing_corpus $(CARGO_FLAGS) -- --test-threads=1
+	$(HEADLESS) cargo test -p dboard-daemon --test daemon_suite runtime::deterministic_ $(CARGO_FLAGS) -- --test-threads=1
 	$(HEADLESS) cargo test --workspace --doc $(CARGO_FLAGS)
 	$(HEADLESS) cargo test --manifest-path ui/Cargo.toml $(CARGO_FLAGS)
 
 # Opt-in controlled runtime targets; requires a disposable GUI session and target dependencies
 test-runtime-targets:
-	VIETC_RUNTIME_TESTS=1 VIETC_CONTROLLED_DISPLAY=1 cargo test -p vietc-daemon --test daemon_suite runtime::privileged_runtime_targets_execute_controlled_scenarios $(CARGO_FLAGS) -- --ignored --nocapture --test-threads=1
+	DBOARD_RUNTIME_TESTS=1 DBOARD_CONTROLLED_DISPLAY=1 cargo test -p dboard-daemon --test daemon_suite runtime::privileged_runtime_targets_execute_controlled_scenarios $(CARGO_FLAGS) -- --ignored --nocapture --test-threads=1
 
 # Opt-in privileged runtime capability evidence; does not launch unvalidated desktop fixtures
 test-runtime-matrix:
-	VIETC_RUNTIME_TESTS=1 cargo test -p vietc-daemon --test daemon_suite runtime::privileged_runtime_matrix_records_exact_ready_and_skip_evidence $(CARGO_FLAGS) -- --ignored --nocapture --test-threads=1
+	DBOARD_RUNTIME_TESTS=1 cargo test -p dboard-daemon --test daemon_suite runtime::privileged_runtime_matrix_records_exact_ready_and_skip_evidence $(CARGO_FLAGS) -- --ignored --nocapture --test-threads=1
 
 # Opt-in exhaustive deterministic property budget
 test-properties-exhaustive:
-	$(HEADLESS) VIETC_PROPERTY_PROFILE=exhaustive cargo test -p vietc-engine --test state_machine_properties -- --nocapture
+	$(HEADLESS) DBOARD_PROPERTY_PROFILE=exhaustive cargo test -p dboard-engine --test state_machine_properties -- --nocapture
+
+# Release-mode 100,000-keystroke soak & latency benchmark (p50/p95/p99)
+test-soak:
+	$(HEADLESS) cargo test --release -p dboard-engine --test soak_perf -- --nocapture
 
 # Run the interactive CLI test harness
 test-cli:
-	cargo run --bin vietc-cli
+	cargo run --bin dboard-cli
 
 # Run the daemon
 run: build-dev
-	cargo run --bin vietc
-
-# Run daemon with X11 support
-run-x11: build-dev
-	cargo run --bin vietc --features x11
+	cargo run --bin dboard
 
 # Run daemon in release mode
 run-release: build
-	target/release/vietc
+	target/release/dboard
 
-# Install to /usr/local/bin
+# Install to /usr/bin (matches dboard.service ExecStart)
 install: build
-	sudo install -m 755 target/release/vietc /usr/local/bin/vietc
-	@echo "Installed vietc to /usr/local/bin/"
-
-# Install with X11 support
-install-x11: build-x11
-	sudo install -m 755 target/release/vietc /usr/local/bin/vietc
-	@echo "Installed vietc (with X11) to /usr/local/bin/"
+	sudo install -m 755 target/release/dboard /usr/bin/dboard-daemon
+	@echo "Installed dboard-daemon to /usr/bin/"
 
 # Install tray icon UI
 install-ui: build-ui
-	sudo install -m 755 ui/target/release/vietc-tray /usr/local/bin/vietc-tray
-	@echo "Installed vietc-tray to /usr/local/bin/"
+	sudo install -m 755 ui/target/release/dboard-tray /usr/bin/dboard-tray
+	@echo "Installed dboard-tray to /usr/bin/"
 
 # Install config to user dir
 install-config:
-	mkdir -p ~/.config/vietc
-	cp vietc.toml ~/.config/vietc/config.toml
-	@echo "Config installed to ~/.config/vietc/config.toml"
+	mkdir -p ~/.config/dboard
+	cp dboard.toml ~/.config/dboard/config.toml
+	@echo "Config installed to ~/.config/dboard/config.toml"
 
 # Clean build artifacts
 clean:

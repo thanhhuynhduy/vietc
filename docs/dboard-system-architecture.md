@@ -1,8 +1,8 @@
-# TÀI LIỆU KIẾN TRÚC HỆ THỐNG TOÀN DIỆN BỘ GÕ TIẾNG VIỆT VIETC
-**VietC — Pure Linux Architecture & System Specification (Authoritative Reference)**
+# TÀI LIỆU KIẾN TRÚC HỆ THỐNG TOÀN DIỆN BỘ GÕ TIẾNG VIỆT DBOARD
+**Dboard — Pure Linux Architecture & System Specification (Authoritative Reference)**
 
 > **TÀI LIỆU CHUẨN KIẾN TRÚC CỐT LÕI (AUTHORITATIVE SYSTEM BLUEPRINT)**  
-> **Áp dụng cho:** Tất cả các kỹ sư, chuyên gia bảo trì và AI Agent phát triển dự án VietC.  
+> **Áp dụng cho:** Tất cả các kỹ sư, chuyên gia bảo trì và AI Agent phát triển dự án Dboard.  
 > **Quy định bắt buộc:** Bất kỳ thay đổi mã nguồn, tái cấu trúc (refactoring), sửa lỗi (bug fixing) hay bổ sung tính năng nào trong tương lai **BẮT BUỘC** phải đọc và tuân thủ tuyệt đối các phân tầng và bất biến được định nghĩa trong tài liệu này. Tuyệt đối nghiêm cấm việc sửa lỗi cục bộ kiểu "chắp vá" (patchwork) phá vỡ tính logic và làm rách nát kiến trúc hệ thống.
 
 ---
@@ -10,7 +10,7 @@
 ## MỤC LỤC CHI TIẾT
 1. [PHẦN 1: TỔNG QUAN, TRIẾT LÝ THIẾT KẾ VÀ BỐI CẢNH HỆ THỐNG](#phần-1-tổng-quan-triết-lý-thiết-kế-và-bối-cảnh-hệ-thống)
    - 1.1. Bối cảnh lịch sử và Vấn đề cốt tử của bộ gõ trên Linux
-   - 1.2. Tuyên ngôn Triết lý Thiết kế của VietC
+   - 1.2. Tuyên ngôn Triết lý Thiết kế của Dboard
    - 1.3. Sơ đồ Tổng thể Kiến trúc Hệ thống Phân tầng
    - 1.4. Phân chia Trách nhiệm giữa các Crate
 2. [PHẦN 2: TẦNG 1 - BẮT PHÍM CẤP KERNEL & TIỀN XỬ LÝ (HARDWARE INTERCEPTION)](#phần-2-tầng-1---bắt-phím-cấp-kernel--tiền-xử-lý-hardware-interception)
@@ -65,9 +65,9 @@ Hệ sinh thái bộ gõ tiếng Việt trên Linux trong nhiều thập kỷ qu
 3. **Sự cô lập của Sandbox Hiện đại (Flatpak / Snap / AppImage):**  
    Các ứng dụng chạy trong sandbox thường bị ngắt kết nối với socket DBus của bộ gõ ngoài host, khiến người dùng không thể gõ tiếng Việt trong trình duyệt hay công cụ làm việc cài từ Flatpak.
 
-### 1.2. Tuyên ngôn Triết lý Thiết kế của VietC
-VietC được xây dựng lại từ đầu với một triết lý hoàn toàn khác biệt:
-- **Nói KHÔNG với IBus và Fcitx5:** VietC là một **Standalone Pure Linux IME Daemon**. Không phụ thuộc vào bất kỳ framework bộ gõ trung gian nào, không can thiệp vào biến môi trường hệ thống.
+### 1.2. Tuyên ngôn Triết lý Thiết kế của Dboard
+Dboard được xây dựng lại từ đầu với một triết lý hoàn toàn khác biệt:
+- **Nói KHÔNG với IBus và Fcitx5:** Dboard là một **Standalone Pure Linux IME Daemon**. Không phụ thuộc vào bất kỳ framework bộ gõ trung gian nào, không can thiệp vào biến môi trường hệ thống.
 - **Trải nghiệm Zero-Underline (Chuẩn Gboard trên Android):** Chữ được gõ thẳng trực tiếp vào ứng dụng đích mà không hề có bất kỳ dấu gạch chân tiền biên tập nào. Trải nghiệm mượt mà, liền mạch như bàn phím di động cao cấp.
 - **Tiếp cận Cấp Thấp (Kernel-Level Hardware Interception):** Bắt trực tiếp tín hiệu phần cứng qua Linux `evdev` và xuất phím thông qua giao thức hiện đại nhất của Wayland (`zwp_virtual_keyboard_v1`) hoặc Linux `/dev/uinput`.
 - **Chuẩn Dấu Thanh Truyền Thống (Old-Style Vietnamese Orthography):** Mặc định đặt dấu thanh chuẩn văn phong tiếng Việt truyền thống (`hòa`, `thủy`, `hóa`, `quỳnh`, `tòa`), bảo tồn tính thẩm mỹ tự nhiên của ngôn ngữ.
@@ -96,19 +96,19 @@ VietC được xây dựng lại từ đầu với một triết lý hoàn toàn
                  │  - XKB Keymap 8-level │        │  - English & Bigram   │
                  └───────────┬───────────┘        └───────────────────────┘
                              │
-                             ▼ Native Wayland / X11 Events
+                             ▼ Native Wayland Events
                  ┌────────────────────────────────────────────────────────┐
                  │  CLIENT APPLICATIONS (Electron, VS Code, Browser, App) │
                  └────────────────────────────────────────────────────────┘
 ```
 
 ### 1.4. Phân chia Trách nhiệm giữa các Crate
-Hệ thống VietC được module hóa nghiêm ngặt thành các crate độc lập:
-1. [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine): Thuần túy tính toán logic tiếng Việt, không chứa bất kỳ lời gọi hệ thống hay giao thức I/O nào. Có thể chạy độc lập trong môi trường WebAssembly hoặc Unit Test.
-2. [`vietc-daemon`](file:///home/thanhhd/Git-projects/vietc/daemon): Tiến trình chạy nền (daemon service), điều phối việc bắt phím phần cứng `evdev`, đồng bộ tiêu điểm AT-SPI, bảo vệ mật khẩu và điều khiển State Machine.
-3. [`vietc-protocol`](file:///home/thanhhd/Git-projects/vietc/protocol): Tầng trừu tượng hóa giao thức xuất phím, chứa bộ nạp Wayland Virtual Keyboard, cấu hình Keymap XKB 8 cấp độ và Linux Uinput.
-4. [`vietc-tray`](file:///home/thanhhd/Git-projects/vietc/ui) (`ui/`): Giao diện khay hệ thống (System Tray `ksni`), giao tiếp hai chiều với daemon qua tệp trạng thái IPC nguyên tử `~/.config/vietc/status` (`vn`/`en`) và `~/.config/vietc/method` (`telex`/`vni`) (`vietc-tray` dùng `inotify`; daemon đồng bộ nền chu kỳ 250ms).
-5. [`vietc-cli`](file:///home/thanhhd/Git-projects/vietc/cli): Công cụ dòng lệnh (Interactive REPL Test Harness) kiểm thử trực tiếp máy trạng thái [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine).
+Hệ thống Dboard được module hóa nghiêm ngặt thành các crate độc lập:
+1. [`dboard-engine`](file:///home/thanhhd/Git-projects/vietc/engine): Thuần túy tính toán logic tiếng Việt, không chứa bất kỳ lời gọi hệ thống hay giao thức I/O nào. Có thể chạy độc lập trong môi trường WebAssembly hoặc Unit Test.
+2. [`dboard-daemon`](file:///home/thanhhd/Git-projects/vietc/daemon): Tiến trình chạy nền (daemon service), điều phối việc bắt phím phần cứng `evdev`, đồng bộ tiêu điểm AT-SPI, bảo vệ mật khẩu và điều khiển State Machine.
+3. [`dboard-protocol`](file:///home/thanhhd/Git-projects/vietc/protocol): Tầng trừu tượng hóa giao thức xuất phím, chứa bộ nạp Wayland Virtual Keyboard, cấu hình Keymap XKB 8 cấp độ và Linux Uinput.
+4. [`dboard-tray`](file:///home/thanhhd/Git-projects/vietc/ui) (`ui/`): Giao diện khay hệ thống (System Tray `ksni`), giao tiếp hai chiều với daemon qua tệp trạng thái IPC nguyên tử `~/.config/dboard/status` (`vn`/`en`) và `~/.config/dboard/method` (`telex`/`vni`) (`dboard-tray` dùng `inotify`; daemon đồng bộ nền chu kỳ 250ms).
+5. [`dboard-cli`](file:///home/thanhhd/Git-projects/vietc/cli): Công cụ dòng lệnh (Interactive REPL Test Harness) kiểm thử trực tiếp máy trạng thái [`dboard-engine`](file:///home/thanhhd/Git-projects/vietc/engine).
 
 ---
 
@@ -117,9 +117,9 @@ Hệ thống VietC được module hóa nghiêm ngặt thành các crate độc 
 Vị trí mã nguồn: [`daemon/src/evdev_loop.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/evdev_loop.rs), [`daemon/src/main.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/main.rs), [`daemon/src/device.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/device.rs).
 
 ### 2.1. Độc quyền Bắt phím cấp Nhân (`evdev grab`) và Vòng lặp `libc::poll`
-- **Cơ chế `grab()`:** Ngay khi khởi động, daemon mở file thiết bị tại `/dev/input/event*` và gửi ioctl `EVIOCGRAB`. Nhân Linux lập tức khóa cổng chuyển tiếp của bàn phím này: toàn bộ sự kiện phím vật lý bị chặn lại, không truyền tới X11, Wayland Compositor hay tty.
+- **Cơ chế `grab()` an toàn:** Ngay khi khởi động, daemon mở file thiết bị tại `/dev/input/event*`, chờ tối đa 400ms (qua `libc::poll`, không `thread::sleep`) để các phím đang giữ (như `Enter` lúc restart service) nhả hết về compositor (`wait_until_keys_released()`), rồi mới gửi ioctl `EVIOCGRAB`. Tiến trình đồng thời bỏ qua `SIGTSTP` (`Ctrl+Z`) để tránh treo bàn phím khi chạy tương tác.
 - **Tối ưu Vòng lặp I/O:** Daemon sử dụng hàm hệ thống `libc::poll` để giám sát tập hợp file descriptors của tất cả các bàn phím đồng thời. Khi có phím bấm, luồng thức dậy ngay lập tức mà không tiêu tốn chu kỳ CPU nào trong trạng thái nghỉ.
-- **Ưu tiên Luồng (Best-effort):** Hàm [`boost_thread_priority()`](file:///home/thanhhd/Git-projects/vietc/daemon/src/main.rs#L44-L48) cố gắng thiết lập mức ưu tiên `nice -10` nếu tiến trình có quyền (trong systemd user service cứng hóa `NoNewPrivileges=yes`, lời gọi này bỏ qua an toàn mà không làm gián đoạn khởi động).
+- **Ưu tiên Luồng (Best-effort):** Hàm [`boost_thread_priority()`](file:///home/thanhhd/Git-projects/vietc/daemon/src/main.rs#L50-L54) cố gắng thiết lập mức ưu tiên `nice -10` nếu tiến trình có quyền (trong systemd user service cứng hóa `NoNewPrivileges=yes`, lời gọi này bỏ qua an toàn mà không làm gián đoạn khởi động).
 
 ### 2.2. Cơ chế Tự động Phát hiện Bàn phím Cắm ngoài (Hotplug Detection)
 Vòng lặp chính duy trì một bộ hẹn giờ định kỳ kiểm tra các thiết bị mới trong `/dev/input/`. Khi phát hiện người dùng cắm thêm bàn phím cơ USB hoặc bàn phím không dây Bluetooth:
@@ -131,16 +131,16 @@ Vòng lặp chính duy trì một bộ hẹn giờ định kỳ kiểm tra các 
 Mỗi sự kiện phím thô bao gồm: `keycode` (mã phím phần cứng), `value` (0 = KeyUp, 1 = KeyDown, 2 = KeyRepeat).
 Cấu trúc [`KeyboardState`](file:///home/thanhhd/Git-projects/vietc/daemon/src/evdev_loop.rs#L178-L194) theo dõi trạng thái phím trên từng thiết bị cùng trạng thái khóa toàn cục:
 - Các phím Modifier vật lý: `Shift_L` (42), `Shift_R` (54), `Ctrl_L` (29), `Ctrl_R` (97), `Alt_L` (56), `Alt_R` (100), `Super_L` (125), `Super_R` (126).
-- Trạng thái khóa: `CapsLock` (58, `XKB_MOD_LOCK`) và `NumLock` (69, `XKB_MOD_MOD2`) đồng bộ qua LED phần cứng (`LED_CAPSL`, `LED_NUML`) và trạng thái virtual keyboard để không bao giờ ghi đè mất trạng thái NumLock của người dùng khi thực hiện giao dịch thay thế.
-- Bộ lọc chống dội phím ([`KeyDeduplicator`](file:///home/thanhhd/Git-projects/vietc/daemon/src/key_dedup.rs)): Loại bỏ các sự kiện trùng lặp bất thường do switch bàn phím cơ chập chờn.
+- Trạng thái khóa: `CapsLock` (58, `XKB_MOD_LOCK`) và `NumLock` (69, `XKB_MOD_MOD2`) được đồng bộ từ LED phần cứng (`LED_CAPSL`, `LED_NUML`) lúc khởi động/hotplug và bảo toàn trên virtual keyboard để không ghi đè mất trạng thái NumLock của người dùng khi thực hiện giao dịch thay thế.
+- Bộ lọc chống dội phím ([`DedupState`](file:///home/thanhhd/Git-projects/vietc/daemon/src/key_dedup.rs)): Loại bỏ các sự kiện trùng lặp bất thường do switch bàn phím cơ chập chờn.
 
 ### 2.4. Phím tắt Chuyển đổi Bộ gõ (`Toggle Method`) và Nuốt phím
-- Phím tắt mặc định xoay vòng chế độ gõ (`EN → VNI → TELEX → EN`) là `Ctrl + Space` hoặc `Alt + Z` (có thể tùy biến trong file cấu hình `~/.config/vietc/config.toml`, xử lý tại [`daemon/src/event.rs:117-183`](file:///home/thanhhd/Git-projects/vietc/daemon/src/event.rs#L117-L183)).
+- Phím tắt mặc định chuyển đổi chế độ gõ là `Ctrl + Space` hoặc `Alt + Z` (tùy biến qua `toggle_key` và `toggle_modes` trong `~/.config/dboard/config.toml`; mặc định `toggle_modes = ["vn", "en"]` bật/tắt 1 chạm, hỗ trợ xoay vòng 3 chế độ `["en", "vni", "telex"]`, xử lý tại [`daemon/src/event.rs:117-183`](file:///home/thanhhd/Git-projects/vietc/daemon/src/event.rs#L117-L183)).
 - **Quy tắc Nuốt phím (Key Consumption):** Khi phát hiện tổ hợp phím tắt được nhấn, daemon lập tức "nuốt" phím kích hoạt (đưa vào `consumed_keys`, không chuyển tiếp tới ứng dụng đích), xóa trạng thái Omnibox Shield, đảo cờ chế độ gõ và cập nhật tệp trạng thái cho khay hệ thống.
 
 ### 2.5. Đồng bộ Cửa sổ và Ứng dụng đích (`FocusTracker`)
 Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus_tracker.rs).
-- Sử dụng giao thức AT-SPI2 DBus Accessibility, Wayland Toplevel Protocol (`zcosmic_toplevel_info_v1` + `ext_foreign_toplevel_list_v1` trên COSMIC Desktop) và cơ chế dự phòng đọc cửa sổ nền (250ms qua `hyprctl`/`swaymsg`/`gdbus`/`xdotool`) để theo dõi cửa sổ đang nhận tiêu điểm nhập liệu (active focused window).
+- Sử dụng giao thức AT-SPI2 DBus Accessibility, Wayland Toplevel Protocol (`zcosmic_toplevel_info_v1` + `ext_foreign_toplevel_list_v1` trên COSMIC Desktop và `zwlr_foreign_toplevel_manager_v1` trên Sway/Hyprland/wlroots) cùng cơ chế dự phòng đọc cửa sổ nền (250ms qua `hyprctl`/`swaymsg`) để theo dõi cửa sổ đang nhận tiêu điểm nhập liệu (active focused window).
 - **Nguyên tắc Reset Tuyệt đối:** Khi tiêu điểm chuyển từ ứng dụng này sang ứng dụng khác (ví dụ: chuyển từ VS Code sang Telegram):
   1. Daemon lập tức gọi `daemon.reset_composition_state()`.
   2. Toàn bộ `raw_buffer` và chuỗi giao dịch đang soạn dở bị hủy bỏ.
@@ -148,8 +148,12 @@ Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-
 
 ### 2.6. Nhận diện và Bảo vệ Ô nhập Mật khẩu (`PasswordDetector`)
 Vị trí mã nguồn: [`daemon/src/password_detector.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/password_detector.rs).
-- Khi người dùng nhấp chuột vào một ô mật khẩu trong trình duyệt hoặc màn hình đăng nhập, AT-SPI Accessibility báo hiệu thuộc tính `ROLE_PASSWORD_TEXT`.
-- VietC lập tức chuyển sang chế độ **Direct Raw Pass-Through**: mọi ký tự phím thô được đẩy thẳng vào ứng dụng mà không qua bất kỳ khâu xử lý ngữ âm tiếng Việt nào, đồng thời không bao giờ lưu trữ các ký tự này trong bất kỳ bộ đệm lịch sử nào.
+- **4 lớp bảo vệ mật khẩu:**
+  1. **AT-SPI2 (`ROLE_PASSWORD_TEXT`):** Bắt sự kiện focus ô mật khẩu trong trình duyệt và ứng dụng native với độ trễ $O(1)$.
+  2. **Window Class:** Danh sách ứng dụng quản lý mật khẩu (`polkit`, `pinentry`, `keepassxc`, `bitwarden`...).
+  3. **Window Title Heuristic:** Từ khóa nhạy cảm trên tiêu đề cửa sổ (Hyprland/Sway).
+  4. **Kernel PTY `ICANON && !ECHO` & `/proc` Descendant (`any_user_pty_echo_disabled()`):** Kiểm tra trực tiếp cờ termios trên `/dev/pts/*` thuộc user (chỉ kích hoạt khi đang focus terminal) để bảo vệ `sudo`, `ssh`, `passwd`, `su`, `doas` chính xác trên mọi Wayland compositor (COSMIC, Hyprland, Sway) mà không ảnh hưởng shell/TUI raw mode (`bash`/`zsh`/`vim`/`tmux`).
+- Khi phát hiện ô mật khẩu, Dboard chuyển sang **Direct Raw Pass-Through**: đẩy thẳng phím thô vào ứng dụng, không biến đổi tiếng Việt và không lưu vào bộ đệm lịch sử.
 
 ### 2.7. Chế độ Bỏ qua Ứng dụng Độ trễ 0ms (`App Bypass Mode`)
 - Đối với các ứng dụng yêu cầu nắm bắt phím thô thời gian thực như trò chơi bắn súng góc nhìn thứ nhất (CS2, Valorant, Minecraft) hoặc phần mềm máy ảo (QEMU, VirtualBox, Remmina RDP), việc phân tích dấu tiếng Việt có thể gây ảnh hưởng đến thao tác di chuyển (`WASD`).
@@ -161,8 +165,8 @@ Vị trí mã nguồn: [`daemon/src/password_detector.rs`](file:///home/thanhhd/
 
 Vị trí mã nguồn: [`engine/src/`](file:///home/thanhhd/Git-projects/vietc/engine/src/).
 
-### 3.1. Thuật toán Lõi Bamboo (`bamboo.rs`) & Quy tắc Âm vần Tiếng Việt
-Lõi xử lý kế thừa và phát triển các nguyên lý tối ưu từ bộ gõ Ngó Sen:
+### 3.1. Kiến trúc Engine Telex Recomposition (`telex/`) & Bamboo VNI (`bamboo.rs`)
+Dboard sử dụng pipeline thuần hàm `TelexBackend::Recomposition` ([`engine/src/telex/`](file:///home/thanhhd/Git-projects/vietc/engine/src/telex/)) làm bộ dựng mặc định cho **Telex**, kết hợp lõi [`bamboo.rs`](file:///home/thanhhd/Git-projects/vietc/engine/src/bamboo.rs) cho **VNI** và xử lý hoàn tác phím đúp (`undo_telex_transform`):
 1. **Cơ chế Bỏ dấu Tự do (Free-Tone Marking):**
    Người dùng có thể gõ phím dấu thanh ở bất kỳ thời điểm nào khi đang gõ từ mà bộ gõ vẫn tính toán đặt dấu đúng trên nguyên âm chính:
    - `toans` $\rightarrow$ `toán`
@@ -175,7 +179,7 @@ Lõi xử lý kế thừa và phát triển các nguyên lý tối ưu từ bộ
    - Phím chữ `đ`: `dd` $\rightarrow$ `đ`, gõ tiếp `d` $\rightarrow$ `dd`.
 
 ### 3.2. Chuẩn Đặt Dấu Thanh: Kiểu Cũ (Old-style Orthography)
-VietC tuân thủ nghiêm ngặt quy tắc đặt dấu thanh truyền thống tại [`engine/src/telex/tone.rs:362-395`](file:///home/thanhhd/Git-projects/vietc/engine/src/telex/tone.rs#L362-L395):
+Dboard tuân thủ nghiêm ngặt quy tắc đặt dấu thanh truyền thống tại [`engine/src/telex/tone.rs:362-395`](file:///home/thanhhd/Git-projects/vietc/engine/src/telex/tone.rs#L362-L395):
 - Khi âm tiết mở (không có phụ âm cuối, `!has_coda`) chứa cặp nguyên âm không dấu (`oa`, `oe`, `uy`): Dấu thanh được đặt trên **nguyên âm thứ nhất** (`active[0]`):
   - `hòa` (KHÔNG PHẢI `hoà`)
   - `thủy` (KHÔNG PHẢI `thuỷ`)
@@ -203,12 +207,14 @@ Vị trí mã nguồn: [`engine/src/ring_buffer.rs`](file:///home/thanhhd/Git-pr
 - **Bất biến Phân định Ranh giới Từ:** Khi người dùng bấm phím phân cách (`is_flush_char`: Space, Enter, dấu chấm, dấu phẩy...), từ hiện tại được coi là đã hoàn tất (`Committed`) và chuyển vào Ring Buffer. Khi bắt đầu gõ từ mới sau dấu phân cách, `raw_buffer` luôn khởi đầu rỗng hoàn toàn.
 - **Quy tắc Hồi phục Có Kiểm soát Khi Xóa Khoảng trắng (`on_backspace_when_idle` & Guarded Rehydration):**
   - Khi người dùng chủ động nhấn `Backspace` xóa hết khoảng trắng ngay sau từ vừa commit, từ đó được đưa vào trạng thái chờ `rehydrated_word = true`.
-  - Tại phím gõ tiếp theo `ch` ([`engine/src/engine.rs:822-831`](file:///home/thanhhd/Git-projects/vietc/engine/src/engine.rs#L822-L831)), hệ thống chỉ cho phép biến đổi từ cũ nếu tổ hợp `raw_buffer + ch` tạo ra sự thay đổi hợp lệ cả về cấu trúc âm tiết (`is_valid_vietnamese_syllable`) lẫn từ điển tiếng Việt (`is_in_vietnamese_dictionary`) (ví dụ: `"xin chao "` + `BS` + `"f"` $\rightarrow$ `"xin chào"`). Nếu không thỏa mãn (ví dụ người dùng xóa Space rồi gõ chữ cái đầu của từ mới như `"cấu "` + `BS` + `"h"`), hệ thống lập tức gọi `clear_word_only()` để tách biệt hoàn toàn từ cũ và khởi tạo từ mới độc lập.
+  - Tại phím gõ tiếp theo `ch` ([`engine/src/engine.rs:810-837`](file:///home/thanhhd/Git-projects/vietc/engine/src/engine.rs#L810-L837)), hệ thống chỉ cho phép biến đổi từ cũ nếu tổ hợp `raw_buffer + ch` tạo ra tiền tố tiếng Việt hợp lệ (`is_valid_vietnamese_prefix && (is_tone_strip || is_in_vietnamese_dictionary_or_prefix)`) hoặc khớp luật sửa phụ âm cuối `resolve_coda_edit_canon` (ví dụ: `"xin chao "` + `BS` + `"f"` $\rightarrow$ `"xin chào"`). Nếu không thỏa mãn (ví dụ người dùng xóa Space rồi gõ chữ cái đầu của từ mới như `"cấu "` + `BS` + `"h"`), hệ thống lập tức gọi `clear_word_only()` để tách biệt hoàn toàn từ cũ và khởi tạo từ mới độc lập.
 
 ### 3.4. Bộ Nhận diện Ngôn ngữ và Tự động Khôi phục Tiếng Anh (`english.rs`, `spelling.rs`)
-- **Tập Từ điển Nhúng:**
+- **Tập Từ điển & Mô hình Ngôn ngữ Nhúng:**
   - `vietnamese.cm.dict`: Bảng từ điển âm tiết tiếng Việt nén tối ưu bộ nhớ.
-  - `english_words.txt`: Danh mục các từ tiếng Anh và thuật ngữ lập trình phổ biến.
+  - `english_words.txt` (Tier 1 ~1.4k từ cốt lõi & lập trình/Linux/COSMIC) + `english_extended.txt` (Tier 2 ~34.3k từ tiếng Anh chuẩn `en_US` đã lọc sạch 100% va chạm với âm tiết Telex tiếng Việt, tổng ~35.7k từ tra cứu nhị phân $O(\log N)$).
+  - [`lm.rs`](file:///home/thanhhd/Git-projects/vietc/engine/src/lm.rs), [`autocorrect.rs`](file:///home/thanhhd/Git-projects/vietc/engine/src/autocorrect.rs), [`user_dict.rs`](file:///home/thanhhd/Git-projects/vietc/engine/src/user_dict.rs): Cửa sổ ngữ cảnh 3 từ (Trigram) + cụm từ ghép tiếng Việt (`bánh tét`, `hồ sơ`, `bác sĩ`, `cảm ơn`...), sửa lỗi không gian bàn phím QWERTY 4 nhóm (`key_distance <= 1.25`: đảo phím VN/EN, lặp phụ âm thừa không phải Telex-undo, trượt phím lân cận QWERTY) có One-Tap Undo (opt-in `autocorrect`), tự động viết hoa đầu câu (opt-in `auto_capitalize`) và từ điển cá nhân thích nghi (`learned:<word>:<count>` tự học sau `>= 2` lần gõ + One-Tap Undo, lưu quyền `0600` qua [`user_dict_store.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/user_dict_store.rs)).
+  - [`surrounding_context.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/surrounding_context.rs), [`focus_sync.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus_sync.rs), [`doctor.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/doctor.rs): Trích xuất ngữ cảnh quanh con trỏ qua AT-SPI2 (`word_at_caret` + `prev_word` cho Bigram/Trigram + `after_sentence_boundary` cho Auto-Cap, an toàn tuyệt đối với Backspace/mật khẩu/giữa từ, hỗ trợ ngang hàng cả Telex & VNI), đồng bộ focus/password dùng chung giữa vòng lặp `evdev` và bộ kiểm thử, và lệnh chẩn đoán `dboard doctor`.
 - **Bảo vệ Từ Lập trình và Từ Mượn:**
   - Nhận diện các từ tiếng Anh có chứa các tổ hợp phím gõ dấu tiếng Việt: `test` (chứa `s`), `windows` (chứa `w`, `s`), `push` (chứa `s`), `git`, `server`, `code`, `commit`.
   - Khi người dùng gõ xong các từ này và nhấn Space, bộ gõ tự động giữ nguyên định dạng tiếng Anh gốc thay vì tạo ra từ tiếng Việt vô nghĩa (như `tét`, `ưindoưs`).
@@ -234,13 +240,15 @@ Vị trí mã nguồn: [`engine/src/ring_buffer.rs`](file:///home/thanhhd/Git-pr
          │             Phím xóa Backspace            │               Phát sự kiện         │
          └───────────────────────────────────────────┴────────────────────────────────────┘
 ```
-- Khi ở trạng thái `COMPOSING`, mỗi phím biến đổi dấu sẽ sinh ra một cấu trúc [`Replacement`](file:///home/thanhhd/Git-projects/vietc/engine/src/event.rs#L17-L23):
+- Khi ở trạng thái `COMPOSING`, mỗi phím biến đổi dấu sẽ sinh ra một cấu trúc [`Replacement`](file:///home/thanhhd/Git-projects/vietc/engine/src/state.rs#L71-L79):
   ```rust
   pub struct Replacement {
+      pub version: u64,
       pub delete_before_cursor: usize, // Số ký tự Unicode scalar cần xóa lùi
       pub insert: String,              // Chuỗi ký tự mới cần chèn vào
-      pub reason: ReplacementReason,   // Lý do biến đổi (ApplyTransform, ReplaceTransform, UndoTransform, AutoRestore, Macro, Edit)
-      pub revision: u64,               // Phiên bản hiển thị đơn điệu
+      pub expected_visible_revision: u64,
+      pub transform_generation: Option<u64>,
+      pub reason: ReplacementReason,   // ApplyTransform, ReplaceTransform, UndoTransform, AutoRestore, Macro, Edit
   }
   ```
 
@@ -250,19 +258,18 @@ Vị trí mã nguồn: [`engine/src/ring_buffer.rs`](file:///home/thanhhd/Git-pr
 
 Vị trí mã nguồn: [`protocol/src/wayland_vk.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/wayland_vk.rs), [`protocol/src/wayland_vk_keymap.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/wayland_vk_keymap.rs), [`protocol/src/uinput_monitor.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/uinput_monitor.rs).
 
-### 4.1. Điều phối Giao thức Kép & Phạm vi Hỗ trợ Thực tế (Tier 1 vs Tier 2)
-VietC áp dụng mô hình phối hợp giao thức phân tầng tùy theo khả năng của Compositor:
-1. **Tier 1 — Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1`, Zero-Clipboard):**  
-   Được sử dụng làm kênh xuất phím mặc định và ưu tiên cao nhất trên các Wayland Compositor hỗ trợ giao thức `zwp_virtual_keyboard_v1` (**COSMIC Desktop, Hyprland, Sway và các wlroots compositor**). Kết nối trực tiếp với Wayland Compositor qua Unix Socket (chỉ chạy non-root qua `uaccess`, từ chối `euid == 0`), cho phép chèn ký tự Unicode chính xác tuyệt đối với độ trễ thấp mà không cần can thiệp Clipboard.  
-   *Giới hạn hiện tại:* Bố cục phím tĩnh (`wayland_vk_keymap.rs` và `daemon/src/event.rs`) hiện ánh xạ cứng theo chuẩn **US QWERTY**.
-2. **Tier 2 — Linux `/dev/uinput` + Clipboard / X11 Fallback:**  
-   Được sử dụng tự động trên các môi trường chưa hỗ trợ `zwp_virtual_keyboard_v1` không đặc quyền (**GNOME Mutter, KDE KWin**) cũng như phiên **X11** truyền thống hoặc TTY. Ở chế độ này, ký tự tiếng Việt có dấu được chèn qua giao dịch clipboard (`wl-copy`/`wayland_clipboard` hoặc `X11` selection) kết hợp phím dán `uinput`/`XTest`.
+### 4.1. Phạm vi Hỗ trợ Thực tế (Pure Wayland — US QWERTY)
+Dboard tập trung tối ưu hoàn toàn cho **Pure Wayland + US QWERTY**:
+1. **Kênh chính — Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1`, Zero-Clipboard):**  
+   Chạy trên các Wayland Compositor hỗ trợ `zwp_virtual_keyboard_v1` (**COSMIC Desktop, Hyprland, Sway và các wlroots compositor**) với bố cục bàn phím **US QWERTY** ([`protocol/src/layout.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/layout.rs)). Kết nối trực tiếp với Wayland Compositor qua Unix Socket (chỉ chạy non-root qua `uaccess`, từ chối `euid == 0`), chèn toàn bộ 134 ký tự tiếng Việt + ASCII chuẩn với độ trễ gần 0ms mà không can thiệp Clipboard.
+2. **Wayland Clipboard cho ký tự ngoài Keymap (Emoji / Ký tự đặc biệt trong Macro):**  
+   Dùng `ext_data_control_manager_v1` / `zwlr_data_control_manager_v1` kết hợp `/dev/uinput` chỉ khi chuỗi thay thế chứa ký tự ngoài bảng 8 cấp độ (ví dụ emoji trong macro). Không hỗ trợ GNOME Wayland, KDE Plasma Wayland, X11, hay bố cục bàn phím ngoài US QWERTY.
 
 ### 4.2. Bố cục Keymap Tĩnh XKB 8 Cấp độ (`wayland_vk_keymap.rs`)
-Đây là phát minh kỹ thuật đột phá của VietC nhằm loại bỏ hoàn toàn hiện tượng nhấp nháy gạch chân:
+Đây là phát minh kỹ thuật đột phá của Dboard nhằm loại bỏ hoàn toàn hiện tượng nhấp nháy gạch chân:
 - **Nguyên lý Upload Duy nhất 1 Lần:** Keymap XKB hoàn chỉnh được biên dịch thành chuỗi định dạng XKB v1 và đẩy lên Compositor thông qua shared memory (`memfd_create`) **duy nhất một lần** trong suốt vòng đời của daemon.
-- **Cấu trúc 8 Cấp độ (`VIETC_EIGHT_LEVEL`):**
-  Mỗi phím chữ cái vật lý (từ `KEY_Q` đến `KEY_M`) được định nghĩa 8 ký tự tương ứng với các trạng thái tổ hợp modifier:
+- **Cấu trúc 8 Cấp độ (`DBOARD_EIGHT_LEVEL`):**
+  23 phím chữ cái vật lý (`Q..P`, `A..L`, `Z..V`, evdev `16..=47`; 3 phím `B`, `N`, `M` dùng 2 cấp độ chuẩn) được định nghĩa 8 ký tự tương ứng với các trạng thái tổ hợp modifier:
   - Cấp 1: Ký tự chữ thường cơ bản (Base, ví dụ: `a`)
   - Cấp 2: Ký tự chữ hoa cơ bản (`Shift`, ví dụ: `A`)
   - Cấp 3: Ký tự tiếng Việt thường nhóm 1 (`Mod5`, ví dụ: `á`)
@@ -275,16 +282,15 @@ VietC áp dụng mô hình phối hợp giao thức phân tầng tùy theo khả
 
 ### 4.3. Giới hạn Dải Keycode An toàn (`1..=111`) Tránh Xung đột Trình duyệt
 - **Vấn đề Kỹ thuật:** Trong nhân Linux, các keycode $\ge 112$ tương ứng với các phím đặc biệt (ví dụ: 127 = `KEY_COMPOSE`/`ContextMenu`, 131 = `KEY_UNDO`, 133 = `KEY_COPY`, 137 = `KEY_CUT`, 135 = `KEY_PASTE`). Trình duyệt Chromium, Electron (VS Code, Slack) lắng nghe các keycode này ở cấp độ sâu và sẽ tự động kích hoạt menu ngữ cảnh hoặc thực hiện lệnh Paste ngoài ý muốn.
-- **Quy tắc Bất biến:** Toàn bộ keymap ảo của VietC chỉ sử dụng các keycode trong dải an toàn từ `1` đến `111` (bao gồm các phím số, chữ cái và ký tự đặc biệt tiêu chuẩn trên bàn phím ANSI/ISO 104-key).
+- **Quy tắc Bất biến:** Mọi sự kiện phím gõ/điều hướng mà Virtual Keyboard phát ra (`is_vk_typing_or_nav_keycode`) đều nằm trong dải an toàn `1..=111` (các phím `LWIN=125`/`RWIN=126` chỉ khai báo trong bảng XKB `STANDARD_KEYS` làm metadata modifier và luôn được chuyển tiếp nguyên bản qua `/dev/uinput`).
 
 ### 4.4. Quy trình Thay thế Văn bản Nguyên tử (`replace_text`)
-Mỗi giao dịch thay thế ký tự diễn ra tuần tự và nguyên tử qua 6 bước khép kín:
-1. **Đóng băng Modifier Vật lý:** Tạm thời nhả trạng thái `Shift` hoặc `CapsLock` của người dùng để tránh làm biến dạng thao tác xóa lùi.
-2. **Phát chuỗi Backspace:** Gửi chính xác $N$ sự kiện `KEY_BACKSPACE` (mỗi sự kiện gồm KeyDown và KeyUp liên tục) để xóa đúng số lượng ký tự hiển thị cũ.
-3. **Flush Xóa:** Đồng bộ sự kiện xóa tới Compositor để đảm bảo con trỏ đã lùi về vị trí mong muốn.
-4. **Phát ký tự Mới:** Thiết lập bitmask modifier tương ứng với Level của ký tự tiếng Việt, gửi sự kiện KeyDown + KeyUp của phím vật lý mang ký tự đó.
-5. **Khôi phục Modifier Vật lý:** Trả lại trạng thái `Shift`/`CapsLock` ban đầu của người dùng.
-6. **Flush Giao dịch:** Hoàn tất transaction, giải phóng lock.
+Mỗi giao dịch thay thế ký tự diễn ra tuần tự và nguyên tử trong 1 batch Wayland khép kín:
+1. **Đóng băng Modifier Vật lý:** Tạm thời nhả trạng thái `Shift` của người dùng trong khi bảo toàn `CapsLock` (`XKB_MOD_LOCK`) và `NumLock` (`XKB_MOD_MOD2`).
+2. **Xóa Omnibox Suffix (nếu có):** Phát `KEY_DELETE` (111) khi `Omnibox Shield` đang kích hoạt.
+3. **Phát chuỗi Backspace:** Xếp hàng chính xác $N$ sự kiện `KEY_BACKSPACE` (KeyDown + KeyUp).
+4. **Phát ký tự Mới:** Thiết lập bitmask modifier tương ứng với Level của ký tự tiếng Việt, xếp hàng sự kiện KeyDown + KeyUp của phím vật lý mang ký tự đó.
+5. **Khôi phục Modifier Vật lý & Flush:** Trả lại trạng thái `Shift`/`CapsLock`/`NumLock` ban đầu và gọi `flush_and_drain()` một lần duy nhất cho toàn bộ giao dịch.
 
 ### 4.5. Phân tích Hiện tượng Đè phím (Key Overlap) và Giải pháp Atomic Space
 - **Hiện tượng Dính chữ (`báovới`, `màyvừasửa`):**  
@@ -296,7 +302,7 @@ Mỗi giao dịch thay thế ký tự diễn ra tuần tự và nguyên tử qua
   Khi phát hiện ký tự phân cách (`KEY_SPACE`), daemon luôn phát **nguyên tử cả cụm KeyDown và KeyUp liên tiếp ngay lập tức** trong cùng một transaction. Nhờ đó, khoảng trắng luôn được chèn hoàn tất vào tài liệu trước khi ký tự của từ tiếp theo bắt đầu xuất hiện.
 
 ### 4.6. Trọng tài Đơn điệu Thời gian (Monotonic Timestamp FIFO)
-- Mọi sự kiện phím ảo phát ra từ VietC đều được gắn timestamp tăng đơn điệu:
+- Mọi sự kiện phím ảo phát ra từ Dboard đều được gắn timestamp tăng đơn điệu:
   $$t_{\text{event}_{i+1}} \ge t_{\text{event}_i}$$
 - Nghiêm cấm tình trạng sự kiện chèn ký tự có timestamp nhỏ hơn hoặc bằng sự kiện xóa Backspace đứng trước nó, ngăn ngừa triệt để lỗi Chromium sắp xếp lại sự kiện và làm đảo lộn trật tự văn bản.
 
@@ -307,15 +313,15 @@ Mỗi giao dịch thay thế ký tự diễn ra tuần tự và nguyên tử qua
 ### 5.1. Chrome / Chromium Omnibox Autocomplete & Selection Shield
 Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus_tracker.rs), [`daemon/src/focus.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus.rs), [`protocol/src/wayland_vk.rs:431-436`](file:///home/thanhhd/Git-projects/vietc/protocol/src/wayland_vk.rs#L431-L436).
 - **Vấn đề:** Khi gõ vào thanh địa chỉ của Google Chrome hoặc Microsoft Edge, trình duyệt tự động gợi ý URL và bôi đen phần gợi ý (ví dụ: gõ `h` $\rightarrow$ gợi ý `h[ttps://google.com]`). Nếu người dùng gõ tiếp `o` và `f` để tạo thành `hòa`, phím `Backspace` đầu tiên sẽ chỉ xóa phần gợi ý đang bôi đen thay vì xóa ký tự `o` đứng trước con trỏ.
-- **Cơ chế Omnibox Shield:** VietC lắng nghe sự kiện `TextSelectionChanged` từ AT-SPI. Khi phát hiện vùng bôi đen nội tuyến (inline autocomplete suffix) đang hoạt động trong khi bộ đệm từ đang soạn dở (`buf_before > 0`), daemon sẽ phát trước 1 phím `KEY_DELETE` (keycode `111`, `extra_deletes_after_caret = 1`) để xóa bỏ phần gợi ý bôi đen phía sau con trỏ, sau đó mới phát chính xác $N$ phím `KEY_BACKSPACE` và chèn ký tự tiếng Việt.
+- **Cơ chế Omnibox Shield:** Dboard lắng nghe sự kiện `TextSelectionChanged` từ AT-SPI. Khi phát hiện vùng bôi đen nội tuyến (inline autocomplete suffix) đang hoạt động trong khi bộ đệm từ đang soạn dở (`buf_before > 0`), daemon sẽ phát trước 1 phím `KEY_DELETE` (keycode `111`, `extra_deletes_after_caret = 1`) để xóa bỏ phần gợi ý bôi đen phía sau con trỏ, sau đó mới phát chính xác $N$ phím `KEY_BACKSPACE` và chèn ký tự tiếng Việt.
 
 ### 5.2. Trình soạn thảo Hiện đại (VS Code, Sublime Text, JetBrains)
 - Các IDE hiện đại thường có tính năng tự động đóng ngoặc (`Auto Closing Quotes / Brackets`) và hỗ trợ nhiều con trỏ đồng thời (Multi-Cursor).
-- VietC đảm bảo không sử dụng phím giả lập di chuyển con trỏ bất thường, duy trì tính nguyên tử trong mỗi lệnh thay thế để không làm gãy ngữ cảnh của các extension phân tích cú pháp (Language Server Protocol - LSP).
+- Dboard đảm bảo không sử dụng phím giả lập di chuyển con trỏ bất thường, duy trì tính nguyên tử trong mỗi lệnh thay thế để không làm gãy ngữ cảnh của các extension phân tích cú pháp (Language Server Protocol - LSP).
 
 ### 5.3. Trình giả lập Thiết bị đầu cuối (Terminal Emulators & Shells)
 - Các terminal như Alacritty, Foot, Kitty, GNOME Terminal hoạt động ở chế độ ký tự thô (Raw Mode/Readline).
-- VietC tôn trọng hoàn toàn các tổ hợp phím điều khiển hệ thống (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, `Ctrl+L`) và chế độ phím `vi-mode` trong Zsh/Bash, chuyển tiếp trực tiếp các lệnh này mà không can thiệp.
+- Dboard tôn trọng hoàn toàn các tổ hợp phím điều khiển hệ thống (`Ctrl+C`, `Ctrl+D`, `Ctrl+Z`, `Ctrl+L`) và chế độ phím `vi-mode` trong Zsh/Bash, chuyển tiếp trực tiếp các lệnh này mà không can thiệp.
 
 ### 5.4. Ứng dụng Nền tảng Electron / CEF / Slack / Discord
 - Ứng dụng Electron chạy một vòng lặp sự kiện đồ họa riêng biệt và rất nhạy cảm với tốc độ đẩy phím ảo.
@@ -325,7 +331,7 @@ Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-
 
 # PHẦN 6: BỘ BẤT BIẾN KIẾN TRÚC CỐT TỬ (ARCHITECTURAL INVARIANTS)
 
-Bất kỳ lập trình viên nào khi chỉnh sửa mã nguồn VietC đều phải tuân thủ nghiêm ngặt 6 Bất biến sau đây. Vi phạm bất kỳ bất biến nào đều bị coi là lỗi kiến trúc nghiêm trọng:
+Bất kỳ lập trình viên nào khi chỉnh sửa mã nguồn Dboard đều phải tuân thủ nghiêm ngặt 6 Bất biến sau đây. Vi phạm bất kỳ bất biến nào đều bị coi là lỗi kiến trúc nghiêm trọng:
 
 ### ⚠️ BẤT BIẾN 1: TÍNH ĐỘC LẬP CỦA RANH GIỚI TỪ (WORD BOUNDARY ISOLATION)
 - Khi một từ được kết thúc bằng phím phân cách (`Space`, Enter, dấu câu), từ đó thuộc về văn bản của tài liệu và `raw_buffer` được làm rỗng hoàn toàn cho từ tiếp theo.
@@ -342,7 +348,7 @@ Bất kỳ lập trình viên nào khi chỉnh sửa mã nguồn VietC đều ph
 
 ### ⚠️ BẤT BIẾN 4: ZERO-SLEEP TRONG LUỒNG NHANH (NON-BLOCKING FAST PATH)
 - Nghiêm cấm việc đặt các lệnh tạm dừng luồng như `std::thread::sleep` trong vòng lặp chính `evdev_loop` hoặc đường truyền tốc độ cao `WaylandVirtualKeyboard` (`wayland_vk.rs`).
-- Mọi thao tác chờ đồng bộ trên fast path phải sử dụng cơ chế Non-blocking I/O (`libc::poll`) hoặc Socket Flush của giao thức Wayland. *(Ghi chú: các nhánh fallback Tier 2 dùng Clipboard/X11 vẫn sử dụng khoảng chờ đồng bộ có giới hạn để chờ ứng dụng đích nhận selection).*
+- Mọi thao tác chờ đồng bộ trên fast path phải sử dụng cơ chế Non-blocking I/O (`libc::poll`) hoặc Socket Flush của giao thức Wayland. *(Ghi chú: nhánh Wayland Clipboard dùng cho emoji/ký tự ngoài keymap vẫn sử dụng khoảng chờ đồng bộ có giới hạn để chờ ứng dụng đích nhận selection).*
 
 ### ⚠️ BẤT BIẾN 5: CỔNG KIỂM SOÁT KÍCH THƯỚC MÃ NGUỒN (SOURCE SIZE QUALITY GATE)
 - Để tránh việc mã nguồn phình to mất kiểm soát dẫn đến code bẩn khó bảo trì, hệ thống duy trì công cụ kiểm tra tự động `scripts/check_source_size.py`:
@@ -388,7 +394,7 @@ Yêu cầu: Toàn bộ lệnh phải trả về exit code `0` mà không có b�
 ```bash
 make test-ci-smoke
 ```
-Yêu cầu: Toàn bộ Unit Test, Property Test và Deterministic Integration Test của tất cả các crate (`vietc-engine`, `vietc-protocol`, `vietc-daemon`, `vietc-cli`, `vietc-tray`) phải vượt qua 100%.
+Yêu cầu: Toàn bộ Unit Test, Property Test và Deterministic Integration Test của tất cả các crate (`dboard-engine`, `dboard-protocol`, `dboard-daemon`, `dboard-cli`, `dboard-tray`) phải vượt qua 100%.
 
 ### 7.3. Kịch bản Kiểm thử Áp lực Người dùng Văn phòng (Office Stress Test Suite)
 Bộ test case giả lập hành vi gõ thực tế của người dùng văn phòng với tốc độ cao và sửa lỗi liên tục:
@@ -408,4 +414,4 @@ Bộ test case giả lập hành vi gõ thực tế của người dùng văn ph
 
 ---
 *Dự án kế thừa và phát triển trên nền tảng dự án gốc [vietc](https://github.com/vndangkhoa/vietc) của tác giả Võ Nguyễn Đăng Khoa (@vndangkhoa).*
-*(Hết tài liệu kiến trúc hệ thống VietC)*
+*(Hết tài liệu kiến trúc hệ thống Dboard)*
