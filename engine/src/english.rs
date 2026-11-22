@@ -221,14 +221,10 @@ pub fn is_alphanumeric_tech_token(raw: &str) -> bool {
         return true;
     }
     let chars: Vec<char> = lower.chars().collect();
-    if chars.len() >= 3
+    chars.len() >= 3
         && chars[0].is_ascii_alphabetic()
         && chars[1..].iter().all(|c| c.is_ascii_digit())
         && chars[1] != chars[2]
-    {
-        return true;
-    }
-    false
 }
 
 /// Detect mixed internal uppercase tech casing (`"DDoS"`, `"GraphQL"`, `"PyTorch"`, `"iPhone"`, `"macOS"`)
@@ -605,13 +601,8 @@ pub fn is_path_or_code_context(
     }
 
     // 3. Kebab-case or Snake-case identifier (`WEB-INF`, `my-app`, `ioffice_web`)
-    if (is_prev_hyphen || is_next_hyphen)
+    (is_prev_hyphen || is_next_hyphen)
         && (is_tech_token(&raw_lower)
             || dict.is_english_word(&raw_lower)
             || is_alphanumeric_tech_token(raw))
-    {
-        return true;
-    }
-
-    false
 }

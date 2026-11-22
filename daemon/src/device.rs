@@ -302,6 +302,9 @@ pub fn open_keyboard_devices() -> Result<Vec<(evdev::Device, String)>, Box<dyn s
             )
             .into())
         }
+    } else if dir.exists() {
+        log_info("[vietc] No keyboard device found at startup — waiting for hotplug");
+        Ok(Vec::new())
     } else {
         Err("No keyboard device found".into())
     }

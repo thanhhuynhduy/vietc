@@ -18,7 +18,8 @@ use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 
 use crate::wayland_vk_keymap::{
-    build_xkb_keymap, char_to_vk_stroke, is_vk_typing_or_nav_keycode, XKB_MOD_LOCK, XKB_MOD_SHIFT,
+    build_xkb_keymap, char_to_vk_stroke, is_vk_typing_or_nav_keycode, XKB_MOD_LOCK, XKB_MOD_MOD2,
+    XKB_MOD_SHIFT,
 };
 
 #[allow(
@@ -100,6 +101,7 @@ struct VkSession {
     left_shift: bool,
     right_shift: bool,
     caps_lock: bool,
+    num_lock: bool,
 }
 
 pub(crate) struct WaylandVirtualKeyboard {
@@ -172,6 +174,7 @@ impl WaylandVirtualKeyboard {
                 left_shift: false,
                 right_shift: false,
                 caps_lock: false,
+                num_lock: false,
             }),
             healthy: AtomicBool::new(true),
         })
@@ -199,6 +202,26 @@ impl WaylandVirtualKeyboard {
             return;
         }
         sess.caps_lock = enabled;
+        let depressed = sess.phys_depressed();
+        let locked = sess.phys_locked();
+        sess.vk.modifiers(depressed, 0, locked, 0);
+        if sess.flush_and_drain().is_err() {
+            self.healthy.store(false, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn set_num_lock(&self, enabled: bool) {
+        if !self.is_healthy() {
+            return;
+        }
+        let mut sess = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if sess.num_lock == enabled {
+            return;
+        }
+        sess.num_lock = enabled;
         let depressed = sess.phys_depressed();
         let locked = sess.phys_locked();
         sess.vk.modifiers(depressed, 0, locked, 0);
@@ -285,9 +308,9 @@ impl WaylandVirtualKeyboard {
             return false;
         }
 
-        let ts = sess.next_timestamp_ms();
         match value {
             1 => {
+                let ts = sess.next_timestamp_ms();
                 sess.set_bit(keycode, true);
                 sess.vk.key(ts, keycode as u32, 1);
             }
@@ -295,10 +318,14 @@ impl WaylandVirtualKeyboard {
                 if !was_pressed_on_vk {
                     return false;
                 }
-                sess.vk.key(ts, keycode as u32, 0);
-                sess.vk.key(ts, keycode as u32, 1);
+                // Wayland compositors synthesize key-repeat natively on `wl_keyboard`
+                // while a key remains pressed (`state = 1`). Emitting synthetic
+                // release+press pairs here would double-repeat held keys and violate
+                // strict per-event monotonic timestamps.
+                return true;
             }
             0 => {
+                let ts = sess.next_timestamp_ms();
                 sess.set_bit(keycode, false);
                 sess.vk.key(ts, keycode as u32, 0);
             }
@@ -437,9 +464,11 @@ impl WaylandVirtualKeyboard {
         }
 
         // Neutralize Shift and CapsLock during atomic edit so BackSpace/Delete
-        // and ASCII case are 100% deterministic regardless of physical keys.
+        // and ASCII case are 100% deterministic regardless of physical keys,
+        // while preserving NumLock (Mod2) so the compositor never disables it.
+        let edit_locked = sess.num_lock_mask();
         let mut active_depressed = 0u32;
-        sess.vk.modifiers(0, 0, 0, 0);
+        sess.vk.modifiers(0, 0, edit_locked, 0);
 
         for _ in 0..extra_deletes_after_caret {
             let ts = sess.next_timestamp_ms();
@@ -457,7 +486,7 @@ impl WaylandVirtualKeyboard {
         for stroke in strokes {
             let needed_depressed = stroke.modifiers;
             if needed_depressed != active_depressed {
-                sess.vk.modifiers(needed_depressed, 0, 0, 0);
+                sess.vk.modifiers(needed_depressed, 0, edit_locked, 0);
                 active_depressed = needed_depressed;
             }
             let ts = sess.next_timestamp_ms();
@@ -466,10 +495,10 @@ impl WaylandVirtualKeyboard {
             sess.vk.key(ts, stroke.evdev_code, 0);
         }
 
-        // Restore physical Shift + CapsLock state for subsequent pass-through keys.
+        // Restore physical Shift + CapsLock + NumLock state for subsequent pass-through keys.
         let restored_dep = sess.phys_depressed();
         let restored_lck = sess.phys_locked();
-        if active_depressed != restored_dep || restored_lck != 0 {
+        if active_depressed != restored_dep || restored_lck != edit_locked {
             sess.vk.modifiers(restored_dep, 0, restored_lck, 0);
         }
 
@@ -499,12 +528,21 @@ impl VkSession {
     }
 
     #[inline]
-    fn phys_locked(&self) -> u32 {
-        if self.caps_lock {
-            XKB_MOD_LOCK
+    fn num_lock_mask(&self) -> u32 {
+        if self.num_lock {
+            XKB_MOD_MOD2
         } else {
             0
         }
+    }
+
+    #[inline]
+    fn phys_locked(&self) -> u32 {
+        let mut locked = self.num_lock_mask();
+        if self.caps_lock {
+            locked |= XKB_MOD_LOCK;
+        }
+        locked
     }
 
     #[inline]
@@ -812,6 +850,7 @@ mod tests {
 
             // 3. Read atomic replacement: extra_deletes=1, backspaces=2, text="Việt"
             let mut key_ops = Vec::new();
+            let mut mod_ops = Vec::new();
             loop {
                 let (obj, op, args) = read_msg(&mut server);
                 if obj == vk_id && op == 3 {
@@ -822,9 +861,13 @@ mod tests {
                     let key = u32_ne(&args[4..]);
                     let state = u32_ne(&args[8..]);
                     key_ops.push((key, state));
+                } else if obj == vk_id && op == 2 {
+                    let depressed = u32_ne(&args[0..4]);
+                    let locked = u32_ne(&args[8..12]);
+                    mod_ops.push((depressed, locked));
                 }
             }
-            key_ops
+            (key_ops, mod_ops)
         });
 
         let conn = Connection::from_socket(client).unwrap();
@@ -835,10 +878,26 @@ mod tests {
         ));
         assert!(!WaylandVirtualKeyboard::can_encode_str("🚀"));
 
+        vk.set_num_lock(true);
+        vk.set_caps_lock(true);
+        // Held key press + hardware repeat (value=2) + release must not emit
+        // synthetic release/press pairs (compositor handles native key repeat).
+        assert!(vk.send_key_event(30, 1, false));
+        assert!(vk.send_key_event(30, 2, false));
+        assert!(vk.send_key_event(30, 0, false));
         vk.replace_text(2, 1, "Việt").unwrap();
         drop(vk);
 
-        let key_ops = server_thread.join().unwrap();
+        let (key_ops, mod_ops) = server_thread.join().unwrap();
+        assert!(
+            !mod_ops.is_empty() && mod_ops.iter().all(|&(_, locked)| (locked & XKB_MOD_MOD2) != 0),
+            "NumLock (XKB_MOD_MOD2) must never be cleared during virtual-keyboard modifier updates: {mod_ops:?}"
+        );
+        assert_eq!(
+            mod_ops.last().copied(),
+            Some((0, XKB_MOD_LOCK | XKB_MOD_MOD2)),
+            "CapsLock and NumLock must both be restored after atomic replacement"
+        );
         let v_stroke = char_to_vk_stroke('V').unwrap();
         let i_stroke = char_to_vk_stroke('i').unwrap();
         let e_stroke = char_to_vk_stroke('ệ').unwrap();
@@ -847,6 +906,8 @@ mod tests {
         assert_eq!(
             key_ops,
             vec![
+                (30, 1),
+                (30, 0),
                 (KEY_DELETE, 1),
                 (KEY_DELETE, 0),
                 (KEY_BACKSPACE, 1),

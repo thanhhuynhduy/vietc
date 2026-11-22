@@ -434,14 +434,14 @@ if [ -n "$INSTALLING_USER" ] && [ "$INSTALLING_USER" != "root" ] && [ -n "$USER_
           "$USER_HOME/.config/autostart/vietc.desktop" 2>/dev/null || true
 fi
 
-# Udev rules & uinput kernel module (active-seat uaccess, MODE=0600, GROUP=root)
+# Udev rules & uinput kernel module (active-seat uaccess; preserve distro input group on event*)
 mkdir -p /etc/modules-load.d
 echo "uinput" > /etc/modules-load.d/vietc.conf
 modprobe uinput 2>/dev/null || true
 rm -f /etc/udev/rules.d/99-vietc.rules
 cat > /etc/udev/rules.d/70-vietc.rules << 'EOF'
 KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", GROUP="root", MODE="0600"
-SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess", GROUP="root", MODE="0600"
+SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess"
 EOF
 chmod o-rw /dev/uinput /dev/input/event* 2>/dev/null || true
 udevadm control --reload-rules 2>/dev/null || true

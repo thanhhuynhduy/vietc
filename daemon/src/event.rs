@@ -86,6 +86,34 @@ pub fn is_caps_lock_on(device: &evdev::Device) -> bool {
     }
 }
 
+pub fn is_num_lock_on(device: &evdev::Device) -> bool {
+    if let Ok(leds) = device.get_led_state() {
+        leds.contains(evdev::LedCode::LED_NUML)
+    } else {
+        false
+    }
+}
+
+pub fn update_keyboard_state(
+    key_state: &mut evdev::AttributeSet<evdev::KeyCode>,
+    caps_lock: &mut bool,
+    num_lock: &mut bool,
+    key: evdev::KeyCode,
+    value: i32,
+) {
+    if value == 1 {
+        key_state.insert(key);
+    } else if value == 0 {
+        key_state.remove(key);
+    }
+
+    if key == evdev::KeyCode::KEY_CAPSLOCK && value == 1 {
+        *caps_lock = !*caps_lock;
+    } else if key == evdev::KeyCode::KEY_NUMLOCK && value == 1 {
+        *num_lock = !*num_lock;
+    }
+}
+
 pub fn is_toggle_key(key: evdev::KeyCode, key_name: &str) -> bool {
     let lower = key_name.to_lowercase();
     if matches!(lower.as_str(), "alt+z" | "z") {

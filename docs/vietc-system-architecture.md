@@ -107,7 +107,7 @@ Hệ thống VietC được module hóa nghiêm ngặt thành các crate độc 
 1. [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine): Thuần túy tính toán logic tiếng Việt, không chứa bất kỳ lời gọi hệ thống hay giao thức I/O nào. Có thể chạy độc lập trong môi trường WebAssembly hoặc Unit Test.
 2. [`vietc-daemon`](file:///home/thanhhd/Git-projects/vietc/daemon): Tiến trình chạy nền (daemon service), điều phối việc bắt phím phần cứng `evdev`, đồng bộ tiêu điểm AT-SPI, bảo vệ mật khẩu và điều khiển State Machine.
 3. [`vietc-protocol`](file:///home/thanhhd/Git-projects/vietc/protocol): Tầng trừu tượng hóa giao thức xuất phím, chứa bộ nạp Wayland Virtual Keyboard, cấu hình Keymap XKB 8 cấp độ và Linux Uinput.
-4. [`vietc-tray`](file:///home/thanhhd/Git-projects/vietc/ui) (`ui/`): Giao diện khay hệ thống (System Tray `ksni`), giao tiếp hai chiều với daemon qua tệp trạng thái IPC nguyên tử `~/.config/vietc/status` (`vn`/`en`) và `~/.config/vietc/method` (`telex`/`vni`) kết hợp `inotify`.
+4. [`vietc-tray`](file:///home/thanhhd/Git-projects/vietc/ui) (`ui/`): Giao diện khay hệ thống (System Tray `ksni`), giao tiếp hai chiều với daemon qua tệp trạng thái IPC nguyên tử `~/.config/vietc/status` (`vn`/`en`) và `~/.config/vietc/method` (`telex`/`vni`) (`vietc-tray` dùng `inotify`; daemon đồng bộ nền chu kỳ 250ms).
 5. [`vietc-cli`](file:///home/thanhhd/Git-projects/vietc/cli): Công cụ dòng lệnh (Interactive REPL Test Harness) kiểm thử trực tiếp máy trạng thái [`vietc-engine`](file:///home/thanhhd/Git-projects/vietc/engine).
 
 ---
@@ -119,7 +119,7 @@ Vị trí mã nguồn: [`daemon/src/evdev_loop.rs`](file:///home/thanhhd/Git-pro
 ### 2.1. Độc quyền Bắt phím cấp Nhân (`evdev grab`) và Vòng lặp `libc::poll`
 - **Cơ chế `grab()`:** Ngay khi khởi động, daemon mở file thiết bị tại `/dev/input/event*` và gửi ioctl `EVIOCGRAB`. Nhân Linux lập tức khóa cổng chuyển tiếp của bàn phím này: toàn bộ sự kiện phím vật lý bị chặn lại, không truyền tới X11, Wayland Compositor hay tty.
 - **Tối ưu Vòng lặp I/O:** Daemon sử dụng hàm hệ thống `libc::poll` để giám sát tập hợp file descriptors của tất cả các bàn phím đồng thời. Khi có phím bấm, luồng thức dậy ngay lập tức mà không tiêu tốn chu kỳ CPU nào trong trạng thái nghỉ.
-- **Ưu tiên Luồng Real-time:** Hàm [`boost_thread_priority()`](file:///home/thanhhd/Git-projects/vietc/daemon/src/main.rs#L40-L46) thiết lập mức ưu tiên `nice -10` cho tiến trình daemon, đảm bảo độ trễ phản hồi phím luôn $\le 1\text{ms}$ ngay cả khi hệ thống đang tải nặng.
+- **Ưu tiên Luồng (Best-effort):** Hàm [`boost_thread_priority()`](file:///home/thanhhd/Git-projects/vietc/daemon/src/main.rs#L44-L48) cố gắng thiết lập mức ưu tiên `nice -10` nếu tiến trình có quyền (trong systemd user service cứng hóa `NoNewPrivileges=yes`, lời gọi này bỏ qua an toàn mà không làm gián đoạn khởi động).
 
 ### 2.2. Cơ chế Tự động Phát hiện Bàn phím Cắm ngoài (Hotplug Detection)
 Vòng lặp chính duy trì một bộ hẹn giờ định kỳ kiểm tra các thiết bị mới trong `/dev/input/`. Khi phát hiện người dùng cắm thêm bàn phím cơ USB hoặc bàn phím không dây Bluetooth:
@@ -131,16 +131,16 @@ Vòng lặp chính duy trì một bộ hẹn giờ định kỳ kiểm tra các 
 Mỗi sự kiện phím thô bao gồm: `keycode` (mã phím phần cứng), `value` (0 = KeyUp, 1 = KeyDown, 2 = KeyRepeat).
 Cấu trúc [`KeyboardState`](file:///home/thanhhd/Git-projects/vietc/daemon/src/evdev_loop.rs#L178-L194) theo dõi trạng thái phím trên từng thiết bị cùng trạng thái khóa toàn cục:
 - Các phím Modifier vật lý: `Shift_L` (42), `Shift_R` (54), `Ctrl_L` (29), `Ctrl_R` (97), `Alt_L` (56), `Alt_R` (100), `Super_L` (125), `Super_R` (126).
-- Trạng thái khóa: `CapsLock` (58) đồng bộ qua LED phần cứng và trạng thái virtual keyboard.
+- Trạng thái khóa: `CapsLock` (58, `XKB_MOD_LOCK`) và `NumLock` (69, `XKB_MOD_MOD2`) đồng bộ qua LED phần cứng (`LED_CAPSL`, `LED_NUML`) và trạng thái virtual keyboard để không bao giờ ghi đè mất trạng thái NumLock của người dùng khi thực hiện giao dịch thay thế.
 - Bộ lọc chống dội phím ([`KeyDeduplicator`](file:///home/thanhhd/Git-projects/vietc/daemon/src/key_dedup.rs)): Loại bỏ các sự kiện trùng lặp bất thường do switch bàn phím cơ chập chờn.
 
 ### 2.4. Phím tắt Chuyển đổi Bộ gõ (`Toggle Method`) và Nuốt phím
-- Phím tắt mặc định chuyển đổi giữa Tiếng Việt và Tiếng Anh là `Ctrl + Space` hoặc `Alt + Z` (có thể tùy biến trong file cấu hình `~/.config/vietc/config.toml`, xử lý tại [`daemon/src/event.rs:89-145`](file:///home/thanhhd/Git-projects/vietc/daemon/src/event.rs#L89-L145)).
+- Phím tắt mặc định xoay vòng chế độ gõ (`EN → VNI → TELEX → EN`) là `Ctrl + Space` hoặc `Alt + Z` (có thể tùy biến trong file cấu hình `~/.config/vietc/config.toml`, xử lý tại [`daemon/src/event.rs:117-183`](file:///home/thanhhd/Git-projects/vietc/daemon/src/event.rs#L117-L183)).
 - **Quy tắc Nuốt phím (Key Consumption):** Khi phát hiện tổ hợp phím tắt được nhấn, daemon lập tức "nuốt" phím kích hoạt (đưa vào `consumed_keys`, không chuyển tiếp tới ứng dụng đích), xóa trạng thái Omnibox Shield, đảo cờ chế độ gõ và cập nhật tệp trạng thái cho khay hệ thống.
 
 ### 2.5. Đồng bộ Cửa sổ và Ứng dụng đích (`FocusTracker`)
 Vị trí mã nguồn: [`daemon/src/focus_tracker.rs`](file:///home/thanhhd/Git-projects/vietc/daemon/src/focus_tracker.rs).
-- Sử dụng giao thức AT-SPI2 DBus Accessibility và Wayland Toplevel Protocol để theo dõi cửa sổ đang nhận tiêu điểm nhập liệu (active focused window).
+- Sử dụng giao thức AT-SPI2 DBus Accessibility, Wayland Toplevel Protocol (`zcosmic_toplevel_info_v1` + `ext_foreign_toplevel_list_v1` trên COSMIC Desktop) và cơ chế dự phòng đọc cửa sổ nền (250ms qua `hyprctl`/`swaymsg`/`gdbus`/`xdotool`) để theo dõi cửa sổ đang nhận tiêu điểm nhập liệu (active focused window).
 - **Nguyên tắc Reset Tuyệt đối:** Khi tiêu điểm chuyển từ ứng dụng này sang ứng dụng khác (ví dụ: chuyển từ VS Code sang Telegram):
   1. Daemon lập tức gọi `daemon.reset_composition_state()`.
   2. Toàn bộ `raw_buffer` và chuỗi giao dịch đang soạn dở bị hủy bỏ.
@@ -250,12 +250,13 @@ Vị trí mã nguồn: [`engine/src/ring_buffer.rs`](file:///home/thanhhd/Git-pr
 
 Vị trí mã nguồn: [`protocol/src/wayland_vk.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/wayland_vk.rs), [`protocol/src/wayland_vk_keymap.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/wayland_vk_keymap.rs), [`protocol/src/uinput_monitor.rs`](file:///home/thanhhd/Git-projects/vietc/protocol/src/uinput_monitor.rs).
 
-### 4.1. Điều phối Giao thức Kép: Wayland Virtual Keyboard vs Linux Uinput
-VietC áp dụng mô hình phối hợp giao thức linh hoạt:
-1. **Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1`):**  
-   Được sử dụng làm kênh xuất phím mặc định và ưu tiên cao nhất trên môi trường Wayland (COSMIC Desktop, GNOME, KDE, Hyprland). Kết nối trực tiếp với Wayland Compositor qua Unix Socket, cho phép chèn ký tự Unicode chính xác tuyệt đối mà không cần can thiệp Clipboard.
-2. **Linux `/dev/uinput` Fallback:**  
-   Được sử dụng khi chạy trong môi trường X11 truyền thống, phiên làm việc Linux Console (TTY), hoặc khi Wayland Compositor không hỗ trợ virtual keyboard protocol.
+### 4.1. Điều phối Giao thức Kép & Phạm vi Hỗ trợ Thực tế (Tier 1 vs Tier 2)
+VietC áp dụng mô hình phối hợp giao thức phân tầng tùy theo khả năng của Compositor:
+1. **Tier 1 — Wayland Virtual Keyboard (`zwp_virtual_keyboard_v1`, Zero-Clipboard):**  
+   Được sử dụng làm kênh xuất phím mặc định và ưu tiên cao nhất trên các Wayland Compositor hỗ trợ giao thức `zwp_virtual_keyboard_v1` (**COSMIC Desktop, Hyprland, Sway và các wlroots compositor**). Kết nối trực tiếp với Wayland Compositor qua Unix Socket (chỉ chạy non-root qua `uaccess`, từ chối `euid == 0`), cho phép chèn ký tự Unicode chính xác tuyệt đối với độ trễ thấp mà không cần can thiệp Clipboard.  
+   *Giới hạn hiện tại:* Bố cục phím tĩnh (`wayland_vk_keymap.rs` và `daemon/src/event.rs`) hiện ánh xạ cứng theo chuẩn **US QWERTY**.
+2. **Tier 2 — Linux `/dev/uinput` + Clipboard / X11 Fallback:**  
+   Được sử dụng tự động trên các môi trường chưa hỗ trợ `zwp_virtual_keyboard_v1` không đặc quyền (**GNOME Mutter, KDE KWin**) cũng như phiên **X11** truyền thống hoặc TTY. Ở chế độ này, ký tự tiếng Việt có dấu được chèn qua giao dịch clipboard (`wl-copy`/`wayland_clipboard` hoặc `X11` selection) kết hợp phím dán `uinput`/`XTest`.
 
 ### 4.2. Bố cục Keymap Tĩnh XKB 8 Cấp độ (`wayland_vk_keymap.rs`)
 Đây là phát minh kỹ thuật đột phá của VietC nhằm loại bỏ hoàn toàn hiện tượng nhấp nháy gạch chân:
@@ -339,9 +340,9 @@ Bất kỳ lập trình viên nào khi chỉnh sửa mã nguồn VietC đều ph
 - Phím `KEY_SPACE` và các ký tự phân cách phải luôn được phát nguyên tử (KeyDown + KeyUp lập tức) trên cùng một kênh xuất phím với các ký tự văn bản.
 - Loại bỏ hoàn toàn khả năng phím Space bị giữ lại khi phím ký tự tiếp theo đã được nhấn xuống.
 
-### ⚠️ BẤT BIẾN 4: ZERO-SLEEP TRONG LUỒNG XỬ LÝ SỰ KIỆN (NON-BLOCKING PROTOCOL)
-- Nghiêm cấm việc đặt các lệnh tạm dừng luồng như `std::thread::sleep` trong luồng xử lý chính `evdev_loop` hoặc giao tiếp Wayland.
-- Mọi thao tác chờ đồng bộ phải sử dụng cơ chế Non-blocking I/O hoặc Socket Flush của giao thức.
+### ⚠️ BẤT BIẾN 4: ZERO-SLEEP TRONG LUỒNG NHANH (NON-BLOCKING FAST PATH)
+- Nghiêm cấm việc đặt các lệnh tạm dừng luồng như `std::thread::sleep` trong vòng lặp chính `evdev_loop` hoặc đường truyền tốc độ cao `WaylandVirtualKeyboard` (`wayland_vk.rs`).
+- Mọi thao tác chờ đồng bộ trên fast path phải sử dụng cơ chế Non-blocking I/O (`libc::poll`) hoặc Socket Flush của giao thức Wayland. *(Ghi chú: các nhánh fallback Tier 2 dùng Clipboard/X11 vẫn sử dụng khoảng chờ đồng bộ có giới hạn để chờ ứng dụng đích nhận selection).*
 
 ### ⚠️ BẤT BIẾN 5: CỔNG KIỂM SOÁT KÍCH THƯỚC MÃ NGUỒN (SOURCE SIZE QUALITY GATE)
 - Để tránh việc mã nguồn phình to mất kiểm soát dẫn đến code bẩn khó bảo trì, hệ thống duy trì công cụ kiểm tra tự động `scripts/check_source_size.py`:

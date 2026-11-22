@@ -27,11 +27,13 @@ pub fn run_stdin_mode(
         log_info("[vietc] Ensure active-seat uaccess rules are installed (sudo ./install.sh).");
 
         loop {
-            if SIGNAL_EXIT.load(Ordering::SeqCst) {
-                log_info("[vietc] Exiting on signal");
-                return Ok(());
+            for _ in 0..10 {
+                if SIGNAL_EXIT.load(Ordering::SeqCst) {
+                    log_info("[vietc] Exiting on signal");
+                    return Ok(());
+                }
+                thread::sleep(std::time::Duration::from_millis(200));
             }
-            thread::sleep(std::time::Duration::from_secs(5));
 
             if status_changed.load(Ordering::SeqCst) {
                 daemon.sync_status_file();

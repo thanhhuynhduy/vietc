@@ -17,6 +17,7 @@ use std::fmt::Write;
 
 pub(crate) const XKB_MOD_SHIFT: u32 = 1 << 0;
 pub(crate) const XKB_MOD_LOCK: u32 = 1 << 1;
+pub(crate) const XKB_MOD_MOD2: u32 = 1 << 4;
 pub(crate) const XKB_MOD_MOD3: u32 = 1 << 5;
 pub(crate) const XKB_MOD_MOD5: u32 = 1 << 7;
 

@@ -46,6 +46,7 @@ pub struct UinputInjector {
     clip: Arc<ClipState>,
     restorer: ClipboardRestorer,
     caps_lock: std::sync::atomic::AtomicBool,
+    num_lock: std::sync::atomic::AtomicBool,
     terminal_app: std::sync::atomic::AtomicBool,
     bypass_mode: std::sync::atomic::AtomicBool,
     uinput_mod_mask: std::sync::atomic::AtomicU8,
@@ -162,6 +163,7 @@ impl UinputInjector {
             clip,
             restorer,
             caps_lock: std::sync::atomic::AtomicBool::new(false),
+            num_lock: std::sync::atomic::AtomicBool::new(false),
             terminal_app: std::sync::atomic::AtomicBool::new(false),
             bypass_mode: std::sync::atomic::AtomicBool::new(false),
             uinput_mod_mask: std::sync::atomic::AtomicU8::new(0),
@@ -194,6 +196,7 @@ impl UinputInjector {
                 slot.last_attempt = Some(now);
                 if let Ok(vk) = crate::wayland_vk::WaylandVirtualKeyboard::connect() {
                     vk.set_caps_lock(self.caps_lock.load(Ordering::Relaxed));
+                    vk.set_num_lock(self.num_lock.load(Ordering::Relaxed));
                     eprintln!("[vietc] Wayland zwp_virtual_keyboard_v1 connected");
                     slot.vk = Some(vk);
                 }
@@ -475,6 +478,15 @@ impl KeyInjector for UinputInjector {
         #[cfg(feature = "wayland-protocol")]
         {
             let _ = self.with_wayland_vk(|vk| vk.set_caps_lock(enabled));
+        }
+        InjectResult::Success
+    }
+
+    fn set_num_lock(&self, enabled: bool) -> InjectResult {
+        self.num_lock.store(enabled, Ordering::Relaxed);
+        #[cfg(feature = "wayland-protocol")]
+        {
+            let _ = self.with_wayland_vk(|vk| vk.set_num_lock(enabled));
         }
         InjectResult::Success
     }

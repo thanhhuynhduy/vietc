@@ -244,8 +244,10 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for Track
         if let zcosmic_toplevel_handle_v1::Event::State { state: raw } = event {
             if let Some(toplevel) = state.toplevels.iter_mut().find(|t| &t.cosmic == handle) {
                 toplevel.activated = raw
-                    .chunks_exact(4)
-                    .any(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()) == STATE_ACTIVATED);
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|&chunk| u32::from_ne_bytes(chunk) == STATE_ACTIVATED);
             }
         }
     }

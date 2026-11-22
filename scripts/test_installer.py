@@ -17,9 +17,17 @@ class DevicePermissionsTests(unittest.TestCase):
                 rules = re.findall(r'^(?:KERNEL|SUBSYSTEM)==.*$', source, re.MULTILINE)
                 self.assertTrue(rules)
                 for rule in rules:
-                    self.assertIn('MODE="0600"', rule)
-                    self.assertIn('GROUP="root"', rule)
                     self.assertIn('TAG+="uaccess"', rule)
+                    self.assertNotIn('MODE="0666"', rule)
+                    self.assertNotIn('MODE="0664"', rule)
+                    self.assertNotIn('MODE="0644"', rule)
+                    if 'KERNEL=="uinput"' in rule:
+                        self.assertIn('MODE="0600"', rule)
+                        self.assertIn('GROUP="root"', rule)
+                    else:
+                        # Must not clobber distro GROUP="input" / MODE="0660" on event* devices.
+                        self.assertNotIn('GROUP="root"', rule)
+                        self.assertNotIn('MODE="0600"', rule)
         self.assertIn('/etc/udev/rules.d/70-vietc.rules', (ROOT / "install.sh").read_text())
 
     def test_upgrade_and_uninstall_revoke_existing_world_access(self):

@@ -181,8 +181,10 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for Activ
         match event {
             zcosmic_toplevel_handle_v1::Event::State { state } => {
                 let states = state
-                    .chunks_exact(4)
-                    .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&chunk| u32::from_ne_bytes(chunk))
                     .collect::<Vec<_>>();
                 toplevel.activated = states.contains(&2);
                 eprintln!(

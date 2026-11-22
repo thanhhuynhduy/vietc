@@ -66,6 +66,10 @@ pub trait KeyInjector {
         InjectResult::Success
     }
 
+    fn set_num_lock(&self, _enabled: bool) -> InjectResult {
+        InjectResult::Success
+    }
+
     /// Whether the focused window is a terminal emulator (pastes with
     /// Ctrl+Shift+V instead of Ctrl+V).
     fn set_terminal_app(&self, _is_terminal: bool) -> InjectResult {

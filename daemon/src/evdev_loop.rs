@@ -13,8 +13,8 @@ use crate::display;
 use crate::display::DisplayServer;
 use crate::event::{
     consume_released_or_repeated_key, is_caps_lock_on, is_flush_char, is_modifier_held_shift,
-    is_modifier_pressed, is_navigation_or_control_key, is_toggle_combination_state, is_toggle_key,
-    is_vn_control_key, key_to_char_with_case,
+    is_modifier_pressed, is_navigation_or_control_key, is_num_lock_on, is_toggle_combination_state,
+    is_toggle_key, is_vn_control_key, key_to_char_with_case, update_keyboard_state,
 };
 use crate::focus::SharedFocusSnapshot;
 use crate::inject::{create_injector, execute_commands};
@@ -118,23 +118,6 @@ fn bypass_uncertain_edit(
     true
 }
 
-fn update_keyboard_state(
-    key_state: &mut evdev::AttributeSet<evdev::KeyCode>,
-    caps_lock: &mut bool,
-    key: evdev::KeyCode,
-    value: i32,
-) {
-    if value == 1 {
-        key_state.insert(key);
-    } else if value == 0 {
-        key_state.remove(key);
-    }
-
-    if key == evdev::KeyCode::KEY_CAPSLOCK && value == 1 {
-        *caps_lock = !*caps_lock;
-    }
-}
-
 fn execute_with_shift_released(
     injector: &dyn vietc_protocol::KeyInjector,
     commands: &[crate::commands::OutputCommand],
@@ -230,7 +213,9 @@ pub fn run_with_evdev(
     injector.bind_focus_generation(focus_generation_signal.clone());
 
     let mut global_caps_lock = devices.iter().any(|(device, _)| is_caps_lock_on(device));
+    let mut global_num_lock = devices.iter().any(|(device, _)| is_num_lock_on(device));
     injector.set_caps_lock(global_caps_lock);
+    injector.set_num_lock(global_num_lock);
     let mut device_states: Vec<KeyboardState> = devices
         .iter()
         .map(|(device, _)| KeyboardState::new(is_caps_lock_on(device), false))
@@ -244,7 +229,7 @@ pub fn run_with_evdev(
                 }
                 Err(e) => {
                     log_info(&format!(
-                        "[vietc] Could not grab keyboard #{}: {} (run as root for grab)",
+                        "[vietc] Could not grab keyboard #{}: {} (check uaccess/udev rules in /etc/udev/rules.d/70-vietc.rules)",
                         idx, e
                     ));
                 }
@@ -257,7 +242,7 @@ pub fn run_with_evdev(
         }
     } else if !daemon.grab_enabled {
         log_info("[vietc] Keyboard grab disabled (config grab = false)");
-        log_info("[vietc] Set grab = true in vietc.toml to enable (needs root)");
+        log_info("[vietc] Set grab = true in vietc.toml to enable");
     }
 
     // Track currently opened device paths and physical IDs so newly connected keyboards can be hotplugged without duplicates
@@ -271,11 +256,11 @@ pub fn run_with_evdev(
         }
     }
 
-    if !device_states.iter().any(|state| state.grabbed) {
+    if !devices.is_empty() && !device_states.iter().any(|state| state.grabbed) {
         if unsafe { libc::geteuid() } != 0 {
-            log_info("[vietc] WARNING: not running as root — keyboard grab unavailable");
+            log_info("[vietc] WARNING: keyboard grab unavailable — check uaccess ACLs (/etc/udev/rules.d/70-vietc.rules)");
             log_info("[vietc] WARNING: non-grabbed mode has race conditions with fast typing");
-            log_info("[vietc] WARNING: run with sudo, or setcap cap_sys_admin+ep on the binary");
+            log_info("[vietc] WARNING: do NOT run vietc with sudo on Wayland (breaks virtual keyboard & clipboard)");
         }
         #[cfg(feature = "x11")]
         if display != DisplayServer::Wayland {
@@ -283,6 +268,7 @@ pub fn run_with_evdev(
                 injector = Box::new(x11_inj);
                 injector.bind_focus_generation(focus_generation_signal.clone());
                 injector.set_caps_lock(global_caps_lock);
+                injector.set_num_lock(global_num_lock);
                 log_info("[vietc] Non-grabbed: using X11 injection (faster than uinput)");
             }
         }
@@ -342,7 +328,12 @@ pub fn run_with_evdev(
             })
             .collect();
 
-        let poll_ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, 100) };
+        let pfds_ptr = if pfds.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            pfds.as_mut_ptr()
+        };
+        let poll_ret = unsafe { libc::poll(pfds_ptr, pfds.len() as libc::nfds_t, 100) };
         if poll_ret < 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
@@ -384,6 +375,11 @@ pub fn run_with_evdev(
                     if caps != global_caps_lock {
                         global_caps_lock = caps;
                         injector.set_caps_lock(global_caps_lock);
+                    }
+                    let num = is_num_lock_on(&dev);
+                    if num != global_num_lock {
+                        global_num_lock = num;
+                        injector.set_num_lock(global_num_lock);
                     }
                     log_info(&format!("[vietc] Hotplug connected keyboard: {}", name));
                     devices.push((dev, name.clone()));
@@ -438,8 +434,15 @@ pub fn run_with_evdev(
                 let key = evdev::KeyCode(keycode);
 
                 // Update modifier and shared lock state before translating this event.
-                update_keyboard_state(&mut key_state, &mut global_caps_lock, key, value);
+                update_keyboard_state(
+                    &mut key_state,
+                    &mut global_caps_lock,
+                    &mut global_num_lock,
+                    key,
+                    value,
+                );
                 injector.set_caps_lock(global_caps_lock);
+                injector.set_num_lock(global_num_lock);
                 // Complete a stroke already forwarded during uncertainty before
                 // focus recovery, policy, dedup or normal Backspace handling.
                 if finish_forwarded_stroke(&*injector, keycode, value, &mut forwarded_keys) {
@@ -1181,14 +1184,17 @@ mod grabbed_event_stream_tests {
     fn production_evdev_state_tracks_caps_shift_and_lock_toggles() {
         let mut key_state = evdev::AttributeSet::new();
         let mut caps_lock = false;
+        let mut num_lock = false;
 
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_CAPSLOCK,
             1,
         );
         assert!(caps_lock);
+        assert!(!num_lock);
         assert_eq!(
             translated_key(&key_state, caps_lock, evdev::KeyCode::KEY_A),
             'A'
@@ -1197,6 +1203,24 @@ mod grabbed_event_stream_tests {
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
+            evdev::KeyCode::KEY_NUMLOCK,
+            1,
+        );
+        assert!(num_lock);
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            &mut num_lock,
+            evdev::KeyCode::KEY_NUMLOCK,
+            0,
+        );
+        assert!(num_lock);
+
+        update_keyboard_state(
+            &mut key_state,
+            &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_LEFTSHIFT,
             1,
         );
@@ -1207,6 +1231,7 @@ mod grabbed_event_stream_tests {
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_LEFTSHIFT,
             0,
         );
@@ -1214,16 +1239,19 @@ mod grabbed_event_stream_tests {
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_CAPSLOCK,
             0,
         );
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_CAPSLOCK,
             1,
         );
         assert!(!caps_lock);
+        assert!(num_lock);
         assert_eq!(
             translated_key(&key_state, caps_lock, evdev::KeyCode::KEY_A),
             'a'
@@ -1253,11 +1281,13 @@ mod grabbed_event_stream_tests {
     fn production_evdev_caps_toggle_between_words_does_not_mix_case() {
         let mut key_state = evdev::AttributeSet::new();
         let mut caps_lock = false;
+        let mut num_lock = false;
         let mut translated = String::new();
 
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_CAPSLOCK,
             1,
         );
@@ -1276,12 +1306,14 @@ mod grabbed_event_stream_tests {
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_CAPSLOCK,
             0,
         );
         update_keyboard_state(
             &mut key_state,
             &mut caps_lock,
+            &mut num_lock,
             evdev::KeyCode::KEY_CAPSLOCK,
             1,
         );
