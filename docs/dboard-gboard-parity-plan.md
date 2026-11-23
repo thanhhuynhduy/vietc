@@ -316,12 +316,92 @@ Các lỗi nghiêm trọng phát hiện trong phiên audit đã được vá và
 
 ---
 
+## PHASE C: NÂNG CẤP TIỆM CẬN 1-1 VỚI GBOARD DESKTOP (MILESTONE M5 & M6)
+
+> **Lưu ý kiến trúc (2 Tầng Tốc độ — Giữ vững Bất biến 4):**
+> - **Fast Path (mỗi phím gõ trong từ):** Giữ nguyên độ trễ `p50 < 2.0us`, `p99 < 10.0us`, zero-allocation, zero-sleep.
+> - **Smart Path (chỉ chạy tại ranh giới `Space` hoặc trên luồng nền không chặn `evdev_loop`):** Cho phép mô hình ngôn ngữ giàu hơn và SymSpell chạy trong `< 300us` mà không bao giờ làm chậm cảm giác gõ phím.
+> - **Trade-off dung lượng:** Các mô hình 3-gram/4-gram lượng tử hóa và font vector có thể nâng dung lượng data gói cài đặt từ ~350 KB lên ~5–10 MB (vẫn cực nhẹ so với Gboard ~150 MB).
+
+### Task C0: Hoàn thiện Đóng gói, Hot-Reload Layout & Điều khiển trên `dboard-tray` (Post-Audit Polish)
+- **Mục tiêu:** Khắc phục các điểm thiếu sót nhỏ phát hiện trong đợt audit sau M4 để trải nghiệm cài đặt & sử dụng thực tế liền mạch 100%.
+- **Yêu cầu cụ thể:**
+  - [ ] **Hot-reload & cảnh báo `keyboard_layout` ([`daemon/src/daemon.rs`](../daemon/src/daemon.rs)):** Cập nhật `self.engine.set_keyboard_layout_name(&new_config.keyboard_layout)` trong `reload_config()` và log cảnh báo rõ ràng (hoặc tái tạo XKB keymap) khi người dùng đổi `keyboard_layout` lúc daemon đang chạy.
+  - [ ] **Đóng gói `dboard-popup`:** Tích hợp build/install `dboard-popup` vào [`install.sh`](../install.sh), `packaging/deb/build-deb.sh`, `packaging/build-tarball.sh`, và tùy chọn quản lý/tự khởi động khi `candidate_bar = true`.
+  - [ ] **Điều khiển nhanh trên [`dboard-tray`](../ui/src/tray.rs):** Bổ sung menu bật/tắt trực tiếp `Autocorrect`, `Auto-Capitalize`, `Candidate Bar`, và chọn `Keyboard Layout` (`US QWERTY` / `Dvorak` / `Colemak`) ngay trên khay hệ thống (ghi nguyên tử vào `~/.config/dboard/config.toml`).
+- **Bộ Test bắt buộc:**
+  - `reload_config()` đồng bộ `keyboard_layout` sang `Engine`; `test_installer.py` & `package-smoke-test.sh` xác minh sự hiện diện của `dboard-popup`.
+
+---
+
+### Task C1: Nâng cấp Language Model (Quantized 3-gram/4-gram hoặc Tiny Int8 Neural LM) & Next-Word Prediction
+- **Mục tiêu:** Đưa độ chính xác song ngữ Việt–Anh lên `> 99%`, chấm điểm ngữ cảnh câu thực sự cho Autocorrect và mở khóa **Dự đoán Từ Tiếp Theo (Next-Word Prediction)** chuẩn Gboard.
+- **Yêu cầu cụ thể:**
+  - [ ] Mở rộng [`scripts/build_lm.py`](../scripts/build_lm.py) xuất mô hình **Quantized Kneser-Ney 3-gram/4-gram** (nén trie ~3–8 MB) hoặc **Tiny Int8 GRU/Transformer** pure-Rust SIMD, vẫn giữ checksum & integrity gate.
+  - [ ] Tách module mới (ví dụ `engine/src/ngram_lm.rs` $\le 1,000$ dòng, giữ vững Bất biến 5) cung cấp 2 API:
+    - `score_context(prev_words, candidate) -> i32`: chấm điểm xếp hạng ứng viên theo ngữ cảnh câu.
+    - `predict_next_words(prev_words, limit: 3) -> Vec<String>`: gợi ý top 3 từ tiếp theo ngay sau khi nhấn `Space` (ví dụ `xin ` $\rightarrow$ `chào | lỗi | cảm`), đẩy lên `dboard-popup` để chọn nhanh bằng `Tab` hoặc `Alt+1/2/3`.
+  - [ ] Đảm bảo Fast Path khi gõ từng phím vẫn `p50 < 2.0us`, `p99 < 10.0us`, và tổng thời gian chạy tại `Space` `< 300us`.
+- **Bộ Test bắt buộc:**
+  - `bilingual_accuracy_bench` đạt `>= 99.0%` câu; benchmark Next-Word Prediction top-3 hit-rate trên corpus tiếng Việt văn phòng/chat; `soak_perf` không thoái lui.
+
+---
+
+### Task C2: Weighted Spatial SymSpell Autocorrect (Đa Lỗi & Tách Từ Dính)
+- **Mục tiêu:** Vượt qua giới hạn chỉ sửa đơn ứng viên của [`engine/src/autocorrect.rs`](../engine/src/autocorrect.rs), xử lý được các lỗi gõ nhanh phổ biến nhất như Gboard nhưng vẫn giữ nguyên kỷ luật Zero-False-Positive cho lập trình viên.
+- **Yêu cầu cụ thể:**
+  - [ ] Tách module `engine/src/symspell.rs` ($\le 1,000$ dòng) hỗ trợ tra cứu edit distance `1..=2` trong $O(1)$ kết hợp trọng số khoảng cách phím vật lý (`key_coord_for_layout`) và điểm ngữ cảnh từ Task C1:
+    - **Thiếu ký tự (Deletion):** `khog` $\rightarrow$ `không`, `nguoi` $\rightarrow$ `người`, `vietnma` $\rightarrow$ `vietnam`.
+    - **Thừa ký tự (Insertion):** `khonhgs` $\rightarrow$ `không`.
+    - **Nhầm 2 phím gần nhau** trên US QWERTY / Dvorak / Colemak.
+    - **Tách từ dính (Missing Space):** `khongbiet` $\rightarrow$ `không biết`, `xinchao` $\rightarrow$ `xin chào` khi vượt ngưỡng tin cậy cao.
+  - [ ] **Giữ chặt Zero-False-Positive Guard:** Không sửa token trong `UserDict`, từ điển tiếng Anh/Việt hợp lệ, ALL_CAPS, chuỗi có số/ký hiệu code, hoặc khi đang ở `terminal_apps`/`english_apps`; mọi sửa lỗi bắt buộc đi kèm **One-Tap Undo** qua `Backspace`.
+- **Bộ Test bắt buộc:**
+  - Bộ test đa lỗi (thiếu/thừa/sai 2 phím/tách từ dính) + One-Tap Undo + tập adversarial code/identifier (`kubectl`, `systemd`, `hashmap`, `serde`) phải giữ nguyên 100%.
+
+---
+
+### Task C3: Nâng cấp `dboard-popup` Thành Floating Bar Chuẩn Gboard (Bám Caret, Vector Font & Click Chuột)
+- **Mục tiêu:** Biến [`ui-popup/`](../ui-popup/) từ thanh pill bitmap cố định ở đáy màn hình thành thanh gợi ý nổi sắc nét, bám sát con trỏ văn bản và tương tác được bằng chuột.
+- **Yêu cầu cụ thể:**
+  - [ ] **Caret Tracking qua AT-SPI2:** Mở rộng [`daemon/src/focus_tracker.rs`](../daemon/src/focus_tracker.rs) gọi `Text::GetCharacterExtents(caret_offset, SCREEN_COORDS)` (non-blocking trên luồng AT-SPI2 nền) và đính kèm tọa độ tùy chọn `"caret":{"x":..,"y":..,"h":..}` vào gói JSON của [`candidate_ipc.rs`](../daemon/src/candidate_ipc.rs).
+  - [ ] **Neo thông minh trong [`ui-popup/src/wayland_layer.rs`](../ui-popup/src/wayland_layer.rs):** Khi có tọa độ caret hợp lệ, đặt `Anchor::Top | Anchor::Left` + `set_margin(y + h + 6, 0, 0, x)` để nổi ngay dưới chữ đang gõ (tự kẹp trong biên màn hình); tự động fallback về `Anchor::Bottom` khi ứng dụng không cung cấp tọa độ caret.
+  - [ ] **Vector Font & HiDPI:** Thay bitmap 8×16 bằng renderer nhẹ (`fontdue`/`ab_glyph` + `tiny-skia`, tuyệt đối không phụ thuộc GTK/Qt), hỗ trợ HiDPI fractional scaling (`wp_fractional_scale_v1`).
+  - [ ] **Chọn ứng viên bằng chuột (`wl_pointer`):** Cho phép click trực tiếp vào khe `[1]`/`[2]`/`[3]` trên popup (gửi phản hồi an toàn về daemon qua socket cục bộ `0600`) mà vẫn giữ `KeyboardInteractivity::None`.
+- **Bộ Test bắt buộc:**
+  - Parse gói JSON có/không có `caret`; clamping tọa độ không tràn màn hình; giữ nguyên bảo mật `0600` và ẩn ngay lập tức khi nhập mật khẩu.
+
+---
+
+### Task C4: Cá nhân hóa Sâu — Personal Bigram & Adaptive Ranking (`UserDict`)
+- **Mục tiêu:** Giúp bộ gõ thích nghi với văn phong, tên riêng người Việt và thuật ngữ công việc của từng người dùng như Gboard.
+- **Yêu cầu cụ thể:**
+  - [ ] Mở rộng [`engine/src/user_dict.rs`](../engine/src/user_dict.rs) hỗ trợ học **cụm 2 từ cá nhân** (Personal Bigram, ví dụ tên riêng tiếng Việt, cụm thuật ngữ hay gõ) với giới hạn dung lượng cứng (LRU/FIFO eviction) và lưu nguyên tử quyền `0600` qua [`user_dict_store.rs`](../daemon/src/user_dict_store.rs).
+  - [ ] Tích hợp trọng số Personal Bigram vào xếp hạng Autocorrect (Task C2) và Next-Word Prediction (Task C1).
+  - [ ] **Bất biến Bảo mật:** Tuyệt đối không học từ/cụm từ khi `password_detection` đang bật, trong `bypass_apps`, `terminal_apps`, hoặc chuỗi chứa số/ký tự đặc biệt.
+- **Bộ Test bắt buộc:**
+  - Học & ưu tiên cụm 2 từ cá nhân sau `>= 2` lần dùng; kiểm chứng eviction khi đầy bộ nhớ; kiểm chứng không bao giờ lưu mật khẩu/số/ký tự đặc biệt.
+
+---
+
+### Task C5: Sửa Nhanh Từ Giữa Câu Khi Quay Lại Con Trỏ (Mid-Sentence Re-Selection)
+- **Mục tiêu:** Mang trải nghiệm "chạm vào từ cũ để đổi ứng viên" của Gboard lên desktop.
+- **Yêu cầu cụ thể:**
+  - [ ] Mở rộng [`daemon/src/surrounding_context.rs`](../daemon/src/surrounding_context.rs) và `Engine`: khi người dùng click chuột hoặc dùng phím mũi tên đưa con trỏ vào một từ đã commit trước đó (và `candidate_bar = true`), daemon tính toán các ứng viên thay thế hợp lý (ví dụ `tét` $\leftrightarrow$ `test`, `lát` $\leftrightarrow$ `last`, hoặc gợi ý SymSpell) và đẩy lên `dboard-popup`.
+  - [ ] Cho phép bấm `Alt+1/2/3` (hoặc click trên popup) để thay thế ngay từ dưới con trỏ mà không cần xóa gõ lại.
+- **Bộ Test bắt buộc:**
+  - Kiểm chứng thay thế chính xác khi con trỏ ở cuối từ/giữa từ, không lệch ký tự khi gặp dấu câu hoặc Unicode đa byte, và tự ẩn sạch khi rời khỏi từ hoặc vào ô mật khẩu.
+
+---
+
 ## MA TRẬN KIỂM THỬ VÉT CẠN & KẾT QUẢ NGHIỆM THU (VERIFIED EXECUTION STATUS)
 
-| Milestone | Bao gồm Tasks | Trạng thái | Kết quả Nghiệm thu Thực tế (100% PASS) |
+| Milestone | Bao gồm Tasks | Trạng thái | Kết quả Nghiệm thu Thực tế |
 |---|---|---|---|
 | **M0 — Security & Headroom Baseline** | `P0.1`, `P0.2` | ✅ **HOÀN THÀNH** | 5 cổng nghiệm thu PASS + `cargo audit`/`deny` sạch + `engine.rs = 844/850`, `evdev_loop.rs = 948/1200`, `wayland_vk.rs = 766/800` |
 | **M1 — Retest Zero-Defect** | `A1`, `A2`, `A3` | ✅ **HOÀN THÀNH** | `filename_restore.rs` (`test.py`, `host.conf`, `test.tar.gz`), `can_apply_dd_at` (`add`/`reddit` không nháy `đ`, giữ `QĐ-TTg`), 3-char camelCase (`dOs`/`cAs`/`tOs`), SSOT `is_flush_char` & `dboard-cli` PASS 100% |
 | **M2 — Engine & Hardware Rock-Solid (v1.0)** | `A4`, `A5`, `A6` | ✅ **HOÀN THÀNH** | Telex/VNI parity + mũ vượt phụ âm cuối (`khongo -> không`, `vietej -> việt`), Touchpad Tap-to-Click, Layer-Shell `FocusLost` reset, hotplug retry + composite `uniq|phys`, cross-device modifier, rich clipboard đa MIME, `GlobalRemove`, 50ms `EINPROGRESS`, Dvorak+CapsLock unlock, `libxkbcommon` 134 ký tự PASS 100% |
 | **M3 — Gboard Intelligence** | `B1`, `B2`, `B3` | ✅ **HOÀN THÀNH** | `stat_lm.rs` + `bilingual_lm.bin` (`348,184 B < 350 KB`, Leipzig Corpora): **97.25% câu (496/510), 99.79% từ (7206/7221)**; VNI spatial autocorrect + `RetroactivePair` One-Tap Undo; Smart Auto-Cap; `soak_perf` `p50 = 1.41us`, `p99 = 6.63us` |
 | **M4 — Gboard UX & Multi-Layout** | `B4`, `B5` | ✅ **HOÀN THÀNH** | `ui-popup` (`dboard-popup` Wayland Layer-Shell + font Unicode tiếng Việt 8×16 nội sinh `font.rs` + 3 khe ứng viên `Alt+1`/`Alt+2`/`Alt+3` nhả `Alt` an toàn + ẩn tuyệt đối khi nhập mật khẩu); hỗ trợ đầy đủ `US QWERTY`, `Dvorak`, `Colemak` |
+| **M5 — Gboard Desktop UX, Caret Tracking & Packaging** | `C0`, `C3`, `C5` | ⏳ **CHƯA THỰC HIỆN (TODO)** | Hot-reload `keyboard_layout`, đóng gói `dboard-popup` + menu `dboard-tray`, popup bám caret (AT-SPI2) + vector font + click chuột, sửa nhanh từ giữa câu |
+| **M6 — Gboard Next-Gen Intelligence (1-1 Parity)** | `C1`, `C2`, `C4` | ⏳ **CHƯA THỰC HIỆN (TODO)** | Quantized 3-gram/4-gram (hoặc Tiny Int8 LM) + Next-Word Prediction (`>= 99%` song ngữ), Weighted Spatial SymSpell đa lỗi & tách từ dính, Personal Bigram trong `UserDict` |
