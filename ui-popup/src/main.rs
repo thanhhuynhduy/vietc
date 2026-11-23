@@ -16,6 +16,7 @@
 //!   (password fields, bypass apps, focus loss, or word commit).
 
 mod font;
+mod vector_font;
 mod wayland_layer;
 
 use std::fs;

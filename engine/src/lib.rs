@@ -30,4 +30,5 @@ pub use state::{
     BoundaryState, CaseShape, CompositionState, PhysicalEvent, Replacement, ReplacementReason,
     SpellingValidity, TransformIdentity, TransformKind, TransitionKind, UndoPolicy,
 };
+pub use symspell::warm_up as warm_up_symspell;
 pub use user_dict::UserDict;

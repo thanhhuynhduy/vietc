@@ -421,38 +421,58 @@ impl Daemon {
         self.caret_reselection = Some((word.to_string(), alts));
     }
 
-    /// Applies quick candidate selection (`Alt+1`/`Alt+2`/`Alt+3` or mouse click)
-    /// matching active composing candidates, mid-sentence caret re-selection
-    /// (`tét <-> test`), or next-word predictions after Space.
-    pub fn select_candidate(&mut self, index: usize) -> Vec<OutputCommand> {
-        if !self.config.candidate_bar || !self.engine.is_enabled() {
-            return Vec::new();
+    /// Applies quick candidate selection (`Alt+1`/`Alt+2`/`Alt+3` or mouse click).
+    /// Returns `None` when no matching candidate slot exists so keyboard shortcuts
+    /// pass through to the active application unconsumed.
+    /// When `include_predictions` is `false` (keyboard `Alt+1/2/3`), idle next-word
+    /// predictions are not intercepted so browser/terminal tab switching stays intact.
+    pub fn try_select_candidate(
+        &mut self,
+        index: usize,
+        include_predictions: bool,
+    ) -> Option<Vec<OutputCommand>> {
+        if !self.config.candidate_bar
+            || !self.engine.is_enabled()
+            || self.is_current_app_bypassed()
+            || self.app_state.is_password_active()
+        {
+            return None;
         }
+        let allow_learning = !self.app_state.is_terminal_app();
+        self.engine.set_learning_enabled(allow_learning);
+
         let visible = self.engine.buffer();
         let raw = self.engine.raw_buffer().to_string();
         if visible.is_empty() || raw.is_empty() {
-            if let Some((word, alts)) = self.caret_reselection.take() {
-                let Some(chosen) = alts.get(index).cloned() else {
-                    self.candidate_ipc.hide();
-                    return Vec::new();
-                };
+            if let Some((word, alts)) = self.caret_reselection.as_ref() {
+                let chosen = alts.get(index)?.clone();
+                let word = word.clone();
+                self.caret_reselection = None;
                 self.reset_composition_state();
                 self.candidate_ipc.hide();
                 if chosen == word {
-                    return Vec::new();
+                    return Some(Vec::new());
                 }
-                return vec![
+                return Some(vec![
                     OutputCommand::Backspace(word.chars().count()),
                     OutputCommand::Type(chosen),
-                ];
+                ]);
+            }
+            if !include_predictions {
+                return None;
             }
             let preds = self.engine.predict_next_words(3);
-            let Some(chosen) = preds.get(index).cloned() else {
-                return Vec::new();
-            };
-            self.reset_composition_state();
-            self.candidate_ipc.hide();
-            return vec![OutputCommand::Type(format!("{chosen} "))];
+            let chosen = preds.get(index)?.clone();
+            self.engine.commit_selected_word(&chosen, true);
+            if allow_learning {
+                if let Some(serialized) = self.engine.take_user_dict_for_save() {
+                    if let Some(path) = crate::user_dict_store::user_dict_path() {
+                        crate::user_dict_store::enqueue_user_dict_save(path, serialized);
+                    }
+                }
+            }
+            self.sync_candidate_bar();
+            return Some(vec![OutputCommand::Type(format!("{chosen} "))]);
         }
         let mut slots = vec![visible.clone()];
         if raw != visible {
@@ -463,17 +483,21 @@ impl Daemon {
                 slots.push(sug);
             }
         }
-        let Some(chosen) = slots.get(index).cloned() else {
-            return Vec::new();
-        };
+        let chosen = slots.get(index)?.clone();
         let mut commands = Vec::new();
         if chosen != visible {
             commands.push(OutputCommand::Backspace(visible.chars().count()));
-            commands.push(OutputCommand::Type(chosen));
+            commands.push(OutputCommand::Type(chosen.clone()));
         }
-        self.reset_composition_state();
+        self.engine.commit_selected_word(&chosen, false);
         self.candidate_ipc.hide();
-        commands
+        Some(commands)
+    }
+
+    /// Applies quick candidate selection across composing, re-selection, and
+    /// next-word prediction slots.
+    pub fn select_candidate(&mut self, index: usize) -> Vec<OutputCommand> {
+        self.try_select_candidate(index, true).unwrap_or_default()
     }
 
     pub fn process_key(&mut self, ch: char) -> Vec<OutputCommand> {
@@ -926,5 +950,44 @@ mod tests {
         let cmds = daemon.select_candidate(idx);
         apply(&mut screen2, &cmds);
         assert_eq!(screen2, "tiếng");
+    }
+
+    #[test]
+    fn candidate_selection_preserves_ring_buffer_and_avoids_idle_alt_hijack() {
+        let cfg = Config {
+            candidate_bar: true,
+            ..Config::default()
+        };
+        let mut daemon = Daemon::new(
+            cfg,
+            PathBuf::from("/tmp/dboard_cand_chain_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.engine.set_enabled(true);
+        daemon.engine.set_method(InputMethod::Telex);
+
+        // Missing slot [3] while composing "chaof" (only 2 slots: "chào", "chaof") returns None.
+        for ch in "chaof".chars() {
+            let _ = daemon.process_forwarded_key(ch);
+        }
+        assert!(daemon.try_select_candidate(2, false).is_none());
+
+        // Commit "xin " -> next-word predictions exist, but keyboard Alt+1 (include_predictions=false)
+        // must return None so browser/terminal Alt+1/2/3 tab shortcuts are never hijacked.
+        daemon.reset_composition_state();
+        for ch in "xin ".chars() {
+            let _ = daemon.process_forwarded_key(ch);
+        }
+        assert!(!daemon.engine.predict_next_words(3).is_empty());
+        assert!(daemon.try_select_candidate(0, false).is_none());
+
+        // Mouse click on prediction (include_predictions=true) commits word and keeps ring_buffer
+        // alive for chained next-word prediction.
+        let cmds = daemon.try_select_candidate(0, true);
+        assert!(cmds.is_some());
+        assert!(
+            !daemon.engine.predict_next_words(3).is_empty(),
+            "selecting a next-word prediction must preserve ring_buffer for chained predictions"
+        );
     }
 }

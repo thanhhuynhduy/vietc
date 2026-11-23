@@ -210,26 +210,86 @@ pub(crate) fn evaluate_retroactive_first_word(
     let w2_raw_lower = current_raw.to_ascii_lowercase();
 
     if !prev_entry.was_auto_restored {
-        // Direction A: Word 1 was kept as Vietnamese at sentence start (e.g. `"Lots "` -> `"Lót "`,
-        // `"Sets "` -> `"Sét "`, `"Too "` -> `"Tô "`, `"Been "` -> `"Bên "`, `"Its "` -> `"Ít "`),
-        // and Word 2 completes an unambiguous English grammatical phrase (`"Lots of"`, `"Too much"`).
-        if is_english_retroactive_phrase(&w1_raw_lower, &w2_final_lower, &w2_raw_lower)
-            && prev_entry.visible_word != prev_entry.raw_keys
+        // Direction A: Word 1 was kept as Vietnamese (e.g. `"Lots "` -> `"Lót "`,
+        // `"This "` -> `"Thí "`, `"Rust "` -> `"Rút "`, `"Past "` -> `"Pát "`),
+        // and Word 2 completes an unambiguous English phrase or VN->EN code switch.
+        let dict = crate::engine::english_dict();
+        let w2_unambiguous_en = w2_final_lower.is_ascii()
+            && w2_final_lower.len() >= 3
+            && !crate::spelling::is_in_vietnamese_dictionary(&w2_final_lower)
+            && (dict.is_english_word(&w2_final_lower)
+                || crate::english::is_tech_token(&w2_final_lower)
+                || !crate::spelling::is_valid_vietnamese_syllable(&w2_final_lower));
+        let w1_all_caps = prev_entry.raw_keys.len() >= 2
+            && prev_entry.raw_keys.chars().all(|c| c.is_ascii_uppercase())
+            && dict.is_english_word(&w1_raw_lower);
+        let w2_all_caps = current_final_word.len() >= 2
+            && current_final_word.chars().all(|c| c.is_ascii_uppercase())
+            && !crate::spelling::is_in_vietnamese_dictionary(&w2_final_lower);
+        let stat_en_retroactive = w2_unambiguous_en && {
+            let vn_bi = crate::stat_lm::lookup_bigram_scores(
+                &prev_entry.visible_word.to_lowercase(),
+                &w2_final_lower,
+            )
+            .map_or(0, |(p_vn, _)| p_vn);
+            let en_bi = crate::stat_lm::lookup_bigram_scores(&w1_raw_lower, &w2_final_lower)
+                .map_or(0, |(_, p_en)| p_en);
+            vn_bi == 0
+                && (en_bi >= 60
+                    || dict.is_english_dominant_collision(&w1_raw_lower)
+                    || matches!(w1_raw_lower.as_str(), "has" | "had" | "was"))
+        };
+        if prev_entry.visible_word != prev_entry.raw_keys
+            && (is_english_retroactive_phrase(&w1_raw_lower, &w2_final_lower, &w2_raw_lower)
+                || (w1_all_caps && w2_all_caps)
+                || stat_en_retroactive)
         {
             return Some((prev_entry.raw_keys.clone(), true));
         }
     } else {
-        // Direction B: Word 1 was auto-restored to English at sentence start because `prev_context`
-        // was `None` (e.g. `"Last "` for `"Lát"`, `"Nest "` for `"Nét"`, `"Cast "` for `"Cát"`,
-        // `"Max "` for `"Mã"`, `"Rust "` for `"Rút"`, `"This "` for `"Thí"`, `"Six "` for `"Sĩ"`),
-        // and Word 2 forms a genuine Vietnamese 2-syllable lexical compound (`"Lát nữa"`, `"Mã số"`,
-        // `"Rút tiền"`, `"Thí nghiệm"`, `"Sĩ quan"`).
+        // Direction B: Word 1 was auto-restored to English (e.g. `"Last "` for `"Lát"`,
+        // `"Car "` for `"Cả"`, `"Rust "` for `"Rút"`, `"This "` for `"Thí"`),
+        // and Word 2 forms a genuine Vietnamese 2-syllable lexical compound or high-confidence
+        // statistical Vietnamese bigram (`"cả ngày"`, `"lát nữa"`, `"mã số"`).
         let w1_vn = method_compose_vn(&prev_entry.raw_keys);
         let w1_vn_lower = w1_vn.to_lowercase();
+        let w2_is_vn_function_word = matches!(
+            w2_final_lower.as_str(),
+            "và" | "hoặc"
+                | "nhưng"
+                | "mà"
+                | "thì"
+                | "là"
+                | "của"
+                | "cho"
+                | "với"
+                | "để"
+                | "khi"
+                | "nên"
+                | "từ"
+                | "trên"
+                | "trong"
+                | "về"
+                | "đến"
+                | "tại"
+                | "bằng"
+                | "hay"
+        );
+        let stat_vn_retroactive = !w2_final_lower.is_ascii() && !w2_is_vn_function_word && {
+            let vn_bi = crate::stat_lm::lookup_bigram_scores(&w1_vn_lower, &w2_final_lower)
+                .map_or(0, |(p_vn, _)| p_vn);
+            let en_bi = crate::stat_lm::lookup_bigram_scores(&w1_raw_lower, &w2_final_lower)
+                .map_or(0, |(_, p_en)| p_en);
+            let pred_hit = crate::ngram_lm::predict_next_words(&[w1_vn_lower.as_str()], 3)
+                .iter()
+                .any(|p| p == &w2_final_lower);
+            en_bi == 0 && (vn_bi >= 90 || pred_hit)
+        };
         if w1_vn != prev_entry.visible_word
             && crate::spelling::is_valid_vietnamese_syllable(&w1_vn)
             && crate::spelling::is_in_vietnamese_dictionary(&w1_vn)
-            && is_vietnamese_lexical_compound(&w1_vn_lower, &w2_final_lower)
+            && (is_vietnamese_lexical_compound(&w1_vn_lower, &w2_final_lower)
+                || stat_vn_retroactive)
         {
             return Some((w1_vn, false));
         }

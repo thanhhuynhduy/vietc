@@ -714,8 +714,7 @@ pub fn run_with_evdev(
                             && daemon.config.candidate_bar
                             && daemon.engine.is_enabled()
                             && (!daemon.engine.buffer().is_empty()
-                                || daemon.caret_reselection.is_some()
-                                || !daemon.engine.predict_next_words(1).is_empty())
+                                || daemon.caret_reselection.is_some())
                             && (key_state.contains(evdev::KeyCode::KEY_LEFTALT)
                                 || key_state.contains(evdev::KeyCode::KEY_RIGHTALT))
                             && !key_state.contains(evdev::KeyCode::KEY_LEFTCTRL)
@@ -734,29 +733,30 @@ pub fn run_with_evdev(
                                 evdev::KeyCode::KEY_2 => 1,
                                 _ => 2,
                             };
-                            let commands = daemon.select_candidate(idx);
-                            crate::focus::clear_surrounding_word(&shared_focus);
-                            consumed_keys.insert(keycode);
-                            if !commands.is_empty() {
-                                // Release physically held Alt before injecting Backspace+Type so
-                                // target apps never receive Alt+Backspace or Alt+<char> mnemonics.
-                                for alt in
-                                    [evdev::KeyCode::KEY_LEFTALT, evdev::KeyCode::KEY_RIGHTALT]
-                                {
-                                    if key_state.contains(alt) {
-                                        injector.send_key_event(alt.code(), 0);
-                                        consumed_keys.insert(alt.code());
+                            if let Some(commands) = daemon.try_select_candidate(idx, false) {
+                                crate::focus::clear_surrounding_word(&shared_focus);
+                                consumed_keys.insert(keycode);
+                                if !commands.is_empty() {
+                                    // Release physically held Alt before injecting Backspace+Type so
+                                    // target apps never receive Alt+Backspace or Alt+<char> mnemonics.
+                                    for alt in
+                                        [evdev::KeyCode::KEY_LEFTALT, evdev::KeyCode::KEY_RIGHTALT]
+                                    {
+                                        if key_state.contains(alt) {
+                                            injector.send_key_event(alt.code(), 0);
+                                            consumed_keys.insert(alt.code());
+                                        }
                                     }
+                                    let outcome = execute_commands(
+                                        &*injector,
+                                        &commands,
+                                        &mut daemon.visible_revision,
+                                        focus_sync.last_focus_generation,
+                                    );
+                                    let _ = daemon.handle_transaction_outcome(outcome);
                                 }
-                                let outcome = execute_commands(
-                                    &*injector,
-                                    &commands,
-                                    &mut daemon.visible_revision,
-                                    focus_sync.last_focus_generation,
-                                );
-                                let _ = daemon.handle_transaction_outcome(outcome);
+                                continue;
                             }
-                            continue;
                         }
                         if value == 1
                             && !matches!(

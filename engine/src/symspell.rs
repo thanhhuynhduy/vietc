@@ -22,10 +22,14 @@ use crate::input_method::InputMethod;
 
 const MAX_SPATIAL_DIST: f32 = 1.25;
 const CORE_ENGLISH_RAW: &str = include_str!("english_words.txt");
+const EXTENDED_ENGLISH_RAW: &str = include_str!("english_extended.txt");
 
 struct SymSpellIndex {
     vn_exact: HashMap<String, &'static str>,
     vn_deletes: HashMap<String, Vec<(&'static str, String)>>,
+    vni_exact: HashMap<String, &'static str>,
+    vni_deletes: HashMap<String, Vec<(&'static str, String)>>,
+    en_core: HashSet<&'static str>,
     en_exact: HashSet<&'static str>,
     en_deletes: HashMap<String, Vec<&'static str>>,
 }
@@ -33,6 +37,12 @@ struct SymSpellIndex {
 fn symspell_index() -> &'static SymSpellIndex {
     static INDEX: OnceLock<SymSpellIndex> = OnceLock::new();
     INDEX.get_or_init(build_index)
+}
+
+/// Pre-builds the static SymSpell delete index so the first Space keystroke
+/// never incurs a lazy-initialization latency spike on the typing thread.
+pub fn warm_up() {
+    let _ = symspell_index();
 }
 
 fn push_deletes_1<V: Clone>(map: &mut HashMap<String, Vec<V>>, key: &str, value: V) {
@@ -48,6 +58,9 @@ fn push_deletes_1<V: Clone>(map: &mut HashMap<String, Vec<V>>, key: &str, value:
 fn build_index() -> SymSpellIndex {
     let mut vn_exact: HashMap<String, &'static str> = HashMap::with_capacity(7000);
     let mut vn_deletes: HashMap<String, Vec<(&'static str, String)>> =
+        HashMap::with_capacity(28000);
+    let mut vni_exact: HashMap<String, &'static str> = HashMap::with_capacity(7000);
+    let mut vni_deletes: HashMap<String, Vec<(&'static str, String)>> =
         HashMap::with_capacity(28000);
 
     for line in crate::spelling::vietnamese_dict_raw().lines() {
@@ -65,13 +78,51 @@ fn build_index() -> SymSpellIndex {
                 push_deletes_1(&mut vn_deletes, &key, (syl, canon));
             }
         }
+        if let Some(canon) = crate::ring_buffer::visible_to_canonical_raw(syl, InputMethod::Vni) {
+            if canon.len() >= 3 && canon.len() <= 10 && canon.is_ascii() {
+                if vni_exact.insert(canon.clone(), syl).is_none() {
+                    let key = canon.clone();
+                    push_deletes_1(&mut vni_deletes, &key, (syl, canon.clone()));
+                }
+                // Also index free-order end-marked VNI form (`"khong6"` alongside `"kho6ng"`).
+                let mut end_marked = String::with_capacity(canon.len());
+                for b in canon.bytes() {
+                    if b.is_ascii_alphabetic() {
+                        end_marked.push(b as char);
+                    }
+                }
+                for b in canon.bytes() {
+                    if b.is_ascii_digit() {
+                        end_marked.push(b as char);
+                    }
+                }
+                if end_marked != canon && vni_exact.insert(end_marked.clone(), syl).is_none() {
+                    let key = end_marked.clone();
+                    push_deletes_1(&mut vni_deletes, &key, (syl, end_marked));
+                }
+            }
+        }
     }
 
-    let mut en_exact: HashSet<&'static str> = HashSet::with_capacity(1600);
-    let mut en_deletes: HashMap<String, Vec<&'static str>> = HashMap::with_capacity(9000);
+    let mut en_core: HashSet<&'static str> = HashSet::with_capacity(1600);
+    let mut en_exact: HashSet<&'static str> = HashSet::with_capacity(32000);
+    let mut en_deletes: HashMap<String, Vec<&'static str>> = HashMap::with_capacity(180000);
     for line in CORE_ENGLISH_RAW.lines() {
         let w = line.trim();
         if w.len() >= 5
+            && w.len() <= 16
+            && w.is_ascii()
+            && w.bytes().all(|b| b.is_ascii_lowercase())
+        {
+            en_core.insert(w);
+            if en_exact.insert(w) {
+                push_deletes_1(&mut en_deletes, w, w);
+            }
+        }
+    }
+    for line in EXTENDED_ENGLISH_RAW.lines() {
+        let w = line.trim();
+        if w.len() >= 6
             && w.len() <= 16
             && w.is_ascii()
             && w.bytes().all(|b| b.is_ascii_lowercase())
@@ -84,6 +135,9 @@ fn build_index() -> SymSpellIndex {
     SymSpellIndex {
         vn_exact,
         vn_deletes,
+        vni_exact,
+        vni_deletes,
+        en_core,
         en_exact,
         en_deletes,
     }
@@ -107,6 +161,10 @@ fn weighted_spatial_edit(src: &str, dst: &str, layout: AutocorrectLayout) -> Opt
             0 => return Some((0, 0)),
             1 => {
                 let i = diffs[0];
+                // Never substitute across letter <-> digit rows (Task B2 safety).
+                if a[i].is_ascii_digit() != b[i].is_ascii_digit() {
+                    return None;
+                }
                 let d = key_distance_for_layout(layout, a[i], b[i]);
                 let cost = if d <= MAX_SPATIAL_DIST { 10 } else { 26 };
                 return Some((1, cost));
@@ -117,7 +175,12 @@ fn weighted_spatial_edit(src: &str, dst: &str, layout: AutocorrectLayout) -> Opt
                 if j == i + 1 && a[i] == b[j] && a[j] == b[i] {
                     return Some((1, 10));
                 }
-                // Two substitutions: require both spatially adjacent
+                // Two substitutions: require both spatially adjacent and same char class
+                if a[i].is_ascii_digit() != b[i].is_ascii_digit()
+                    || a[j].is_ascii_digit() != b[j].is_ascii_digit()
+                {
+                    return None;
+                }
                 let d1 = key_distance_for_layout(layout, a[i], b[i]);
                 let d2 = key_distance_for_layout(layout, a[j], b[j]);
                 if d1 <= MAX_SPATIAL_DIST && d2 <= MAX_SPATIAL_DIST {
@@ -223,6 +286,7 @@ fn looks_like_dev_identifier(raw_lower: &str) -> bool {
 fn try_vn_symspell(
     user_dict: &crate::user_dict::UserDict,
     raw_lower: &str,
+    method: InputMethod,
     layout: AutocorrectLayout,
     prev_words: &[&str],
 ) -> Option<String> {
@@ -230,6 +294,10 @@ fn try_vn_symspell(
         return None;
     }
     let idx = symspell_index();
+    let (vn_exact, vn_deletes) = match method {
+        InputMethod::Telex => (&idx.vn_exact, &idx.vn_deletes),
+        InputMethod::Vni => (&idx.vni_exact, &idx.vni_deletes),
+    };
     let mut seen: HashSet<&'static str> = HashSet::new();
     let mut scored: Vec<(&'static str, u8, i32, i32)> = Vec::new(); // (syl, dist, cost, ctx)
 
@@ -245,8 +313,8 @@ fn try_vn_symspell(
         }
     };
 
-    // 1. Missing 1 char: `raw_lower` itself is a 1-delete of a canonical Telex word
-    if let Some(entries) = idx.vn_deletes.get(raw_lower) {
+    // 1. Missing 1 char: `raw_lower` itself is a 1-delete of a canonical word
+    if let Some(entries) = vn_deletes.get(raw_lower) {
         for (syl, canon) in entries {
             consider(syl, canon);
         }
@@ -258,10 +326,10 @@ fn try_vn_symspell(
         let mut del = String::with_capacity(bytes.len() - 1);
         del.push_str(&raw_lower[..i]);
         del.push_str(&raw_lower[i + 1..]);
-        if let Some(&syl) = idx.vn_exact.get(&del) {
+        if let Some(&syl) = vn_exact.get(&del) {
             consider(syl, &del);
         }
-        if let Some(entries) = idx.vn_deletes.get(&del) {
+        if let Some(entries) = vn_deletes.get(&del) {
             for (syl, canon) in entries {
                 consider(syl, canon);
             }
@@ -381,12 +449,16 @@ fn try_core_en_symspell(
     layout: AutocorrectLayout,
     prev_words: &[&str],
 ) -> Option<String> {
-    if raw_lower.len() < 5 || raw_lower.len() > 16 || looks_like_dev_identifier(raw_lower) {
+    if raw_lower.len() < 5
+        || raw_lower.len() > 16
+        || !raw_lower.bytes().all(|b| b.is_ascii_lowercase())
+        || looks_like_dev_identifier(raw_lower)
+    {
         return None;
     }
     let idx = symspell_index();
     let mut seen: HashSet<&'static str> = HashSet::new();
-    let mut scored: Vec<(&'static str, i32, i32)> = Vec::new(); // (word, cost, ctx)
+    let mut scored: Vec<(&'static str, i32, i32, bool)> = Vec::new(); // (word, cost, ctx, is_core)
 
     let mut consider = |word: &'static str| {
         if !seen.insert(word) {
@@ -395,7 +467,8 @@ fn try_core_en_symspell(
         if let Some((dist, cost)) = weighted_spatial_edit(raw_lower, word, layout) {
             if dist == 1 && cost <= 16 {
                 let ctx = context_support_score(user_dict, prev_words, word, false);
-                scored.push((word, cost, ctx));
+                let is_core = idx.en_core.contains(word);
+                scored.push((word, cost, ctx, is_core));
             }
         }
     };
@@ -426,8 +499,8 @@ fn try_core_en_symspell(
         return None;
     }
     scored.sort_by(|a, b| {
-        let ra = a.2 - 6 * a.1;
-        let rb = b.2 - 6 * b.1;
+        let ra = a.2 + if a.3 { 40 } else { 0 } - 6 * a.1;
+        let rb = b.2 + if b.3 { 40 } else { 0 } - 6 * b.1;
         rb.cmp(&ra)
             .then_with(|| a.1.cmp(&b.1))
             .then_with(|| a.0.cmp(b.0))
@@ -437,6 +510,11 @@ fn try_core_en_symspell(
     }
     let best = scored[0];
     let second = scored[1];
+    // Core dictionary word at edit-1 wins decisively over non-core extended candidates
+    // unless context favors the extended candidate.
+    if best.3 && !second.3 && best.1 <= 14 && best.2 >= second.2 {
+        return Some(best.0.to_string());
+    }
     if !prev_words.is_empty()
         && best.2 >= 140
         && (best.2 - 6 * best.1) >= (second.2 - 6 * second.1) + 100
@@ -456,21 +534,31 @@ pub(crate) fn suggest_multi_error(
     prev_words: &[&str],
     compose: &impl Fn(&str) -> String,
 ) -> Option<String> {
-    if !raw_lower.bytes().all(|b| b.is_ascii_lowercase()) {
+    let valid_chars = match method {
+        InputMethod::Telex => raw_lower.bytes().all(|b| b.is_ascii_lowercase()),
+        InputMethod::Vni => {
+            raw_lower
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_lowercase())
+                && raw_lower
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || matches!(b, b'1'..=b'9'))
+                && raw_lower.bytes().filter(|b| b.is_ascii_lowercase()).count() >= 2
+        }
+    };
+    if !valid_chars {
         return None;
     }
     if prev_ctx == LanguageContext::English {
         return try_core_en_symspell(user_dict, raw_lower, layout, prev_words);
     }
 
-    if method == InputMethod::Telex {
-        if let Some(vn) = try_vn_symspell(user_dict, raw_lower, layout, prev_words) {
-            return Some(vn);
-        }
-        if let Some(split) = try_vn_missing_space_split(raw_lower, compose) {
-            return Some(split);
-        }
+    if let Some(vn) = try_vn_symspell(user_dict, raw_lower, method, layout, prev_words) {
+        return Some(vn);
     }
-
-    try_core_en_symspell(user_dict, raw_lower, layout, prev_words)
+    if let Some(en) = try_core_en_symspell(user_dict, raw_lower, layout, prev_words) {
+        return Some(en);
+    }
+    try_vn_missing_space_split(raw_lower, compose)
 }

@@ -137,6 +137,11 @@ fn bilingual_accuracy_benchmark_meets_m3_gate() {
             (*ok as f64) * 100.0 / (*tot as f64)
         );
     }
+    if std::env::var_os("DBOARD_BENCH_VERBOSE").is_some() {
+        for (cat, raw, exp, act) in &failures {
+            eprintln!("  FAIL [{cat}] raw={raw:?}\n    exp={exp:?}\n    act={act:?}");
+        }
+    }
 
     assert!(
         sentence_acc >= 97.0,

@@ -258,6 +258,47 @@ impl Engine {
         self.auto_cap.reset();
     }
 
+    /// Commits a user-selected candidate or next-word prediction without wiping
+    /// `ring_buffer`, enabling chained next-word prediction, personal bigram
+    /// learning, and Backspace rehydration.
+    pub fn commit_selected_word(&mut self, chosen: &str, trailing_space: bool) {
+        let prev_word = self
+            .learning_enabled
+            .then(|| self.ring_buffer.last().map(|e| e.visible_word.clone()))
+            .flatten();
+        self.clear_word_only();
+        self.last_dot_stem = None;
+        self.pending_restore_undo = None;
+        if chosen.is_empty() {
+            return;
+        }
+        let dict = english_dict();
+        let (mut entry, mut ctx) = build_surrounding_prev_entry(chosen, dict);
+        if ctx == LanguageContext::English && !dict.is_english_word(&chosen.to_ascii_lowercase()) {
+            ctx = LanguageContext::None;
+            entry.committed_context = LanguageContext::None;
+            entry.was_auto_restored = false;
+        }
+        entry.raw_keys =
+            visible_to_canonical_raw(chosen, self.method).unwrap_or_else(|| chosen.to_string());
+        entry.trailing_delimiters = if trailing_space {
+            " ".to_string()
+        } else {
+            String::new()
+        };
+        self.prev_context = ctx;
+        self.ring_buffer.push(entry);
+        if self.learning_enabled {
+            if let Some(prev) = prev_word {
+                self.user_dict.record_bigram_usage(&prev, chosen);
+            }
+        }
+        if trailing_space {
+            self.last_boundary_char = Some(' ');
+            self.auto_cap.on_flush_char(' ', Some(chosen));
+        }
+    }
+
     pub fn reset_visible_revision(&mut self) {
         self.visible_revision = 0;
         self.previous_screen_len = None;

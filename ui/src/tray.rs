@@ -382,6 +382,38 @@ impl Tray for VietTray {
             SubMenu {
                 label: "Gboard Features".into(),
                 submenu: vec![
+                    StandardItem {
+                        label: "Preset: Gboard Mode (All On)".into(),
+                        activate: Box::new(|this: &mut VietTray| {
+                            this.autocorrect = true;
+                            this.auto_capitalize = true;
+                            this.candidate_bar = true;
+                            Self::save_config_update(|cfg| {
+                                cfg.autocorrect = true;
+                                cfg.auto_capitalize = true;
+                                cfg.candidate_bar = true;
+                            });
+                            spawn_popup_if_available();
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    StandardItem {
+                        label: "Preset: Classic Mode (Minimal)".into(),
+                        activate: Box::new(|this: &mut VietTray| {
+                            this.autocorrect = false;
+                            this.auto_capitalize = false;
+                            this.candidate_bar = false;
+                            Self::save_config_update(|cfg| {
+                                cfg.autocorrect = false;
+                                cfg.auto_capitalize = false;
+                                cfg.candidate_bar = false;
+                            });
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    MenuItem::Separator,
                     CheckmarkItem {
                         label: "Autocorrect (SymSpell + Spatial)".into(),
                         checked: self.autocorrect,

@@ -170,3 +170,89 @@ fn mid_sentence_caret_reselection_alternatives_swap_cleanly() {
     assert!(engine.alternatives_for_word("a", None).is_empty());
     assert!(engine.alternatives_for_word("foo_bar", None).is_empty());
 }
+
+fn simulate_autocorrect_with_method(method: InputMethod, raw: &str) -> String {
+    let mut engine = Engine::new(method);
+    engine.set_auto_restore(true);
+    engine.set_autocorrect(true);
+    let mut screen = String::new();
+    for ch in raw.chars() {
+        match engine.process_key(ch) {
+            Some(EngineEvent::Replace(rep)) => {
+                for _ in 0..rep.delete_before_cursor {
+                    screen.pop();
+                }
+                screen.push_str(&rep.insert);
+                if dboard_engine::is_flush_char(ch) {
+                    screen.push(ch);
+                }
+            }
+            Some(EngineEvent::AutoRestore(word)) => {
+                screen.push_str(&word);
+                if dboard_engine::is_flush_char(ch) {
+                    screen.push(ch);
+                }
+            }
+            Some(EngineEvent::Insert(text)) | Some(EngineEvent::Flush(text)) => {
+                screen.push_str(&text);
+            }
+            Some(EngineEvent::UndoTones {
+                backspaces,
+                restored,
+            }) => {
+                for _ in 0..backspaces {
+                    screen.pop();
+                }
+                screen.push_str(&restored);
+            }
+            Some(EngineEvent::Paste(text)) => screen.push_str(&text),
+            None => {
+                if ch == '\x08' {
+                    screen.pop();
+                } else {
+                    screen.push(ch);
+                }
+            }
+        }
+    }
+    screen
+}
+
+#[test]
+fn vni_symspell_and_extended_english_corrections_preserve_safety() {
+    // 1. VNI SymSpell: missing char, extra char, and missing-space split
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "khog6 "),
+        "không "
+    );
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "khonhg6 "),
+        "không "
+    );
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "khong6biet61 "),
+        "không biết "
+    );
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "xinchao2 "),
+        "xin chào "
+    );
+    // Tech alphanumeric tokens in VNI must NEVER be corrupted by SymSpell
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "u32 "),
+        "u32 "
+    );
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "sha256 "),
+        "sha256 "
+    );
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "h264 "),
+        "h264 "
+    );
+
+    // 2. Extended English SymSpell (beyond the 1.4k core list)
+    assert_eq!(simulate_autocorrect("algoritm "), "algorithm ");
+    assert_eq!(simulate_autocorrect("tomorow "), "tomorrow ");
+    assert_eq!(simulate_autocorrect("necesary "), "necessary ");
+}

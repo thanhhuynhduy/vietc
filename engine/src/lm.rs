@@ -246,6 +246,15 @@ pub(crate) fn evaluate_trigram(
         return Some(false);
     }
 
+    // 2b. Bilingual coordination of two English terms via Vietnamese conjunction
+    //     (`"docker và rust"`, `"git hoặc svn"`).
+    if prev2_ctx == LanguageContext::English
+        && matches!(p1.as_str(), "và" | "hoặc")
+        && crate::engine::english_dict().is_english_dominant_collision(&raw)
+    {
+        return Some(true);
+    }
+
     // 3. Quantized 2-word momentum tiebreaker when `prev1` was neutral (`None`)
     //    but `prev2` had strong language momentum (`prev2_ctx != None`).
     if prev1_ctx == LanguageContext::None && prev2_ctx != LanguageContext::None {

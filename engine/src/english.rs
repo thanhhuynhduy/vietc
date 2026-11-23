@@ -531,6 +531,10 @@ pub(crate) fn should_restore_word_decision(
         return prev_context == LanguageContext::English;
     }
 
+    if prev_context == LanguageContext::English && dict.is_english_word(&raw_lower) {
+        return true;
+    }
+
     false
 }
 

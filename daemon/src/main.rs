@@ -90,6 +90,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine_enabled = Arc::new(AtomicBool::new(config.start_enabled));
     let mut daemon = Daemon::new(config, config_path.clone(), engine_enabled.clone());
 
+    let _ = thread::Builder::new()
+        .name("dboard-warmup".into())
+        .spawn(dboard_engine::warm_up_symspell);
+
     daemon.write_status();
     daemon.write_method_status();
 

@@ -101,6 +101,63 @@ pub fn hit_test_slot(slot_bounds: &[(i32, i32)], pointer_x: f64) -> Option<usize
         .position(|&(start, end)| px >= start && px <= end)
 }
 
+#[derive(Debug, Clone)]
+pub struct OutputInfo {
+    pub global_name: u32,
+    pub output: Option<wl_output::WlOutput>,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub scale: i32,
+}
+
+impl OutputInfo {
+    fn logical_size(&self) -> (i32, i32, i32) {
+        let scale = self.scale.clamp(1, 2);
+        let lw = if self.width > 0 {
+            self.width / scale
+        } else {
+            1920
+        };
+        let lh = if self.height > 0 {
+            self.height / scale
+        } else {
+            1080
+        };
+        (lw, lh, scale)
+    }
+}
+
+/// Select the output containing global `caret` coordinates and translate `caret`
+/// into output-local logical coordinates `(x - out.x, y - out.y)`.
+pub fn select_output_and_local_caret(
+    outputs: &[OutputInfo],
+    caret: Option<CaretRect>,
+) -> (Option<u32>, i32, i32, i32, Option<CaretRect>) {
+    let Some(first) = outputs.first() else {
+        return (None, 1920, 1080, 1, caret);
+    };
+    let Some(c) = caret else {
+        let (lw, lh, scale) = first.logical_size();
+        return (None, lw, lh, scale, None);
+    };
+    let matched = outputs
+        .iter()
+        .find(|o| {
+            let (lw, lh, _) = o.logical_size();
+            c.x >= o.x && c.x < o.x + lw && c.y >= o.y && c.y < o.y + lh
+        })
+        .unwrap_or(first);
+    let (lw, lh, scale) = matched.logical_size();
+    let local_caret = CaretRect {
+        x: c.x.saturating_sub(matched.x),
+        y: c.y.saturating_sub(matched.y),
+        h: c.h,
+    };
+    (Some(matched.global_name), lw, lh, scale, Some(local_caret))
+}
+
 #[derive(Default)]
 struct LayerState {
     compositor: Option<wl_compositor::WlCompositor>,
@@ -108,9 +165,7 @@ struct LayerState {
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     seat: Option<wl_seat::WlSeat>,
     pointer: Option<wl_pointer::WlPointer>,
-    output_width: i32,
-    output_height: i32,
-    output_scale: i32,
+    outputs: Vec<OutputInfo>,
     pointer_x: f64,
     hovered_slot: Option<usize>,
     clicked_slot: Option<usize>,
@@ -129,13 +184,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LayerState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            match interface.as_str() {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => match interface.as_str() {
                 "wl_compositor" if state.compositor.is_none() => {
                     state.compositor = Some(registry.bind(name, version.min(4), qh, ()));
                 }
@@ -145,40 +199,64 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LayerState {
                 "zwlr_layer_shell_v1" if state.layer_shell.is_none() => {
                     state.layer_shell = Some(registry.bind(name, version.min(4), qh, ()));
                 }
-                "wl_output" if state.output_width == 0 => {
-                    let _: wl_output::WlOutput = registry.bind(name, version.min(3), qh, ());
+                "wl_output" => {
+                    let out: wl_output::WlOutput = registry.bind(name, version.min(3), qh, name);
+                    state.outputs.push(OutputInfo {
+                        global_name: name,
+                        output: Some(out),
+                        x: 0,
+                        y: 0,
+                        width: 0,
+                        height: 0,
+                        scale: 1,
+                    });
                 }
                 "wl_seat" if state.seat.is_none() => {
                     state.seat = Some(registry.bind(name, version.min(5), qh, ()));
                 }
                 _ => {}
+            },
+            wl_registry::Event::GlobalRemove { name } => {
+                state.outputs.retain(|o| o.global_name != name);
             }
+            _ => {}
         }
     }
 }
 
-impl Dispatch<wl_output::WlOutput, ()> for LayerState {
+impl Dispatch<wl_output::WlOutput, u32> for LayerState {
     fn event(
         state: &mut Self,
         _: &wl_output::WlOutput,
         event: wl_output::Event,
-        _: &(),
+        global_name: &u32,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        let Some(out) = state
+            .outputs
+            .iter_mut()
+            .find(|o| o.global_name == *global_name)
+        else {
+            return;
+        };
         match event {
+            wl_output::Event::Geometry { x, y, .. } => {
+                out.x = x;
+                out.y = y;
+            }
             wl_output::Event::Mode {
                 flags: WEnum::Value(f),
                 width,
                 height,
                 ..
             } if f.contains(wl_output::Mode::Current) && width > 0 && height > 0 => {
-                state.output_width = width;
-                state.output_height = height;
+                out.width = width;
+                out.height = height;
             }
             wl_output::Event::Scale { factor } => {
                 if factor >= 1 {
-                    state.output_scale = factor.min(2);
+                    out.scale = factor.min(2);
                 }
             }
             _ => {}
@@ -286,6 +364,7 @@ pub struct WaylandLayerBar {
     last_caret: Option<CaretRect>,
     last_placement: Option<PillPlacement>,
     last_width: u32,
+    bound_output_name: Option<u32>,
 }
 
 impl WaylandLayerBar {
@@ -294,10 +373,7 @@ impl WaylandLayerBar {
         let mut queue = connection.new_event_queue::<LayerState>();
         let qh = queue.handle();
         let _registry = connection.display().get_registry(&qh, ());
-        let mut state = LayerState {
-            output_scale: 1,
-            ..LayerState::default()
-        };
+        let mut state = LayerState::default();
         queue.roundtrip(&mut state).map_err(io::Error::other)?;
 
         let compositor = state.compositor.as_ref().ok_or_else(|| {
@@ -347,6 +423,7 @@ impl WaylandLayerBar {
             last_caret: None,
             last_placement: None,
             last_width: MIN_BAR_WIDTH,
+            bound_output_name: None,
         })
     }
 
@@ -379,24 +456,57 @@ impl WaylandLayerBar {
         Ok(())
     }
 
+    fn rebind_layer_surface_for_output(&mut self, target_output: Option<u32>) -> io::Result<()> {
+        if self.bound_output_name == target_output {
+            return Ok(());
+        }
+        let Some(layer_shell) = self.state.layer_shell.clone() else {
+            return Ok(());
+        };
+        let wl_out = target_output.and_then(|name| {
+            self.state
+                .outputs
+                .iter()
+                .find(|o| o.global_name == name)
+                .and_then(|o| o.output.clone())
+        });
+        let qh = self.queue.handle();
+        self.surface.attach(None, 0, 0);
+        self.surface.commit();
+        self.layer_surface.destroy();
+        let next = layer_shell.get_layer_surface(
+            &self.surface,
+            wl_out.as_ref(),
+            zwlr_layer_shell_v1::Layer::Overlay,
+            "dboard-candidates".into(),
+            &qh,
+            (),
+        );
+        next.set_exclusive_zone(0);
+        next.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+        self.layer_surface = next;
+        self.bound_output_name = target_output;
+        self.last_placement = None;
+        self.state.configured = false;
+        self.surface.commit();
+        self.queue
+            .roundtrip(&mut self.state)
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
     pub fn show(&mut self, candidates: &[String], caret: Option<CaretRect>) -> io::Result<()> {
         let (bar_w, slot_bounds) = compute_slot_layout(candidates);
         self.state.slot_bounds = slot_bounds.clone();
         self.last_candidates = candidates.to_vec();
         self.last_caret = caret;
 
-        let scale = self.state.output_scale.clamp(1, 2);
-        let out_w = if self.state.output_width > 0 {
-            self.state.output_width / scale
-        } else {
-            1920
-        };
-        let out_h = if self.state.output_height > 0 {
-            self.state.output_height / scale
-        } else {
-            1080
-        };
-        let placement = compute_pill_placement(caret, bar_w, BAR_HEIGHT, out_w, out_h);
+        let (target_output, out_w, out_h, scale, local_caret) =
+            select_output_and_local_caret(&self.state.outputs, caret);
+        if self.state.outputs.len() > 1 {
+            self.rebind_layer_surface_for_output(target_output)?;
+        }
+        let placement = compute_pill_placement(local_caret, bar_w, BAR_HEIGHT, out_w, out_h);
 
         if self.last_width != bar_w || self.last_placement != Some(placement) {
             self.layer_surface.set_size(bar_w, BAR_HEIGHT);
@@ -608,8 +718,7 @@ pub fn render_gboard_pill_argb8888(
         }
     }
 
-    // Draw candidate badges & Vietnamese glyphs scaled crisply by `scale`
-    let base_y = (logical_h.saturating_sub(crate::font::CELL_H)) / 2;
+    // Draw candidate badges & Vietnamese glyphs via anti-aliased TrueType (or 8x16 bitmap fallback)
     for (idx, (cand, &(sx, _))) in candidates
         .iter()
         .take(3)
@@ -617,31 +726,19 @@ pub fn render_gboard_pill_argb8888(
         .enumerate()
     {
         let label = format!("[{}] {}", idx + 1, cand);
-        let mut pen_x = (sx + 8).max(8) as u32;
-        for (ci, ch) in label.chars().enumerate() {
-            if pen_x + crate::font::CELL_W >= logical_w.saturating_sub(8) {
-                break;
-            }
-            let color = if ci < 3 { badge_fg } else { fg };
-            let glyph = crate::font::glyph_8x16(ch);
-            for (row, &bits) in glyph.iter().enumerate() {
-                for col in 0..crate::font::CELL_W {
-                    if (bits & (1 << (7 - col))) != 0 {
-                        for sy in 0..scale {
-                            for sx_p in 0..scale {
-                                let px = (pen_x + col) * scale + sx_p;
-                                let py = (base_y + row as u32) * scale + sy;
-                                if px < width && py < height {
-                                    let off = ((py * width + px) * 4) as usize;
-                                    buf[off..off + 4].copy_from_slice(&color);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            pen_x += crate::font::CELL_W;
-        }
+        crate::vector_font::draw_candidate_label(
+            &mut buf,
+            width,
+            height,
+            logical_w,
+            logical_h,
+            scale,
+            sx,
+            &label,
+            badge_fg,
+            fg,
+            blend_premul,
+        );
     }
 
     buf
@@ -715,6 +812,49 @@ mod tests {
         assert!(
             fg_pixels > 200,
             "expected crisp HiDPI glyphs, got {fg_pixels}"
+        );
+    }
+
+    #[test]
+    fn selects_matching_monitor_and_translates_global_caret_coordinates() {
+        let outputs = vec![
+            OutputInfo {
+                global_name: 10,
+                output: None,
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1,
+            },
+            OutputInfo {
+                global_name: 20,
+                output: None,
+                x: 1920,
+                y: 0,
+                width: 3840,
+                height: 2160,
+                scale: 2,
+            },
+        ];
+
+        let (out_name, lw, lh, scale, local) = select_output_and_local_caret(
+            &outputs,
+            Some(CaretRect {
+                x: 2100,
+                y: 300,
+                h: 22,
+            }),
+        );
+        assert_eq!(out_name, Some(20));
+        assert_eq!((lw, lh, scale), (1920, 1080, 2));
+        assert_eq!(
+            local,
+            Some(CaretRect {
+                x: 180,
+                y: 300,
+                h: 22
+            })
         );
     }
 }
