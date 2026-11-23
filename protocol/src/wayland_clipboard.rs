@@ -3,12 +3,14 @@
 //! (armed text request fully written and closed), never pre-arm or `x-kde-passwordManagerHint`.
 //! Timeout/focus loss leaves selection intact; retire drains accepted pipes while rejecting new ones.
 
+#[cfg(test)]
+use std::os::{
+    fd::{FromRawFd, OwnedFd},
+    unix::net::UnixStream,
+};
 use std::{
     io,
-    os::{
-        fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
-        unix::{ffi::OsStrExt, net::UnixStream},
-    },
+    os::fd::{AsFd, AsRawFd},
     sync::Arc,
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -273,41 +275,8 @@ fn connect() -> io::Result<Connection> {
         }
         runtime.join(display)
     };
-    let bytes = path.as_os_str().as_bytes();
-    // Zeroed sockaddr_un has a valid family/path representation and NUL terminator.
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.len() >= addr.sun_path.len() || bytes.contains(&0) {
-        return Err(err(
-            io::ErrorKind::InvalidInput,
-            "invalid Wayland socket path",
-        ));
-    }
-    addr.sun_family = libc::AF_UNIX as _;
-    for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
-        *dst = *src as _;
-    }
-    let raw = unsafe {
-        libc::socket(
-            libc::AF_UNIX,
-            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
-            0,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    if unsafe {
-        libc::connect(
-            fd.as_raw_fd(),
-            (&addr as *const libc::sockaddr_un).cast(),
-            std::mem::size_of_val(&addr) as _,
-        )
-    } < 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Connection::from_socket(UnixStream::from(fd)).map_err(other)
+    let stream = crate::wayland_vk_connect::connect_unix_nonblocking(&path)?;
+    Connection::from_socket(stream).map_err(other)
 }
 
 #[derive(Clone, Copy)]

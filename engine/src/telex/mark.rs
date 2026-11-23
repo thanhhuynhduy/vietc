@@ -21,6 +21,46 @@ fn is_tone_key(ch: char) -> bool {
     matches!(lower(ch), 's' | 'f' | 'r' | 'x' | 'j')
 }
 
+/// Only allow Telex `dd` -> `đ` (and `ddd` -> `dd` undo) before any vowel appears
+/// in the syllable: covers onset `ddi`/`ddos`/`DDANG` and consonant-only Vietnamese
+/// abbreviations (`QDD-TTg` -> `QĐ-TTg`, `VNDD`) while preventing mid-word `đ`
+/// flashes in English words (`add`, `odd`, `reddit`, `hidden`, `middle`, `wedding`).
+fn can_apply_dd_at(raw: &[char], d_first_idx: usize) -> bool {
+    !raw[..d_first_idx].iter().any(|&ch| is_base_vowel(ch))
+}
+
+/// Allow free-order Telex circumflex across a valid Vietnamese coda (`khongo` -> `không`,
+/// `vietej` -> `việt`, `tienges` -> `tiếng`, `tana` -> `tân`) only when:
+/// - characters strictly between `j` and `i` form a valid Vietnamese coda (`c,ch,m,n,ng,nh,p,t`)
+/// - nothing after `i` is a non-tone letter (blocking `banana`, `canada`, `benefit`, `manage`, `tenet`)
+/// - the raw word is not a known English word (blocking `mono`, `mama`, `meme`, `papa`, `toto`, etc.)
+fn can_circumflex_across_coda(raw: &[char], consumed: &[bool], j: usize, i: usize) -> bool {
+    let trigger = lower(raw[i]);
+    // Allow optional repeated trigger (for double-key undo: `khongoo` -> `khongo`)
+    // and optional Telex tone/strip keys after the circumflex trigger.
+    if !raw[i + 1..]
+        .iter()
+        .all(|&ch| lower(ch) == trigger || is_tone_key(ch) || lower(ch) == 'z')
+    {
+        return false;
+    }
+    let coda: String = (j + 1..i)
+        .filter(|&k| !consumed[k])
+        .map(|k| lower(raw[k]))
+        .collect();
+    if !matches!(
+        coda.as_str(),
+        "c" | "ch" | "m" | "n" | "ng" | "nh" | "p" | "t"
+    ) {
+        return false;
+    }
+    // Check that the raw ASCII word is not in the English dictionary (prevents
+    // transforming English words like `mono`, `mama`, `meme`, `papa` while
+    // keeping `khongo`, `viete`, `vietej`, `tienges`, `tana` free-order).
+    let raw_lower: String = raw.iter().map(|&ch| lower(ch)).collect();
+    !crate::engine::english_dict().is_english_word(&raw_lower)
+}
+
 fn first_tone_undo_index(raw: &[char]) -> Option<usize> {
     let mut seen_vowel = false;
     let mut active_tone: Option<(usize, char)> = None;
@@ -106,7 +146,7 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         let current = lower(raw[i]);
         let previous = lower(raw[i - 1]);
 
-        if previous == 'd' && current == 'd' {
+        if previous == 'd' && current == 'd' && can_apply_dd_at(raw, i - 1) {
             letters[i - 1] = if raw[i - 1].is_uppercase() {
                 'Đ'
             } else {
@@ -122,16 +162,19 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
 
         if matches!(current, 'a' | 'e' | 'o') {
             let matching = (0..i).rev().find(|&j| {
-                !consumed[j]
-                    && lower(raw[j]) == current
-                    && marks[j] == VowelMark::None
-                    && raw[j + 1..i]
-                        .iter()
-                        .all(|&ch| matches!(lower(ch), 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
-                    && !(current == 'o'
+                if consumed[j] || lower(raw[j]) != current || marks[j] != VowelMark::None {
+                    return false;
+                }
+                let between_all_vowels = raw[j + 1..i]
+                    .iter()
+                    .all(|&ch| matches!(lower(ch), 'a' | 'e' | 'i' | 'o' | 'u' | 'y'));
+                if between_all_vowels {
+                    return !(current == 'o'
                         && raw[j + 1..i]
                             .iter()
-                            .any(|&ch| matches!(lower(ch), 'a' | 'e')))
+                            .any(|&ch| matches!(lower(ch), 'a' | 'e')));
+                }
+                can_circumflex_across_coda(raw, &consumed, j, i)
             });
             if let Some(j) = matching {
                 marks[j] = VowelMark::Circumflex;
@@ -309,7 +352,7 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
 
     for window in raw.windows(3).enumerate() {
         let (start, chars) = window;
-        if chars.iter().all(|&ch| lower(ch) == 'd') {
+        if chars.iter().all(|&ch| lower(ch) == 'd') && can_apply_dd_at(raw, start) {
             letters[start] = raw[start];
             letters[start + 1] = raw[start + 1];
             letters[start + 2] = if raw[start + 1].is_uppercase() {

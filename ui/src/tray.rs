@@ -359,8 +359,7 @@ impl Tray for VietTray {
             StandardItem {
                 label: "Quit".into(),
                 activate: Box::new(|_| {
-                    crate::stop_daemon();
-                    std::process::exit(0);
+                    crate::request_exit();
                 }),
                 ..Default::default()
             }
@@ -394,21 +393,18 @@ pub fn run() {
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
         let _ = std::fs::create_dir_all(&dir);
 
+        let watch_mask = libc::IN_CLOSE_WRITE
+            | libc::IN_MOVED_TO
+            | libc::IN_MODIFY
+            | libc::IN_CREATE
+            | libc::IN_DELETE_SELF
+            | libc::IN_MOVE_SELF;
         let mut inotify_fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
         let mut wd = -1;
 
         if inotify_fd >= 0 {
             if let Ok(c_path) = std::ffi::CString::new(dir.to_string_lossy().as_bytes()) {
-                wd = unsafe {
-                    libc::inotify_add_watch(
-                        inotify_fd,
-                        c_path.as_ptr(),
-                        libc::IN_CLOSE_WRITE
-                            | libc::IN_MOVED_TO
-                            | libc::IN_MODIFY
-                            | libc::IN_CREATE,
-                    )
-                };
+                wd = unsafe { libc::inotify_add_watch(inotify_fd, c_path.as_ptr(), watch_mask) };
             }
         }
 
@@ -426,14 +422,35 @@ pub fn run() {
                 };
                 let res = unsafe { libc::poll(&mut pfd, 1, 500) };
                 if res > 0 && (pfd.revents & libc::POLLIN) != 0 {
-                    while unsafe {
-                        libc::read(
-                            inotify_fd,
-                            buffer.as_mut_ptr() as *mut libc::c_void,
-                            buffer.len(),
-                        )
-                    } > 0
-                    {}
+                    loop {
+                        let n = unsafe {
+                            libc::read(
+                                inotify_fd,
+                                buffer.as_mut_ptr() as *mut libc::c_void,
+                                buffer.len(),
+                            )
+                        };
+                        if n <= 0 {
+                            break;
+                        }
+                        let mut offset = 0usize;
+                        let total = n as usize;
+                        let hdr_size = std::mem::size_of::<libc::inotify_event>();
+                        while offset + hdr_size <= total {
+                            let ev = unsafe {
+                                std::ptr::read_unaligned(
+                                    buffer.as_ptr().add(offset) as *const libc::inotify_event
+                                )
+                            };
+                            if (ev.mask
+                                & (libc::IN_IGNORED | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF))
+                                != 0
+                            {
+                                wd = -1;
+                            }
+                            offset += hdr_size + ev.len as usize;
+                        }
+                    }
                 }
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -442,16 +459,10 @@ pub fn run() {
                         unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
                 }
                 if inotify_fd >= 0 && wd < 0 {
+                    let _ = std::fs::create_dir_all(&dir);
                     if let Ok(c_path) = std::ffi::CString::new(dir.to_string_lossy().as_bytes()) {
                         wd = unsafe {
-                            libc::inotify_add_watch(
-                                inotify_fd,
-                                c_path.as_ptr(),
-                                libc::IN_CLOSE_WRITE
-                                    | libc::IN_MOVED_TO
-                                    | libc::IN_MODIFY
-                                    | libc::IN_CREATE,
-                            )
+                            libc::inotify_add_watch(inotify_fd, c_path.as_ptr(), watch_mask)
                         };
                     }
                 }

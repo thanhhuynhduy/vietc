@@ -15,7 +15,7 @@
 
 use std::fmt::Write;
 
-use crate::layout::char_to_evdev_and_shift;
+use crate::layout::{char_to_evdev_and_shift_for_layout, key_pair_for_layout, KeyboardLayout};
 
 pub(crate) const XKB_MOD_SHIFT: u32 = 1 << 0;
 pub(crate) const XKB_MOD_LOCK: u32 = 1 << 1;
@@ -126,7 +126,19 @@ const EIGHT_LEVEL_KEYS: [(&str, u32, &str, &str); 23] = [
     ("AB04", 47, "v", "V"),
 ];
 
-pub(crate) fn char_to_vk_stroke(ch: char) -> Option<VkKeyStroke> {
+/// Returns `true` if `evdev_code` is bound to `DBOARD_EIGHT_LEVEL`, whose
+/// levels are shifted by `Lock` (`CapsLock`) regardless of base ASCII layout
+/// (e.g. Dvorak `AD01..AD03`/`AB01` carry Vietnamese vowels on levels 3..8).
+pub(crate) fn is_eight_level_evdev(evdev_code: u32) -> bool {
+    EIGHT_LEVEL_KEYS
+        .iter()
+        .any(|&(_, code, _, _)| code == evdev_code)
+}
+
+pub(crate) fn char_to_vk_stroke_for_layout(
+    layout: KeyboardLayout,
+    ch: char,
+) -> Option<VkKeyStroke> {
     for (pair_idx, &(lo, up)) in VIETNAMESE_PAIRS.iter().enumerate() {
         if ch == lo || ch == up {
             let key_idx = pair_idx / 3;
@@ -149,11 +161,16 @@ pub(crate) fn char_to_vk_stroke(ch: char) -> Option<VkKeyStroke> {
         }
     }
 
-    let (evdev_code, needs_shift) = char_to_evdev_and_shift(ch)?;
+    let (evdev_code, needs_shift) = char_to_evdev_and_shift_for_layout(layout, ch)?;
     Some(VkKeyStroke {
         evdev_code,
         modifiers: if needs_shift { XKB_MOD_SHIFT } else { 0 },
     })
+}
+
+#[cfg(test)]
+pub(crate) fn char_to_vk_stroke(ch: char) -> Option<VkKeyStroke> {
+    char_to_vk_stroke_for_layout(KeyboardLayout::UsQwerty, ch)
 }
 
 /// Returns `true` if `keycode` is a standard typing, editing, navigation, or
@@ -260,7 +277,51 @@ const STANDARD_KEYS: &[(&str, u32, &str, &str)] = &[
     ("RWIN", 126, "ONE_LEVEL", "[ Super_R ]"),
 ];
 
-pub(crate) fn build_xkb_keymap() -> String {
+fn ascii_to_xkb_keysym(ch: char) -> String {
+    match ch {
+        'a'..='z' | 'A'..='Z' | '0'..='9' => ch.to_string(),
+        '!' => "exclam".into(),
+        '@' => "at".into(),
+        '#' => "numbersign".into(),
+        '$' => "dollar".into(),
+        '%' => "percent".into(),
+        '^' => "asciicircum".into(),
+        '&' => "ampersand".into(),
+        '*' => "asterisk".into(),
+        '(' => "parenleft".into(),
+        ')' => "parenright".into(),
+        '-' => "minus".into(),
+        '_' => "underscore".into(),
+        '=' => "equal".into(),
+        '+' => "plus".into(),
+        '[' => "bracketleft".into(),
+        '{' => "braceleft".into(),
+        ']' => "bracketright".into(),
+        '}' => "braceright".into(),
+        ';' => "semicolon".into(),
+        ':' => "colon".into(),
+        '\'' => "apostrophe".into(),
+        '"' => "quotedbl".into(),
+        '`' => "grave".into(),
+        '~' => "asciitilde".into(),
+        '\\' => "backslash".into(),
+        '|' => "bar".into(),
+        ',' => "comma".into(),
+        '<' => "less".into(),
+        '.' => "period".into(),
+        '>' => "greater".into(),
+        '/' => "slash".into(),
+        '?' => "question".into(),
+        _ => format!("U{:04X}", ch as u32),
+    }
+}
+
+pub(crate) fn is_layout_alpha_evdev(layout: KeyboardLayout, evdev_code: u32) -> bool {
+    key_pair_for_layout(layout, evdev_code as u16)
+        .is_some_and(|(unshifted, _)| unshifted.is_ascii_alphabetic())
+}
+
+pub(crate) fn build_xkb_keymap_for_layout(layout: KeyboardLayout) -> String {
     let mut out = String::with_capacity(16_384);
     out.push_str("xkb_keymap {\n");
     out.push_str("xkb_keycodes \"dboard_vk\" {\n");
@@ -272,6 +333,9 @@ pub(crate) fn build_xkb_keymap() -> String {
     for &(name, evdev, _, _) in &EIGHT_LEVEL_KEYS {
         let _ = writeln!(out, "    <{name}> = {};", evdev + 8);
     }
+    out.push_str("    indicator 1 = \"Caps Lock\";\n");
+    out.push_str("    indicator 2 = \"Num Lock\";\n");
+    out.push_str("    indicator 3 = \"Scroll Lock\";\n");
     out.push_str("};\n");
 
     out.push_str(
@@ -330,6 +394,33 @@ xkb_compatibility "dboard_vk" {
     interpret Shift_Lock+AnyOf(Shift+Lock) {
         action= LockMods(modifiers=Lock);
     };
+    interpret Caps_Lock+AnyOf(all) {
+        action= LockMods(modifiers=Lock);
+    };
+    interpret Alt_L+AnyOf(all) {
+        virtualModifier= Alt;
+        action= SetMods(modifiers=Alt);
+    };
+    interpret Alt_R+AnyOf(all) {
+        virtualModifier= Alt;
+        action= SetMods(modifiers=Alt);
+    };
+    interpret Meta_L+AnyOf(all) {
+        virtualModifier= Meta;
+        action= SetMods(modifiers=Meta);
+    };
+    interpret Meta_R+AnyOf(all) {
+        virtualModifier= Meta;
+        action= SetMods(modifiers=Meta);
+    };
+    interpret Super_L+AnyOf(all) {
+        virtualModifier= Super;
+        action= SetMods(modifiers=Super);
+    };
+    interpret Super_R+AnyOf(all) {
+        virtualModifier= Super;
+        action= SetMods(modifiers=Super);
+    };
     interpret Num_Lock+AnyOf(all) {
         virtualModifier= NumLock;
         action= LockMods(modifiers=NumLock);
@@ -340,21 +431,53 @@ xkb_compatibility "dboard_vk" {
     interpret ISO_Level5_Shift+AnyOf(all) {
         action= SetMods(modifiers=Mod3);
     };
+    indicator "Caps Lock" {
+        whichModState= locked;
+        modifiers= Lock;
+    };
+    indicator "Num Lock" {
+        whichModState= locked;
+        modifiers= NumLock;
+    };
 };
 xkb_symbols "dboard_vk" {
 "#,
     );
-    out.push_str("    name[Group1] = \"English (US)\";\n");
+    let group_name = match layout {
+        KeyboardLayout::UsQwerty => "English (US)",
+        KeyboardLayout::Dvorak => "English (US Dvorak)",
+        KeyboardLayout::Colemak => "English (US Colemak)",
+    };
+    let _ = writeln!(out, "    name[Group1] = \"{group_name}\";");
 
-    for &(name, _, ty, syms) in STANDARD_KEYS {
-        let _ = writeln!(
-            out,
-            "    key <{name}> {{ type[Group1] = \"{ty}\", symbols[Group1] = {syms} }};"
-        );
+    for &(name, evdev, ty, syms) in STANDARD_KEYS {
+        if let Some((base, shifted)) = key_pair_for_layout(layout, evdev as u16) {
+            let eff_ty = if base.is_ascii_alphabetic() {
+                "ALPHABETIC"
+            } else {
+                "TWO_LEVEL"
+            };
+            let s1 = ascii_to_xkb_keysym(base);
+            let s2 = ascii_to_xkb_keysym(shifted);
+            let _ = writeln!(
+                out,
+                "    key <{name}> {{ type[Group1] = \"{eff_ty}\", symbols[Group1] = [ {s1}, {s2} ] }};"
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "    key <{name}> {{ type[Group1] = \"{ty}\", symbols[Group1] = {syms} }};"
+            );
+        }
     }
-    for (i, &(name, _, lower, upper)) in EIGHT_LEVEL_KEYS.iter().enumerate() {
+    for (i, &(name, evdev, default_lower, default_upper)) in EIGHT_LEVEL_KEYS.iter().enumerate() {
         let ty = "DBOARD_EIGHT_LEVEL";
-        let mut syms = format!("[ {lower}, {upper}");
+        let (l1, l2) = if let Some((base, shifted)) = key_pair_for_layout(layout, evdev as u16) {
+            (ascii_to_xkb_keysym(base), ascii_to_xkb_keysym(shifted))
+        } else {
+            (default_lower.to_string(), default_upper.to_string())
+        };
+        let mut syms = format!("[ {l1}, {l2}");
         for slot in 0..3 {
             let pair_idx = i * 3 + slot;
             if pair_idx < VIETNAMESE_PAIRS.len() {
@@ -467,6 +590,7 @@ mod tests {
         type StGetUtf8 =
             unsafe extern "C" fn(st: XkbState, key: u32, buffer: *mut c_char, size: usize) -> c_int;
         type StGetSym = unsafe extern "C" fn(st: XkbState, key: u32) -> u32;
+        type StLedActive = unsafe extern "C" fn(st: XkbState, name: *const c_char) -> c_int;
 
         unsafe {
             let lib = libc::dlopen(c"libxkbcommon.so.0".as_ptr(), libc::RTLD_LAZY);
@@ -494,55 +618,87 @@ mod tests {
                 std::mem::transmute(libc::dlsym(lib, c"xkb_state_key_get_utf8".as_ptr()));
             let _st_sym: StGetSym =
                 std::mem::transmute(libc::dlsym(lib, c"xkb_state_key_get_one_sym".as_ptr()));
+            let st_led_active: StLedActive =
+                std::mem::transmute(libc::dlsym(lib, c"xkb_state_led_name_is_active".as_ptr()));
 
             let ctx = ctx_new(0);
             assert!(!ctx.is_null());
 
-            let keymap_src = CString::new(build_xkb_keymap()).unwrap();
-            let km = km_new(ctx, keymap_src.as_ptr(), 1, 0);
-            assert!(!km.is_null(), "libxkbcommon rejected US QWERTY keymap");
-
-            for (expected_idx, name) in [
-                (0u32, c"Shift"),
-                (1, c"Lock"),
-                (2, c"Control"),
-                (3, c"Mod1"),
-                (4, c"Mod2"),
-                (5, c"Mod3"),
-                (6, c"Mod4"),
-                (7, c"Mod5"),
+            for layout in [
+                KeyboardLayout::UsQwerty,
+                KeyboardLayout::Dvorak,
+                KeyboardLayout::Colemak,
             ] {
-                assert_eq!(mod_idx(km, name.as_ptr()), expected_idx);
-            }
+                let keymap_src = CString::new(build_xkb_keymap_for_layout(layout)).unwrap();
+                let km = km_new(ctx, keymap_src.as_ptr(), 1, 0);
+                assert!(!km.is_null(), "libxkbcommon rejected {layout:?} keymap");
 
-            let state = st_new(km);
-            assert!(!state.is_null());
+                for (expected_idx, name) in [
+                    (0u32, c"Shift"),
+                    (1, c"Lock"),
+                    (2, c"Control"),
+                    (3, c"Mod1"),
+                    (4, c"Mod2"),
+                    (5, c"Mod3"),
+                    (6, c"Mod4"),
+                    (7, c"Mod5"),
+                ] {
+                    assert_eq!(mod_idx(km, name.as_ptr()), expected_idx);
+                }
+                for vmod in [c"Alt", c"Super", c"Meta", c"NumLock"] {
+                    assert_ne!(
+                        mod_idx(km, vmod.as_ptr()),
+                        u32::MAX,
+                        "virtual modifier {vmod:?} must be defined in {layout:?} keymap"
+                    );
+                }
 
-            for &(lo, up) in &VIETNAMESE_PAIRS {
-                for &ch in &[lo, up] {
-                    let stroke = char_to_vk_stroke(ch).unwrap();
+                let state = st_new(km);
+                assert!(!state.is_null());
+
+                // Verify Caps Lock and Num Lock XKB LED indicators respond to locked modifiers
+                // so compositors (COSMIC/Smithay) never turn off the hardware NumLock LED.
+                st_mask(state, 0, 0, XKB_MOD_MOD2, 0, 0, 0);
+                assert_eq!(st_led_active(state, c"Num Lock".as_ptr()), 1);
+                assert_eq!(st_led_active(state, c"Caps Lock".as_ptr()), 0);
+                st_mask(state, 0, 0, XKB_MOD_LOCK | XKB_MOD_MOD2, 0, 0, 0);
+                assert_eq!(st_led_active(state, c"Caps Lock".as_ptr()), 1);
+                assert_eq!(st_led_active(state, c"Num Lock".as_ptr()), 1);
+                st_mask(state, 0, 0, 0, 0, 0, 0);
+                assert_eq!(st_led_active(state, c"Num Lock".as_ptr()), 0);
+                assert_eq!(st_led_active(state, c"Caps Lock".as_ptr()), 0);
+
+                for &(lo, up) in &VIETNAMESE_PAIRS {
+                    for &ch in &[lo, up] {
+                        let stroke = char_to_vk_stroke_for_layout(layout, ch).unwrap();
+                        st_mask(state, stroke.modifiers, 0, 0, 0, 0, 0);
+                        let mut buf = [0 as c_char; 16];
+                        let len =
+                            st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
+                        assert!(len > 0, "failed len for {ch} on {layout:?}");
+                        let decoded = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+                        assert_eq!(decoded, ch.to_string(), "mismatch for {ch} on {layout:?}");
+                    }
+                }
+
+                for byte in 0x20u8..=0x7eu8 {
+                    let ch = byte as char;
+                    let stroke = char_to_vk_stroke_for_layout(layout, ch).unwrap();
                     st_mask(state, stroke.modifiers, 0, 0, 0, 0, 0);
                     let mut buf = [0 as c_char; 16];
                     let len = st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
-                    assert!(len > 0, "failed len for {ch}");
+                    assert!(len > 0);
                     let decoded = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
-                    assert_eq!(decoded, ch.to_string(), "mismatch for {ch}");
+                    assert_eq!(
+                        decoded,
+                        ch.to_string(),
+                        "ASCII mismatch for {ch:?} on {layout:?}"
+                    );
                 }
-            }
 
-            for byte in 0x20u8..=0x7eu8 {
-                let ch = byte as char;
-                let stroke = char_to_vk_stroke(ch).unwrap();
-                st_mask(state, stroke.modifiers, 0, 0, 0, 0, 0);
-                let mut buf = [0 as c_char; 16];
-                let len = st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
-                assert!(len > 0);
-                let decoded = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
-                assert_eq!(decoded, ch.to_string(), "ASCII mismatch for {ch:?}");
+                st_unref(state);
+                km_unref(km);
             }
-
-            st_unref(state);
-            km_unref(km);
             ctx_unref(ctx);
             libc::dlclose(lib);
         }

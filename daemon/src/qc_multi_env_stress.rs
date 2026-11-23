@@ -696,6 +696,14 @@ fn qc_env2_electron_vscode_discord_shortcuts_and_shift_enter() {
     h.type_ascii("tienegs vieetj!");
     assert_eq!(h.client.shift_enter_count.get(), 1);
     assert_eq!(h.client.text(), "xin chào\nTiếng việt!");
+
+    // Returning to VS Code must preserve the user's explicit Telex toggle
+    // instead of reverting back to English via `english_apps`.
+    h.focus_window("vscode-1", "code", false);
+    assert!(
+        h.daemon.engine.is_enabled(),
+        "VS Code must remember user's explicit Telex override after focus switch"
+    );
 }
 
 #[test]

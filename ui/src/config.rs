@@ -239,6 +239,21 @@ pub fn uninstall_autostart() {
     }
 }
 
+fn escape_desktop_exec(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '`' => escaped.push_str("\\`"),
+            '$' => escaped.push_str("\\$"),
+            '%' => escaped.push_str("%%"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 pub fn install_autostart() {
     if let Some(config_dir) = config_base_dir() {
         let autostart_dir = config_dir.join("autostart");
@@ -249,6 +264,7 @@ pub fn install_autostart() {
             .unwrap_or_else(|_| PathBuf::from("/usr/bin/dboard-tray"))
             .to_string_lossy()
             .into_owned();
+        let escaped_exec = escape_desktop_exec(&exec_path);
 
         let content = format!(
             "[Desktop Entry]\n\
@@ -261,11 +277,30 @@ pub fn install_autostart() {
              Categories=Utility;System;\n\
              X-GNOME-Autostart-enabled=true\n\
              StartupNotify=false\n",
-            exec_path
+            escaped_exec
         );
 
-        let _ = fs::write(desktop_file, content);
-        eprintln!("[dboard] Installed autostart entry");
+        let tmp_file =
+            autostart_dir.join(format!(".dboard-tray.desktop.tmp.{}", std::process::id()));
+        let _ = fs::remove_file(&tmp_file);
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let written = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o644)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp_file)
+            .and_then(|mut f| {
+                f.write_all(content.as_bytes())?;
+                f.sync_all()
+            })
+            .and_then(|()| fs::rename(&tmp_file, &desktop_file));
+        if written.is_err() {
+            let _ = fs::remove_file(&tmp_file);
+        } else {
+            eprintln!("[dboard] Installed autostart entry");
+        }
     }
 }
 

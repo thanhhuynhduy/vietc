@@ -273,9 +273,12 @@ pub fn has_mixed_internal_caps(raw: &str, composed: &str) -> bool {
         return false;
     }
     // Single accidental early-Shift on a vowel/coda letter before the trailing tone/mark key
-    // inside a valid non-ASCII Vietnamese dictionary syllable (`vieeTj` -> `việt`, `nguowIf` -> `người`, `dduowNgf` -> `đường`).
+    // inside a longer (>= 5 alpha) valid non-ASCII Vietnamese dictionary syllable
+    // (`vieeTj` -> `việt`, `nguowIf` -> `người`, `dduowNgf` -> `đường`), while preserving
+    // short 3-4 char camelCase tokens (`dOs`, `cAs`, `tOs`, `iOs`, `dDos`).
     if !composed.is_ascii()
         && !raw.eq_ignore_ascii_case("ddos")
+        && alpha.len() >= 5
         && alpha[1..].iter().filter(|c| c.is_uppercase()).count() == 1
         && crate::spelling::is_valid_vietnamese_syllable(composed)
         && crate::spelling::is_in_vietnamese_dictionary(composed)

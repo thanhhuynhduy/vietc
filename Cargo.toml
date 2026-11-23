@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["engine", "protocol", "daemon", "cli"]
-exclude = ["ui"]
+exclude = ["ui", "ui-popup"]
 
 [workspace.package]
 version = "0.2.0"

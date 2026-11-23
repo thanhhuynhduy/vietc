@@ -29,7 +29,7 @@ fn compositor_title_cache() -> &'static Mutex<Option<String>> {
 /// with zero polling delay.
 pub fn record_compositor_window_title(title: Option<String>) {
     if let Ok(mut guard) = compositor_title_cache().lock() {
-        *guard = title.filter(|t| !t.is_empty());
+        *guard = title.filter(|t| !t.is_empty()).map(|t| t.to_lowercase());
     }
 }
 
@@ -48,7 +48,7 @@ fn bg_title_cache() -> &'static Mutex<Option<String>> {
 /// blocks on external CLI processes (`gdbus`, `xdotool`, `xprop`, `hyprctl`, `swaymsg`).
 pub fn record_background_window_security(title: Option<String>, is_sudo: bool, pty_no_echo: bool) {
     if let Ok(mut guard) = bg_title_cache().lock() {
-        *guard = title;
+        *guard = title.filter(|t| !t.is_empty()).map(|t| t.to_lowercase());
     }
     BG_FOCUSED_IS_SUDO.store(is_sudo, Ordering::Release);
     BG_PTY_NO_ECHO.store(pty_no_echo, Ordering::Release);
@@ -248,7 +248,7 @@ pub fn clear_atspi_password_flag_on_window_switch() {
 /// focus event would be wiped before `check_password_field()` reads it).
 pub fn clear_atspi_password_flag_if_non_atspi(identity: Option<&str>) {
     if !identity.is_some_and(|id| id.starts_with("atspi:")) {
-        clear_atspi_password_flag();
+        clear_atspi_password_flag_on_window_switch();
     }
 }
 
@@ -337,20 +337,23 @@ mod tests {
     }
 
     #[test]
-    fn window_switch_grace_preserves_fresh_atspi_password_flag_and_records_compositor_title() {
+    fn window_switch_grace_preserves_fresh_atspi_password_flag_and_normalizes_compositor_title() {
         let _guard = atspi_test_lock();
         reset_atspi_focus_state();
 
         record_atspi_focus_state(true, Some("microsoft-edge".to_string()));
-        // Immediate compositor Activated event must NOT wipe a freshly-set password flag
+        // Immediate compositor Activated event AND non-AT-SPI class transition
+        // must NOT wipe a freshly-set AT-SPI2 password flag within the grace window.
         clear_atspi_password_flag_on_window_switch();
+        clear_atspi_password_flag_if_non_atspi(Some("toplevel:42"));
         let mut detector = PasswordDetector::new();
         assert_eq!(detector.check(), Some(true));
 
-        record_compositor_window_title(Some("Sign in — Password".to_string()));
+        // Wayland compositor titles must be normalized to lowercase for Layer 3 matching
+        record_compositor_window_title(Some("Sign in — Password / Mật Khẩu".to_string()));
         assert_eq!(
             cached_window_title(),
-            Some((true, Some("Sign in — Password".to_string())))
+            Some((true, Some("sign in — password / mật khẩu".to_string())))
         );
         record_compositor_window_title(None);
         reset_atspi_focus_state();

@@ -89,12 +89,17 @@ enum Publish {
     },
     /// The active window's app_id arrived/changed after activation.
     ClassOnly(Option<String>),
+    /// All toplevels lost `State::Activated` (e.g., layer-shell launcher or Polkit dialog).
+    FocusLost,
 }
 
 /// Pure decision: compare the currently active toplevel with what was
 /// published last. Kept free of Wayland types so it can be unit-tested.
 fn plan_publish(last: &Published, active: Option<(u64, Option<String>)>) -> (Publish, Published) {
     let Some((serial, app_id)) = active else {
+        if last.serial.is_some() {
+            return (Publish::FocusLost, Published::default());
+        }
         return (Publish::Nothing, last.clone());
     };
     let next = Published {
@@ -186,6 +191,14 @@ impl Tracker {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .set_class(app_id);
+            }
+            Publish::FocusLost => {
+                crate::password_detector::clear_atspi_password_flag_on_window_switch();
+                log_info("[dboard] toplevel focus lost (layer-shell / overlay active)");
+                self.focus
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .observe_focus_lost();
             }
         }
     }
@@ -536,14 +549,19 @@ mod tests {
     }
 
     #[test]
-    fn no_active_toplevel_keeps_previous_state() {
+    fn losing_active_toplevel_publishes_focus_lost_once() {
         let last = Published {
             serial: Some(4),
             app_id: Some("edge".into()),
         };
         let (action, next) = plan_publish(&last, None);
-        assert!(matches!(action, Publish::Nothing));
-        assert_eq!(next, last);
+        assert!(matches!(action, Publish::FocusLost));
+        assert_eq!(next, Published::default());
+
+        // Subsequent None -> None does not re-emit FocusLost
+        let (action2, next2) = plan_publish(&next, None);
+        assert!(matches!(action2, Publish::Nothing));
+        assert_eq!(next2, Published::default());
     }
 
     #[test]

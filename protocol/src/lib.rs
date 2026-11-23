@@ -9,7 +9,11 @@ pub mod uinput_monitor;
 #[cfg(feature = "wayland-protocol")]
 mod wayland_clipboard;
 #[cfg(feature = "wayland-protocol")]
+mod wayland_clipboard_restore;
+#[cfg(feature = "wayland-protocol")]
 mod wayland_vk;
+#[cfg(feature = "wayland-protocol")]
+mod wayland_vk_connect;
 #[cfg(feature = "wayland-protocol")]
 mod wayland_vk_keymap;
 

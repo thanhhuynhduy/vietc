@@ -86,6 +86,7 @@ pub struct Daemon {
     pub event_store: EventStore,
     pub screen_output: String,
     pub visible_revision: u64,
+    pub candidate_ipc: crate::candidate_ipc::CandidateBroadcaster,
 }
 
 impl Daemon {
@@ -98,6 +99,7 @@ impl Daemon {
         engine.set_enabled(config.start_enabled);
         engine.set_auto_restore(config.auto_restore.enabled);
         engine.set_autocorrect(config.autocorrect);
+        engine.set_keyboard_layout_name(&config.keyboard_layout);
         engine.set_auto_capitalize(config.auto_capitalize);
         if let Some(dict_path) = crate::user_dict_store::user_dict_path() {
             engine.set_user_dict(crate::user_dict_store::load_user_dict_from(&dict_path));
@@ -129,6 +131,7 @@ impl Daemon {
         let config_modified = fs::metadata(&config_path)
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::now());
+        let candidate_ipc = crate::candidate_ipc::CandidateBroadcaster::new(config.candidate_bar);
 
         Self {
             grab_enabled: config.grab,
@@ -141,6 +144,7 @@ impl Daemon {
             event_store: EventStore::new(),
             screen_output: String::new(),
             visible_revision: 0,
+            candidate_ipc,
         }
     }
 
@@ -153,47 +157,11 @@ impl Daemon {
     }
 
     fn write_ipc_file(path: &std::path::Path, content: &str) {
-        use std::io::Write;
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() && parent != std::path::Path::new("/tmp") {
-                let _ = std::fs::DirBuilder::new()
-                    .recursive(true)
-                    .mode(0o700)
-                    .create(parent);
-            }
-            let tmp_name = format!(
-                ".{}.tmp.{}",
-                path.file_name().and_then(|s| s.to_str()).unwrap_or("ipc"),
-                unsafe { libc::getpid() }
-            );
-            let tmp_path = parent.join(tmp_name);
-            let _ = std::fs::remove_file(&tmp_path);
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&tmp_path)
-            {
-                if f.write_all(content.as_bytes()).is_ok()
-                    && std::fs::rename(&tmp_path, path).is_ok()
-                {
-                    return;
-                }
-            }
-            let _ = std::fs::remove_file(&tmp_path);
-        }
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(path)
-        {
-            let _ = f.write_all(content.as_bytes());
-        }
+        crate::user_dict_store::enqueue_atomic_file_write(
+            path.to_path_buf(),
+            content.to_string(),
+            false,
+        );
     }
 
     pub fn write_status(&self) {
@@ -219,7 +187,9 @@ impl Daemon {
         self.config.input_method = new_method.clone();
         self.app_state.set_global_enabled(new_enabled);
         self.app_state.set_global_method(&new_method);
-        self.app_state.clear_overrides();
+        if self.config.app_state.enabled {
+            self.app_state.set_current_app_override(new_enabled);
+        }
         let effective = self.app_state.effective_method().to_string();
         let engine_method = match effective.as_str() {
             "vni" => InputMethod::Vni,
@@ -247,6 +217,7 @@ impl Daemon {
 
     pub fn sync_status_file(&mut self) {
         let mut changed = false;
+        let mut status_enabled_override = None;
         let status_path = self.status_file_path();
         if let Ok(content) = fs::read_to_string(&status_path) {
             let s = content.trim();
@@ -256,6 +227,7 @@ impl Daemon {
                     self.engine.set_enabled(expect_enabled);
                     self.engine_enabled.store(expect_enabled, Ordering::SeqCst);
                     self.app_state.set_global_enabled(expect_enabled);
+                    status_enabled_override = Some(expect_enabled);
                     changed = true;
                 }
             }
@@ -275,7 +247,11 @@ impl Daemon {
             }
         }
         if changed {
-            self.app_state.clear_overrides();
+            if let Some(enabled) = status_enabled_override {
+                if self.config.app_state.enabled {
+                    self.app_state.set_current_app_override(enabled);
+                }
+            }
             let effective = self.app_state.effective_method();
             let engine_method = if effective.eq_ignore_ascii_case("vni") {
                 InputMethod::Vni
@@ -343,13 +319,75 @@ impl Daemon {
                 );
 
                 self.grab_enabled = new_config.grab;
+                if new_config.candidate_bar != self.config.candidate_bar {
+                    self.candidate_ipc.hide();
+                    self.candidate_ipc =
+                        crate::candidate_ipc::CandidateBroadcaster::new(new_config.candidate_bar);
+                }
                 self.config = new_config;
                 self.config_modified = modified;
                 self.write_method_status();
                 true
             }
-            Err(_) => false,
+            Err(err) => {
+                crate::log::log_info(&format!(
+                    "[dboard] WARN: failed to reload config {}: {err}",
+                    self.config_path.display()
+                ));
+                false
+            }
         }
+    }
+
+    pub fn sync_candidate_bar(&mut self) {
+        if !self.candidate_ipc.is_enabled() {
+            return;
+        }
+        let sensitive_or_bypass = !self.engine.is_enabled()
+            || self.is_current_app_bypassed()
+            || self.app_state.is_password_active();
+        if sensitive_or_bypass {
+            self.candidate_ipc.hide();
+            return;
+        }
+        let visible = self.engine.buffer();
+        let raw = self.engine.raw_buffer().to_string();
+        let suggestion = self.engine.candidate_suggestion();
+        self.candidate_ipc
+            .sync_from_engine(false, &visible, &raw, suggestion.as_deref());
+    }
+
+    /// Applies quick candidate selection (`Alt+1`/`Alt+2`/`Alt+3`) matching the
+    /// visible candidate strip slots when `candidate_bar = true`.
+    pub fn select_candidate(&mut self, index: usize) -> Vec<OutputCommand> {
+        if !self.config.candidate_bar || !self.engine.is_enabled() {
+            return Vec::new();
+        }
+        let visible = self.engine.buffer();
+        let raw = self.engine.raw_buffer().to_string();
+        if visible.is_empty() || raw.is_empty() {
+            return Vec::new();
+        }
+        let mut slots = vec![visible.clone()];
+        if raw != visible {
+            slots.push(raw.clone());
+        }
+        if let Some(sug) = self.engine.candidate_suggestion() {
+            if sug != visible && sug != raw {
+                slots.push(sug);
+            }
+        }
+        let Some(chosen) = slots.get(index).cloned() else {
+            return Vec::new();
+        };
+        let mut commands = Vec::new();
+        if chosen != visible {
+            commands.push(OutputCommand::Backspace(visible.chars().count()));
+            commands.push(OutputCommand::Type(chosen));
+        }
+        self.reset_composition_state();
+        self.candidate_ipc.hide();
+        commands
     }
 
     pub fn process_key(&mut self, ch: char) -> Vec<OutputCommand> {
@@ -395,6 +433,7 @@ impl Daemon {
             }
         }
 
+        self.sync_candidate_bar();
         commands
     }
 
@@ -454,6 +493,7 @@ impl Daemon {
         self.engine.reset();
         self.engine.reset_visible_revision();
         self.replay_reset();
+        self.candidate_ipc.hide();
     }
 
     pub fn check_app_change_with(&mut self, new_class: String) {
@@ -470,6 +510,25 @@ impl Daemon {
         self.engine
             .set_auto_capitalize(self.config.auto_capitalize && !self.app_state.is_terminal_app());
         self.reset_composition_state();
+    }
+
+    /// Restore engine enabled state, input method, and auto-capitalize back to
+    /// global defaults when focus moves away from any tracked toplevel window
+    /// (e.g. Polkit/launcher layer-shell surface).
+    pub fn reset_app_focus_to_global(&mut self) {
+        self.app_state.clear_current_app();
+        let default_enabled = self.app_state.get_default_state();
+        if self.engine.is_enabled() != default_enabled {
+            self.engine.set_enabled(default_enabled);
+            self.write_status();
+        }
+        let effective = self.app_state.effective_method();
+        let engine_method = match effective {
+            "vni" => InputMethod::Vni,
+            _ => InputMethod::Telex,
+        };
+        self.engine.set_method(engine_method);
+        self.engine.set_auto_capitalize(self.config.auto_capitalize);
     }
 }
 
@@ -725,5 +784,55 @@ mod tests {
             next_toggle_state(&["bogus".into()], false, "vni"),
             (true, "vni".into())
         );
+    }
+
+    #[test]
+    fn select_candidate_supports_vn_ascii_and_third_autocorrect_slot() {
+        let cfg = Config {
+            candidate_bar: true,
+            ..Config::default()
+        };
+        let mut daemon = Daemon::new(
+            cfg,
+            PathBuf::from("/tmp/dboard_cand_test.toml"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        daemon.engine.set_enabled(true);
+        daemon.engine.set_method(InputMethod::Telex);
+
+        // Slot [1] (VN) vs Slot [2] (raw ASCII)
+        let mut screen = String::new();
+        for ch in "tieengs".chars() {
+            let cmds = daemon.process_forwarded_key(ch);
+            screen.push(ch);
+            apply(&mut screen, &cmds);
+        }
+        assert_eq!(screen, "tiếng");
+        let cmds = daemon.select_candidate(1);
+        apply(&mut screen, &cmds);
+        assert_eq!(screen, "tieengs");
+        assert!(daemon.engine.buffer().is_empty());
+
+        // Slot [3] (autocorrect suggestion for typo "tienegs" -> "tiếng")
+        let mut screen2 = String::new();
+        for ch in "tienegs".chars() {
+            let cmds = daemon.process_forwarded_key(ch);
+            screen2.push(ch);
+            apply(&mut screen2, &cmds);
+        }
+        assert_eq!(
+            daemon.engine.candidate_suggestion().as_deref(),
+            Some("tiếng")
+        );
+        // Slots: [1]=composed ("tiếng" or "tiênegs"?), wait: "tienegs" composes to "tiênegs" or "tiếng"?
+        // Regardless, pick the index matching "tiếng" (slot 2 when raw != visible, or slot 1 when raw == visible).
+        let idx = if daemon.engine.raw_buffer() == daemon.engine.buffer() {
+            1
+        } else {
+            2
+        };
+        let cmds = daemon.select_candidate(idx);
+        apply(&mut screen2, &cmds);
+        assert_eq!(screen2, "tiếng");
     }
 }

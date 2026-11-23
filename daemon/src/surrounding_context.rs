@@ -111,11 +111,10 @@ pub fn extract_surrounding_context(before: &str, after: &str) -> Option<Surround
 
     let word = extract_trailing_clean_word(before)?;
     let prefix = before.strip_suffix(&word).unwrap_or("");
-    let prev_word = if prefix.ends_with([' ', '\t']) {
-        extract_trailing_clean_word(prefix.trim_end_matches([' ', '\t']))
-    } else {
-        None
-    };
+    let prev_word = prefix
+        .strip_suffix(' ')
+        .filter(|rest| !rest.ends_with([' ', '\t', '\n', '\r']))
+        .and_then(extract_trailing_clean_word);
 
     Some(SurroundingContextData {
         word_at_caret: Some(word),
@@ -255,6 +254,14 @@ mod tests {
 
         // Multiple trailing spaces must NOT seed prev_word (prevents retroactive space miscount)
         assert_eq!(extract_surrounding_context("Last  ", "nữa"), None);
+
+        // Multiple spaces or tabs between prev_word and word_at_caret must NOT seed prev_word
+        let multi = extract_surrounding_context("Last  nuwa", "").unwrap();
+        assert_eq!(multi.word_at_caret.as_deref(), Some("nuwa"));
+        assert_eq!(multi.prev_word, None);
+        let tabbed = extract_surrounding_context("Last\tnuwa", "").unwrap();
+        assert_eq!(tabbed.word_at_caret.as_deref(), Some("nuwa"));
+        assert_eq!(tabbed.prev_word, None);
     }
 
     #[test]

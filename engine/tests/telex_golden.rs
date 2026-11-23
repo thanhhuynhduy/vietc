@@ -145,8 +145,8 @@ fn telex_golden_behavior_matrix() {
         },
         GoldenCase {
             category: "english-fallback",
-            input: "addd",
-            expected: "add",
+            input: "ddd",
+            expected: "dd",
             contract: "baseline",
         },
         GoldenCase {

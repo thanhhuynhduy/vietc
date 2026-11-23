@@ -199,22 +199,60 @@ pub fn run_doctor() -> i32 {
 
     let cfg_path = find_config_path();
     let cfg_exists = Path::new(&cfg_path).exists();
-    let cfg = Config::load().unwrap_or_default();
+    let cfg = match Config::load() {
+        Ok(c) => {
+            report(
+                cfg_exists,
+                "Configuration",
+                &format!(
+                    "{} (method={}, toggle={}, modes={:?}, autocorrect={}, auto_cap={})",
+                    cfg_path.display(),
+                    c.input_method,
+                    crate::config::format_toggle_key(&c.toggle_key),
+                    c.toggle_modes,
+                    c.autocorrect,
+                    c.auto_capitalize
+                ),
+            );
+            c
+        }
+        Err(err) => {
+            report(
+                false,
+                "Configuration",
+                &format!("{} (TOML parse error: {err})", cfg_path.display()),
+            );
+            Config::default()
+        }
+    };
+
+    let mod_conflicts = detect_mod3_mod5_conflicts();
     report(
-        cfg_exists,
-        "Configuration",
-        &format!(
-            "{} (method={}, toggle=Ctrl+{}, modes={:?}, autocorrect={}, auto_cap={})",
-            cfg_path.display(),
-            cfg.input_method,
-            cfg.toggle_key,
-            cfg.toggle_modes,
-            cfg.autocorrect,
-            cfg.auto_capitalize
-        ),
+        mod_conflicts.is_empty(),
+        "XKB Mod3/Mod5 keybinds",
+        if mod_conflicts.is_empty() {
+            "no compositor Mod3/Mod5 conflicts detected".into()
+        } else {
+            format!(
+                "potential Mod3/Mod5 conflict in: {} (may interfere with VK Vietnamese levels)",
+                mod_conflicts.join(", ")
+            )
+        }
+        .as_str(),
     );
 
-    report(true, "Keyboard layout", "us (English (US))");
+    let active_layout =
+        dboard_protocol::layout::KeyboardLayout::from_str_name(&cfg.keyboard_layout);
+    report(true, "Keyboard layout", active_layout.display_name());
+    report(
+        true,
+        "Candidate bar",
+        if cfg.candidate_bar {
+            "enabled (non-blocking Unix datagram IPC)"
+        } else {
+            "disabled (zero-underline default)"
+        },
+    );
 
     if let Some(dict_path) = crate::user_dict_store::user_dict_path() {
         if dict_path.exists() {
@@ -252,6 +290,38 @@ pub fn run_doctor() -> i32 {
         println!("Result: {warnings} warning(s) found");
         1
     }
+}
+
+fn detect_mod3_mod5_conflicts() -> Vec<String> {
+    let mut hits = Vec::new();
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return hits;
+    };
+    let candidates = [
+        ("Hyprland", home.join(".config/hypr/hyprland.conf")),
+        ("Sway", home.join(".config/sway/config")),
+        (
+            "COSMIC",
+            home.join(".config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/custom"),
+        ),
+    ];
+    for (label, path) in candidates {
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let has_conflict = content.lines().any(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || trimmed.starts_with("//") {
+                return false;
+            }
+            let lower = trimmed.to_ascii_lowercase();
+            lower.contains("mod3") || lower.contains("mod5") || lower.contains("iso_level3_shift")
+        });
+        if has_conflict {
+            hits.push(format!("{label} ({})", path.display()));
+        }
+    }
+    hits
 }
 
 #[cfg(test)]

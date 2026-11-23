@@ -150,6 +150,26 @@ impl FocusSnapshot {
             }
         }
     }
+
+    /// Record loss of active toplevel focus (e.g., user opened a layer-shell
+    /// surface such as `cosmic-launcher`, `wofi`, `rofi`, `fuzzel`, or a Polkit
+    /// dialog). Bumps generation to reset composition and clears `class` so
+    /// previous app overrides (`bypass_apps`, `english_apps`, `terminal_apps`)
+    /// never leak into the overlay, while keeping a `toplevel:` identity so
+    /// the 250ms background poller does not overwrite it.
+    pub fn observe_focus_lost(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation_signal
+            .store(self.generation, Ordering::Release);
+        self.target = None;
+        self.identity = Some("toplevel:focus-lost".to_string());
+        self.class = None;
+        self.class_from_compositor = true;
+        self.omnibox_inline_selection = false;
+        self.omnibox_selection_at = None;
+        self.surrounding_context = None;
+        self.reliability = FocusReliability::Reliable;
+    }
 }
 
 pub type SharedFocusSnapshot = Arc<Mutex<FocusSnapshot>>;

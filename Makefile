@@ -1,4 +1,4 @@
-.PHONY: build build-ui build-dev test test-ci-smoke test-soak test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli test-package run run-release clean install install-ui install-config deb tarball release fmt lint tree
+.PHONY: build build-ui build-popup build-dev test test-ci-smoke test-soak test-runtime-targets test-runtime-matrix test-properties-exhaustive test-cli test-package run run-release clean install install-ui install-popup install-config deb tarball release fmt lint tree
 
 # Build .deb + tarball release artifacts
 release:
@@ -27,6 +27,10 @@ build:
 build-ui:
 	cargo build --release --manifest-path ui/Cargo.toml
 
+# Build optional Wayland floating candidate strip popup
+build-popup:
+	cargo build --release --manifest-path ui-popup/Cargo.toml
+
 # Build debug
 build-dev:
 	cargo build
@@ -38,6 +42,7 @@ HEADLESS = env -u DISPLAY -u WAYLAND_DISPLAY -u DBOARD_RUNTIME_TESTS -u DBOARD_C
 test:
 	$(HEADLESS) cargo test --workspace
 	$(HEADLESS) cargo test --manifest-path ui/Cargo.toml
+	$(HEADLESS) cargo test --manifest-path ui-popup/Cargo.toml
 
 # Explicit targets keep live device/desktop tests out, even when run as root.
 test-ci-smoke:
@@ -51,6 +56,7 @@ test-ci-smoke:
 	$(HEADLESS) cargo test -p dboard-daemon --test daemon_suite runtime::deterministic_ $(CARGO_FLAGS) -- --test-threads=1
 	$(HEADLESS) cargo test --workspace --doc $(CARGO_FLAGS)
 	$(HEADLESS) cargo test --manifest-path ui/Cargo.toml $(CARGO_FLAGS)
+	$(HEADLESS) cargo test --manifest-path ui-popup/Cargo.toml $(CARGO_FLAGS)
 
 # Opt-in controlled runtime targets; requires a disposable GUI session and target dependencies
 test-runtime-targets:
@@ -90,6 +96,11 @@ install-ui: build-ui
 	sudo install -m 755 ui/target/release/dboard-tray /usr/bin/dboard-tray
 	@echo "Installed dboard-tray to /usr/bin/"
 
+# Install optional floating candidate strip popup
+install-popup: build-popup
+	sudo install -m 755 ui-popup/target/release/dboard-popup /usr/bin/dboard-popup
+	@echo "Installed dboard-popup to /usr/bin/"
+
 # Install config to user dir
 install-config:
 	mkdir -p ~/.config/dboard
@@ -100,16 +111,19 @@ install-config:
 clean:
 	cargo clean
 	@if [ -d ui ]; then cargo clean --manifest-path ui/Cargo.toml; fi
+	@if [ -d ui-popup ]; then cargo clean --manifest-path ui-popup/Cargo.toml; fi
 
 # Format code
 fmt:
 	cargo fmt --all
 	cargo fmt --manifest-path ui/Cargo.toml --all
+	cargo fmt --manifest-path ui-popup/Cargo.toml --all
 
 # Lint
 lint:
 	$(HEADLESS) cargo clippy --workspace --all-targets --all-features -- -D warnings
 	$(HEADLESS) cargo clippy --manifest-path ui/Cargo.toml --all-targets -- -D warnings
+	$(HEADLESS) cargo clippy --manifest-path ui-popup/Cargo.toml --all-targets -- -D warnings
 
 # Show project structure
 tree:

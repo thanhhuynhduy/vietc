@@ -306,3 +306,57 @@ fn p0_vni_uppercase_alphanumeric_and_code_tokens_restore_safely() {
         "củ khoai vẻ đẹp QĐ-TTg "
     );
 }
+
+#[test]
+fn retroactive_dot_filename_restore_preserves_vietnamese_sentence_periods() {
+    let type_line = |input: &str| -> String {
+        let mut engine = Engine::new(InputMethod::Telex);
+        engine.set_enabled(true);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            match engine.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(rep.delete_before_cursor);
+                    screen = screen.chars().take(keep).collect();
+                    screen.push_str(&rep.insert);
+                    if matches!(ch, ' ' | '.' | ',' | '\n' | '\t' | '_' | '/' | '-') {
+                        screen.push(ch);
+                    }
+                }
+                None => {
+                    if ch == '\x08' {
+                        screen.pop();
+                    } else {
+                        screen.push(ch);
+                    }
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        screen
+    };
+
+    // Dot-separated filenames mid-sentence restore both stem and extension atomically
+    assert_eq!(
+        type_line("mowr test.py xem list.txt suwar host.conf "),
+        "mở test.py xem list.txt sửa host.conf "
+    );
+    // Multi-dot filenames (`test.tar.gz`, `archive.tar.gz`)
+    assert_eq!(
+        type_line("giair nesn test.tar.gz vaf archive.tar.gz "),
+        "giải nén test.tar.gz và archive.tar.gz "
+    );
+    // Sentence-ending periods in Vietnamese prose MUST remain untouched
+    assert_eq!(
+        type_line("awn basnh test. hoom nay "),
+        "ăn bánh tét. hôm nay "
+    );
+    assert_eq!(type_line("ddepj quas. "), "đẹp quá. ");
+    // Space after period must NOT treat the next word as a file extension (`.so`)
+    assert_eq!(type_line("awn basnh test. so "), "ăn bánh tét. so ");
+    // Backspace after period clears dot-stem and must NOT rehydrate across `.`
+    assert_eq!(type_line("awn basnh test.\x08py "), "ăn bánh tétpy ");
+}

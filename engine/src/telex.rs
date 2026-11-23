@@ -9,7 +9,7 @@ mod tone;
 pub use model::{Boundary, Glide, ParseStatus, ParsedSyllable};
 pub use parser::parse;
 pub use raw::{RawSyllable, Tone, VowelMark};
-pub use render::{replacement_diff, resolve_and_render, ReplacementDiff};
+pub use render::{replacement_diff, resolve_and_render, resolve_with_undo, ReplacementDiff};
 
 #[cfg(test)]
 mod property_tests;

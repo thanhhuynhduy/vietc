@@ -15,12 +15,21 @@ pub const MAX_USER_DICT_ENTRIES: usize = 2000;
 const PERSONAL_WORD_PROMOTE_COUNT: u16 = 2;
 
 #[derive(Debug, Clone)]
-pub(crate) struct AutoRestoreUndo {
-    pub(crate) restored_ascii: String,
-    pub(crate) original_vn: String,
-    pub(crate) raw_keys: String,
-    pub(crate) boundary_char: char,
-    pub(crate) is_autocorrect: bool,
+pub(crate) enum AutoRestoreUndo {
+    SingleWord {
+        restored_ascii: String,
+        original_vn: String,
+        raw_keys: String,
+        boundary_char: char,
+        is_autocorrect: bool,
+    },
+    RetroactivePair {
+        rewritten_pair: String,
+        original_pair: String,
+        original_w1_entry: crate::ring_buffer::CommittedWordEntry,
+        w2_raw_keys: String,
+        boundary_char: char,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -212,6 +221,30 @@ pub(crate) struct AutoCapState {
     expect_cap: bool,
 }
 
+fn is_auto_cap_abbreviation(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "mr" | "mrs"
+            | "ms"
+            | "dr"
+            | "prof"
+            | "st"
+            | "vs"
+            | "etc"
+            | "eg"
+            | "ie"
+            | "tp"
+            | "ts"
+            | "ths"
+            | "pgs"
+            | "gs"
+            | "ks"
+            | "bs"
+            | "v"
+            | "vv"
+    )
+}
+
 impl AutoCapState {
     pub(crate) fn reset(&mut self) {
         self.pending_sentence_end = false;
@@ -225,15 +258,28 @@ impl AutoCapState {
         }
     }
 
-    pub(crate) fn on_flush_char(&mut self, ch: char) {
+    pub(crate) fn on_flush_char(&mut self, ch: char, prev_word: Option<&str>) {
         if !self.enabled {
             self.reset();
             return;
         }
         match ch {
-            '.' | '!' | '?' => {
+            '.' => {
+                if prev_word.is_some_and(is_auto_cap_abbreviation) {
+                    self.reset();
+                } else {
+                    self.pending_sentence_end = true;
+                    self.expect_cap = false;
+                }
+            }
+            '!' | '?' => {
                 self.pending_sentence_end = true;
                 self.expect_cap = false;
+            }
+            '"' | '\'' | ')' | ']' | '»' | '”' | '’' => {
+                if !self.pending_sentence_end {
+                    self.reset();
+                }
             }
             ' ' | '\t' => {
                 if self.pending_sentence_end {
@@ -297,18 +343,43 @@ mod tests {
             ..Default::default()
         };
         // `google.com` -> `.` followed directly by `c` (no space) must NOT capitalize
-        ac.on_flush_char('.');
+        ac.on_flush_char('.', Some("google"));
         assert_eq!(ac.maybe_capitalize('c', true), None);
 
         // `chào. hôm` -> `.` followed by `' '` DOES capitalize `h` -> `H`
-        ac.on_flush_char('.');
-        ac.on_flush_char(' ');
+        ac.on_flush_char('.', Some("chào"));
+        ac.on_flush_char(' ', None);
         assert_eq!(ac.maybe_capitalize('h', true), Some('H'));
         // Subsequent letter is NOT capitalized
         assert_eq!(ac.maybe_capitalize('o', false), None);
 
+        // Closing quotes & brackets preserve pending sentence end (`"Chào." Hôm`, `“Chào.” Hôm`, `(Xong!) Tiếp`)
+        for closer in ['"', '\'', ')', ']', '»', '”', '’'] {
+            ac.on_flush_char('.', Some("chào"));
+            ac.on_flush_char(closer, None);
+            ac.on_flush_char(' ', None);
+            assert_eq!(
+                ac.maybe_capitalize('h', true),
+                Some('H'),
+                "closer {closer:?} must preserve sentence-end auto-cap"
+            );
+        }
+
+        // Abbreviations before `.` must NOT arm auto-cap (`TP. hcm`, `Mr. nam`, `TS. nguyễn`, `etc. tiếp`)
+        for abbr in [
+            "TP", "Mr", "Mrs", "Dr", "TS", "ThS", "PGS", "GS", "etc", "vs",
+        ] {
+            ac.on_flush_char('.', Some(abbr));
+            ac.on_flush_char(' ', None);
+            assert_eq!(
+                ac.maybe_capitalize('n', true),
+                None,
+                "abbreviation {abbr:?}. must NOT arm auto-cap"
+            );
+        }
+
         // Newline arms capitalization
-        ac.on_flush_char('\n');
+        ac.on_flush_char('\n', None);
         assert_eq!(ac.maybe_capitalize('t', true), Some('T'));
     }
 

@@ -241,22 +241,22 @@ fn run_as_user(program: &str) -> std::process::Command {
     std::process::Command::new(program)
 }
 
+fn parse_wlrctl_focused_app_id(stdout: &str) -> Option<String> {
+    let line = stdout.lines().find(|l| !l.trim().is_empty())?;
+    let app_id = line.split(':').next().unwrap_or(line).trim();
+    (!app_id.is_empty()).then(|| app_id.to_lowercase())
+}
+
 fn get_wayland_window_class() -> Option<String> {
-    // Try wlr-foreign-toplevel-management protocol via wlrctl
+    // Try wlr-foreign-toplevel-management protocol via wlrctl filtered to focused toplevel
     let output = Command::new("wlrctl")
-        .args(["toplevel", "list", "--format", "%app-id"])
+        .args(["toplevel", "list", "state:focused"])
         .output()
         .ok()?;
 
     if output.status.success() {
-        let lines = String::from_utf8_lossy(&output.stdout);
-        // First line is typically the focused window
-        if let Some(class) = lines.lines().next() {
-            let class = class.trim().to_string();
-            if !class.is_empty() {
-                return Some(class.to_lowercase());
-            }
-        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return parse_wlrctl_focused_app_id(&stdout);
     }
 
     None
@@ -404,9 +404,24 @@ impl AppStateManager {
     }
 
     /// Clear app overrides
+    #[allow(dead_code)]
     pub fn clear_overrides(&mut self) {
         self.overrides.clear();
         let _ = self.save_overrides();
+    }
+
+    /// Record a user's manual toggle for the currently focused application and
+    /// persist it asynchronously so returning to this app preserves the choice
+    /// instead of reverting to `english_apps`/`vietnamese_apps` defaults.
+    pub fn set_current_app_override(&mut self, enabled: bool) {
+        if self.current_app.is_empty() {
+            return;
+        }
+        let key = self.current_app.to_lowercase();
+        if self.overrides.get(&key).copied() != Some(enabled) {
+            self.overrides.insert(key, enabled);
+            let _ = self.save_overrides();
+        }
     }
 
     /// Set the user's global input method and recompute effective method
@@ -492,6 +507,11 @@ impl AppStateManager {
         false
     }
 
+    /// Returns whether password protection is currently active for the focused field/window.
+    pub fn is_password_active(&self) -> bool {
+        self.is_password_field
+    }
+
     /// Check if focused app changed with a pre-detected class and return whether engine should be enabled
     pub fn update_with_app(&mut self, new_class: String) -> Option<bool> {
         if new_class == self.current_app {
@@ -514,8 +534,9 @@ impl AppStateManager {
             return false;
         }
 
-        // Check user override first
-        if let Some(&override_state) = self.overrides.get(&self.current_app) {
+        // Check user override first (case-insensitive app_id match)
+        let current_lower = self.current_app.to_lowercase();
+        if let Some(&override_state) = self.overrides.get(&current_lower) {
             return override_state;
         }
 
@@ -562,6 +583,14 @@ impl AppStateManager {
     }
 
     /// Check if the currently active application should bypass the IME completely
+    /// Clears the tracked active application on `FocusLost` (e.g. Polkit/launcher
+    /// layer-shell overlay) so bypass/terminal/english overrides from the previous
+    /// window are never inherited.
+    pub fn clear_current_app(&mut self) {
+        self.current_app.clear();
+        self.effective_method = self.global_method.clone();
+    }
+
     pub fn is_current_app_bypassed(&self) -> bool {
         for pattern in &self.bypass_apps {
             if class_matches(&self.current_app, pattern) {
@@ -571,48 +600,41 @@ impl AppStateManager {
         false
     }
 
-    /// Save overrides to config file
+    /// Save overrides asynchronously via the coalesced background persistence worker
+    /// so `evdev_loop` never blocks on disk I/O or `fsync`.
     #[allow(dead_code)]
     pub fn save_overrides(&self) -> Result<(), Box<dyn std::error::Error>> {
-        use std::io::Write;
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        let path = override_path();
-        let content = toml::to_string(&self.overrides)?;
-        if let Some(parent) = path.parent() {
-            let _ = fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(parent);
-        }
-        let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
-        let _ = fs::remove_file(&tmp_path);
-        let write_res = (|| -> std::io::Result<()> {
-            let mut f = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&tmp_path)?;
-            f.write_all(content.as_bytes())?;
-            f.sync_all()?;
-            drop(f);
-            fs::rename(&tmp_path, &path)?;
+        #[cfg(test)]
+        {
+            let _ = self;
             Ok(())
-        })();
-        if write_res.is_err() {
-            let _ = fs::remove_file(&tmp_path);
         }
-        write_res?;
-        Ok(())
+        #[cfg(not(test))]
+        {
+            let path = override_path();
+            let content = toml::to_string(&self.overrides)?;
+            crate::user_dict_store::enqueue_atomic_file_write(path, content, true);
+            Ok(())
+        }
     }
 
     /// Load overrides from config file
     pub fn load_overrides(&mut self) {
-        let path = override_path();
-        if let Ok(content) = fs::read_to_string(&path) {
-            if let Ok(overrides) = toml::from_str::<HashMap<String, bool>>(&content) {
-                self.overrides = overrides;
-                eprintln!("[dboard] Loaded {} app overrides", self.overrides.len());
+        #[cfg(test)]
+        {
+            let _ = self;
+        }
+        #[cfg(not(test))]
+        {
+            let path = override_path();
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(overrides) = toml::from_str::<HashMap<String, bool>>(&content) {
+                    self.overrides = overrides
+                        .into_iter()
+                        .map(|(k, v)| (k.to_lowercase(), v))
+                        .collect();
+                    eprintln!("[dboard] Loaded {} app overrides", self.overrides.len());
+                }
             }
         }
     }
@@ -637,6 +659,7 @@ pub fn refresh_background_window_security() {
     crate::password_detector::record_background_window_security(title, is_sudo, pty_no_echo);
 }
 
+#[cfg(not(test))]
 fn override_path() -> std::path::PathBuf {
     std::env::var("XDG_CONFIG_HOME")
         .ok()
@@ -755,5 +778,49 @@ mod remote_bypass_tests {
                 "{class} must not be bypassed"
             );
         }
+    }
+
+    #[test]
+    fn parse_wlrctl_focused_app_id_handles_standard_output() {
+        assert_eq!(
+            super::parse_wlrctl_focused_app_id("org.mozilla.firefox: GitHub - Mozilla Firefox\n"),
+            Some("org.mozilla.firefox".to_string())
+        );
+        assert_eq!(
+            super::parse_wlrctl_focused_app_id("Alacritty: bash\n"),
+            Some("alacritty".to_string())
+        );
+        assert_eq!(super::parse_wlrctl_focused_app_id("   \n"), None);
+    }
+
+    #[test]
+    fn per_app_override_persists_across_focus_switches_for_vscode() {
+        let mut state = manager();
+
+        // VS Code starts in English via `english_apps` ("code").
+        assert_eq!(
+            state.update_with_app("com.microsoft.VSCode".to_string()),
+            Some(false)
+        );
+        // User manually switches VS Code to Telex (enabled = true).
+        state.set_current_app_override(true);
+        assert!(state.get_default_state());
+
+        // Switching to Edge and back to VS Code must keep Telex enabled.
+        assert_eq!(
+            state.update_with_app("microsoft-edge".to_string()),
+            Some(true)
+        );
+        assert_eq!(
+            state.update_with_app("com.microsoft.VSCode".to_string()),
+            Some(true)
+        );
+
+        // Case-insensitive app_id match must also preserve the override.
+        assert_eq!(state.update_with_app("firefox".to_string()), Some(true));
+        assert_eq!(
+            state.update_with_app("com.microsoft.vscode".to_string()),
+            Some(true)
+        );
     }
 }

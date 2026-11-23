@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 mod app_state;
+mod candidate_ipc;
 mod commands;
 mod config;
 mod daemon;
@@ -16,6 +17,7 @@ mod event;
 mod focus;
 mod focus_sync;
 mod focus_tracker;
+mod hotplug;
 mod inject;
 mod key_dedup;
 mod log;
@@ -63,7 +65,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     recover_display_env();
     let config_path = config::find_config_path();
-    let config = config::Config::load().unwrap_or_default();
+    let config = match config::Config::load() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!(
+                "[dboard] WARN: failed to parse config {}: {err} — falling back to defaults",
+                config_path.display()
+            );
+            config::Config::default()
+        }
+    };
     let custom_log_file = config.log_file.as_deref().map(std::path::Path::new);
     let active_log = log::init(config.debug, config.log_level.as_deref(), custom_log_file)?;
     install_signal_handlers();
@@ -97,8 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     log_info(&format!("Input method: {:?}", daemon.config.input_method));
     log_info(&format!(
-        "Toggle key: Ctrl+{}",
-        daemon.config.toggle_key.to_uppercase()
+        "Toggle key: {}",
+        config::format_toggle_key(&daemon.config.toggle_key)
     ));
     log_info(&format!(
         "App memory: {}",
@@ -252,6 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ) {
                 Ok(()) => {
                     log_info("[dboard] evdev session ended");
+                    crate::user_dict_store::flush_and_shutdown();
                     return Ok(());
                 }
                 Err(e) => {
@@ -268,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     log_info("[dboard] Running in stdin mode");
-    run_stdin_mode(
+    let res = run_stdin_mode(
         &mut daemon,
         shared_focus,
         config_changed,
@@ -276,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pointer_activity,
         engine_enabled,
         display,
-    )?;
-
-    Ok(())
+    );
+    crate::user_dict_store::flush_and_shutdown();
+    res
 }

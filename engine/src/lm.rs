@@ -97,9 +97,26 @@ pub(crate) fn decide_should_restore(
         !prev1_is_all_caps && raw.len() >= 2 && raw.chars().all(|c| c.is_ascii_uppercase());
     let is_mixed_caps = raw.chars().any(|c| c.is_ascii_lowercase())
         && raw.chars().skip(1).any(|c| c.is_ascii_uppercase());
+    let is_technical_boundary = boundary_context.is_some_and(|(lead, trail)| {
+        matches!(lead, Some('.' | '/' | '_' | '@' | ':')) || matches!(trail, '/' | '_' | '@' | ':')
+    });
     if !is_all_caps_acronym && !is_mixed_caps {
         if let Some(p1) = prev1.map(|e| e.visible_word.to_lowercase()) {
             if is_vn_compound_pair(&p1, &composed.to_lowercase()) {
+                return false;
+            }
+        }
+        if !is_technical_boundary {
+            let stat_score = crate::stat_lm::score_bilingual(
+                prev2.map(|e| e.visible_word.as_str()),
+                prev1.map(|e| e.visible_word.as_str()),
+                composed,
+                raw,
+            );
+            if stat_score >= 250 {
+                return true;
+            }
+            if stat_score <= -250 {
                 return false;
             }
         }

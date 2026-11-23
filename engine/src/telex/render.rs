@@ -69,6 +69,10 @@ fn toned(base: char, tone: Tone) -> char {
 const MAX_TELEX_WORD_CHARS: usize = 64;
 
 pub fn resolve_and_render(input: &str) -> String {
+    resolve_with_undo(input).0
+}
+
+pub fn resolve_with_undo(input: &str) -> (String, bool) {
     let prefix_end = input
         .char_indices()
         .find(|(_, ch)| ch.is_alphabetic())
@@ -82,7 +86,7 @@ pub fn resolve_and_render(input: &str) -> String {
         .unwrap_or(rest.len());
     let (word, suffix) = rest.split_at(boundary);
     if word.chars().count() > MAX_TELEX_WORD_CHARS {
-        return input.to_string();
+        return (input.to_string(), false);
     }
     let raw: Vec<char> = word.chars().collect();
     let marks = mark::resolve(&raw);
@@ -100,7 +104,7 @@ pub fn resolve_and_render(input: &str) -> String {
         output.push(ch);
     }
     output.push_str(suffix);
-    output
+    (output, marks.mark_undone || tones.tone_undone)
 }
 
 pub fn replacement_diff(previous: &str, next: &str) -> ReplacementDiff {

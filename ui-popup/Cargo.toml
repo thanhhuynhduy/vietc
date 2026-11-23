@@ -1,0 +1,15 @@
+[package]
+name = "dboard-popup"
+version = "0.2.0"
+edition = "2021"
+description = "Optional Wayland zwlr_layer_shell_v1 floating candidate strip for Dboard"
+license = "MIT"
+
+[[bin]]
+name = "dboard-popup"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

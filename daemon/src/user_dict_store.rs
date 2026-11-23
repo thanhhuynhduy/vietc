@@ -18,47 +18,151 @@ fn save_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-struct SaveQueue {
-    pending: Mutex<Option<(PathBuf, String)>>,
-    cv: Condvar,
+struct SaveState {
+    pending: std::collections::HashMap<PathBuf, (String, bool)>,
+    in_flight: bool,
+    shutdown: bool,
 }
 
+struct SaveQueue {
+    state: Mutex<SaveState>,
+    cv: Condvar,
+    handle: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+static QUEUE: OnceLock<std::sync::Arc<SaveQueue>> = OnceLock::new();
+
 fn save_worker() -> &'static std::sync::Arc<SaveQueue> {
-    static QUEUE: OnceLock<std::sync::Arc<SaveQueue>> = OnceLock::new();
     QUEUE.get_or_init(|| {
         let q = std::sync::Arc::new(SaveQueue {
-            pending: Mutex::new(None),
+            state: Mutex::new(SaveState {
+                pending: std::collections::HashMap::new(),
+                in_flight: false,
+                shutdown: false,
+            }),
             cv: Condvar::new(),
+            handle: Mutex::new(None),
         });
         let worker_q = std::sync::Arc::clone(&q);
-        let _ = std::thread::Builder::new()
+        let join_handle = std::thread::Builder::new()
             .name("dboard-dict-save".into())
             .spawn(move || loop {
                 let item = {
-                    let mut guard = worker_q.pending.lock().unwrap_or_else(|p| p.into_inner());
-                    while guard.is_none() {
+                    let mut guard = worker_q.state.lock().unwrap_or_else(|p| p.into_inner());
+                    while guard.pending.is_empty() && !guard.shutdown {
                         guard = worker_q.cv.wait(guard).unwrap_or_else(|p| p.into_inner());
                     }
-                    guard.take()
+                    if let Some(path) = guard.pending.keys().next().cloned() {
+                        let (content, fsync) = guard.pending.remove(&path).unwrap();
+                        guard.in_flight = true;
+                        Some((path, content, fsync))
+                    } else {
+                        break;
+                    }
                 };
-                if let Some((path, serialized)) = item {
-                    let _ = save_user_dict_to(&path, &serialized);
+                if let Some((path, content, fsync)) = item {
+                    let _ = write_atomic_0600(&path, &content, fsync);
+                    let mut guard = worker_q.state.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.in_flight = false;
+                    worker_q.cv.notify_all();
                 }
-            });
+            })
+            .ok();
+        *q.handle.lock().unwrap_or_else(|p| p.into_inner()) = join_handle;
         q
     })
 }
 
-/// Coalescing single-worker save: always persists the latest snapshot in strict
-/// monotonic order without spawning detached threads that could race and overwrite
-/// newer data with stale snapshots.
+/// Coalescing single-worker save: always persists the latest snapshot per path
+/// in strict monotonic order without blocking `evdev_loop`.
 pub fn enqueue_user_dict_save(path: PathBuf, serialized: String) {
+    enqueue_atomic_file_write(path, serialized, true);
+}
+
+/// Enqueues a non-blocking atomic `0600` file write (e.g. `status`, `method`,
+/// `overrides.toml`) onto the background persistence thread so `evdev_loop`
+/// never performs synchronous disk I/O or `fsync`.
+pub fn enqueue_atomic_file_write(path: PathBuf, content: String, fsync: bool) {
     let q = save_worker();
-    {
-        let mut guard = q.pending.lock().unwrap_or_else(|p| p.into_inner());
-        *guard = Some((path, serialized));
+    let mut guard = q.state.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.shutdown {
+        drop(guard);
+        let _ = write_atomic_0600(&path, &content, fsync);
+        return;
     }
+    guard.pending.insert(path, (content, fsync));
     q.cv.notify_one();
+}
+
+/// Flushes all pending background writes and joins the persistence thread cleanly
+/// on daemon shutdown (`SIGTERM`/`SIGINT`) so no One-Tap Undo or status update is lost.
+pub fn flush_and_shutdown() {
+    let Some(q) = QUEUE.get() else {
+        return;
+    };
+    {
+        let mut guard = q.state.lock().unwrap_or_else(|p| p.into_inner());
+        guard.shutdown = true;
+    }
+    q.cv.notify_all();
+    if let Some(handle) = q.handle.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let _ = handle.join();
+    }
+}
+
+/// Waits until all currently queued background writes have finished (used by tests).
+#[cfg(test)]
+pub fn flush_pending_for_test() {
+    let Some(q) = QUEUE.get() else {
+        return;
+    };
+    let mut guard = q.state.lock().unwrap_or_else(|p| p.into_inner());
+    while !guard.pending.is_empty() || guard.in_flight {
+        guard = q.cv.wait(guard).unwrap_or_else(|p| p.into_inner());
+    }
+}
+
+pub fn write_atomic_0600(path: &Path, content: &str, fsync: bool) -> std::io::Result<()> {
+    let _guard = save_lock().lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && parent != Path::new("/tmp") {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
+        }
+    }
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(
+        ".{}.tmp.{}.{seq}",
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("file"),
+        std::process::id()
+    );
+    let tmp_path = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.join(&tmp_name))
+        .unwrap_or_else(|| PathBuf::from(&tmp_name));
+    let _ = fs::remove_file(&tmp_path);
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&tmp_path)?;
+        file.write_all(content.as_bytes())?;
+        if fsync {
+            file.sync_all()?;
+        }
+        drop(file);
+        fs::rename(&tmp_path, path)?;
+        Ok(())
+    })();
+    if write_res.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+    write_res
 }
 
 pub fn user_dict_path() -> Option<PathBuf> {
@@ -91,36 +195,9 @@ pub fn load_user_dict_from(path: &Path) -> UserDict {
     }
 }
 
+#[cfg(test)]
 pub fn save_user_dict_to(path: &Path, serialized: &str) -> std::io::Result<()> {
-    let _guard = save_lock().lock().unwrap_or_else(|p| p.into_inner());
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(parent)?;
-        }
-    }
-    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp_path = path.with_extension(format!("tmp.{}.{seq}", std::process::id()));
-    let _ = fs::remove_file(&tmp_path);
-    let write_res = (|| -> std::io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&tmp_path)?;
-        file.write_all(serialized.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp_path, path)?;
-        Ok(())
-    })();
-    if write_res.is_err() {
-        let _ = fs::remove_file(&tmp_path);
-    }
-    write_res
+    write_atomic_0600(path, serialized, true)
 }
 
 #[cfg(test)]
@@ -164,5 +241,17 @@ mod tests {
             h.join().unwrap();
         }
         assert!(path.exists());
+    }
+
+    #[test]
+    fn async_queue_flushes_latest_snapshot_deterministically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dboard").join("user_dict.txt");
+        let mut dict = UserDict::new();
+        dict.record_keep_raw("quux");
+        enqueue_user_dict_save(path.clone(), dict.serialize());
+        flush_pending_for_test();
+        let loaded = load_user_dict_from(&path);
+        assert!(loaded.is_keep_raw("quux"));
     }
 }

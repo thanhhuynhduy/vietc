@@ -16,6 +16,9 @@ pub struct FocusSyncState {
     pub last_focus_generation: u64,
     pub last_focus_target: Option<TargetIdentity>,
     pub last_window_class: String,
+    last_injector_window: String,
+    last_injector_terminal: Option<bool>,
+    last_injector_bypass: Option<bool>,
     last_key_time: Instant,
 }
 
@@ -25,16 +28,46 @@ impl FocusSyncState {
             last_focus_generation: initial.generation,
             last_focus_target: initial.target,
             last_window_class: String::new(),
+            last_injector_window: String::new(),
+            last_injector_terminal: None,
+            last_injector_bypass: None,
             last_key_time: Instant::now(),
+        }
+    }
+
+    fn sync_injector_if_changed(
+        &mut self,
+        injector: &dyn KeyInjector,
+        window_class: Option<&str>,
+        is_terminal: bool,
+        is_bypass: bool,
+    ) {
+        if let Some(class) = window_class {
+            if self.last_injector_window != class {
+                injector.set_active_window(class);
+                self.last_injector_window.clear();
+                self.last_injector_window.push_str(class);
+            }
+        }
+        if self.last_injector_terminal != Some(is_terminal) {
+            injector.set_terminal_app(is_terminal);
+            self.last_injector_terminal = Some(is_terminal);
+        }
+        if self.last_injector_bypass != Some(is_bypass) {
+            injector.set_bypass_mode(is_bypass);
+            self.last_injector_bypass = Some(is_bypass);
         }
     }
 
     /// Observe focus generation changes, per-app class changes, and password
     /// field transitions on `value == 1` (KeyDown) BEFORE engine/Backspace logic.
     ///
-    /// Invariant: when neither `focus.generation` nor `active_window_class`
-    /// changed (normal typing in the same window), `daemon.check_app_change_with`
-    /// and `daemon.reset_composition_state` MUST NOT be called.
+    /// Invariants:
+    /// - Locks `shared_focus` at most once per keystroke.
+    /// - Only updates `injector.set_active_window` / `set_terminal_app` /
+    ///   `set_bypass_mode` when the values actually change.
+    /// - On `FocusLost` (Polkit/launcher overlay), clears `daemon.app_state.current_app`
+    ///   so bypass/terminal/english overrides from the previous window are never inherited.
     pub fn sync_on_key_press(
         &mut self,
         daemon: &mut Daemon,
@@ -79,22 +112,34 @@ impl FocusSyncState {
             daemon.reset_composition_state();
 
             if daemon.config.app_state.enabled && !active_window_class.is_empty() {
-                injector.set_active_window(&active_window_class);
-                daemon.check_app_change_with(active_window_class);
-                injector.set_terminal_app(daemon.app_state.is_terminal_app());
-                injector.set_bypass_mode(daemon.is_current_app_bypassed());
+                daemon.check_app_change_with(active_window_class.clone());
+                self.sync_injector_if_changed(
+                    injector,
+                    Some(&active_window_class),
+                    daemon.app_state.is_terminal_app(),
+                    daemon.is_current_app_bypassed(),
+                );
+            } else if active_window_class.is_empty() {
+                // FocusLost (layer-shell launcher / Polkit): never inherit previous app's
+                // bypass, terminal, method, or english overrides.
+                self.last_window_class.clear();
+                daemon.reset_app_focus_to_global();
+                self.sync_injector_if_changed(injector, Some(""), false, false);
             }
         } else if daemon.config.app_state.enabled && !active_window_class.is_empty() {
-            injector.set_active_window(&active_window_class);
             if class_changed {
                 crate::password_detector::clear_atspi_password_flag_if_non_atspi(
                     focus.identity.as_deref(),
                 );
                 self.last_window_class = active_window_class.clone();
-                daemon.check_app_change_with(active_window_class);
+                daemon.check_app_change_with(active_window_class.clone());
             }
-            injector.set_terminal_app(daemon.app_state.is_terminal_app());
-            injector.set_bypass_mode(daemon.is_current_app_bypassed());
+            self.sync_injector_if_changed(
+                injector,
+                Some(&active_window_class),
+                daemon.app_state.is_terminal_app(),
+                daemon.is_current_app_bypassed(),
+            );
         }
 
         if daemon.config.password_detection.enabled {
@@ -110,5 +155,120 @@ impl FocusSyncState {
                 daemon.write_status();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct CountingInjector {
+        set_window_calls: AtomicUsize,
+        bypass: AtomicBool,
+    }
+
+    impl CountingInjector {
+        fn new() -> Self {
+            Self {
+                set_window_calls: AtomicUsize::new(0),
+                bypass: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl KeyInjector for CountingInjector {
+        fn send_char(&self, _ch: char) -> dboard_protocol::inject::InjectResult {
+            dboard_protocol::inject::InjectResult::Success
+        }
+        fn send_backspace(&self) -> dboard_protocol::inject::InjectResult {
+            dboard_protocol::inject::InjectResult::Success
+        }
+        fn send_string(&self, _text: &str) -> dboard_protocol::inject::InjectResult {
+            dboard_protocol::inject::InjectResult::Success
+        }
+        fn flush(&self) -> dboard_protocol::inject::InjectResult {
+            dboard_protocol::inject::InjectResult::Success
+        }
+        fn set_active_window(&self, _class: &str) -> dboard_protocol::inject::InjectResult {
+            self.set_window_calls.fetch_add(1, Ordering::SeqCst);
+            dboard_protocol::inject::InjectResult::Success
+        }
+        fn set_bypass_mode(&self, bypass: bool) -> dboard_protocol::inject::InjectResult {
+            self.bypass.store(bypass, Ordering::SeqCst);
+            dboard_protocol::inject::InjectResult::Success
+        }
+    }
+
+    #[test]
+    fn focus_lost_clears_bypass_app_and_same_window_avoids_redundant_injector_calls() {
+        let mut cfg = crate::config::Config::default();
+        cfg.app_state.enabled = true;
+        cfg.app_state.bypass_apps = vec!["steam".into()];
+        let enabled = Arc::new(AtomicBool::new(true));
+        let mut daemon = Daemon::new(cfg, std::path::PathBuf::from("test.toml"), enabled);
+        let shared = Arc::new(Mutex::new(FocusSnapshot::default()));
+        let mut sync = FocusSyncState::from_initial(FocusSnapshot::default());
+        let inj = CountingInjector::new();
+
+        // Focus steam (bypassed app)
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:1".into()), Some("steam".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(daemon.is_current_app_bypassed());
+        assert!(inj.bypass.load(Ordering::SeqCst));
+        assert_eq!(inj.set_window_calls.load(Ordering::SeqCst), 1);
+
+        // Subsequent keystrokes in the same window must NOT call set_active_window again
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert_eq!(inj.set_window_calls.load(Ordering::SeqCst), 1);
+
+        // FocusLost (Polkit / launcher overlay): must clear current_app so bypass is NOT inherited
+        shared.lock().unwrap().observe_focus_lost();
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(
+            !daemon.is_current_app_bypassed(),
+            "FocusLost must clear daemon.app_state.current_app so Polkit/launcher never inherits bypass_apps"
+        );
+        assert!(!inj.bypass.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn focus_lost_restores_global_method_and_enabled_from_terminal_or_english_app() {
+        let mut cfg = crate::config::Config {
+            input_method: "telex".into(),
+            ..Default::default()
+        };
+        cfg.app_state.enabled = true;
+        cfg.app_state.terminal_apps = vec!["kitty".into()];
+        cfg.app_state.terminal_input_method = "vni".into();
+        cfg.app_state.english_apps = vec!["kitty".into()];
+        let enabled = Arc::new(AtomicBool::new(true));
+        let mut daemon = Daemon::new(cfg, std::path::PathBuf::from("test.toml"), enabled);
+        let shared = Arc::new(Mutex::new(FocusSnapshot::default()));
+        let mut sync = FocusSyncState::from_initial(FocusSnapshot::default());
+        let inj = CountingInjector::new();
+
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:term".into()), Some("kitty".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert_eq!(daemon.app_state.effective_method(), "vni");
+        assert!(!daemon.engine.is_enabled());
+
+        // Focus moves to a layer-shell launcher (FocusLost): must restore global Telex + enabled.
+        shared.lock().unwrap().observe_focus_lost();
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert_eq!(daemon.app_state.effective_method(), "telex");
+        assert!(daemon.engine.is_enabled());
+        // Verify engine itself switched back to Telex (not stuck in VNI from terminal).
+        let _ = daemon.engine.process_key('a');
+        let _ = daemon.engine.process_key('s');
+        assert_eq!(daemon.engine.buffer(), "á");
     }
 }

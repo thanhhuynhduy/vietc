@@ -1,0 +1,511 @@
+# category	raw_telex	expected_output
+office	Hoom nay coong ty toor chuwcs hopj giao ban lucs chins giowf sangs. 	Hôm nay công ty tổ chức họp giao ban lúc chín giờ sáng. 
+office	Anh vui longf guwir baos caos taif chinhs quys ba truwowcs thuws saus. 	Anh vui lòng gửi báo cáo tài chính quý ba trước thứ sáu. 
+office	Chij kieemr tra laij danh sachs nhaan suwj mowis tuyeenr thangs nayf nhes. 	Chị kiểm tra lại danh sách nhân sự mới tuyển tháng này nhé. 
+office	Phongf kees toans ddax duyeetj ddeef nghij thanh toans cho nhaf cung caaps. 	Phòng kế toán đã duyệt đề nghị thanh toán cho nhà cung cấp. 
+office	Chungs ta caanf chuaanr bij slide thuyeets trinhf cho khachs hangf lowns. 	Chúng ta cần chuẩn bị slide thuyết trình cho khách hàng lớn. 
+office	Moij nguwowif caapj nhaatj tieens ddooj duwj ans leen bangr chung truwowcs chieeuf nay. 	Mọi người cập nhật tiến độ dự án lên bảng chung trước chiều nay. 
+office	Giams ddoocs yeeu caauf raf soats laij toanf booj howpj ddoongf kinh tees. 	Giám đốc yêu cầu rà soát lại toàn bộ hợp đồng kinh tế. 
+office	Lichj phongr vaans uwngs vieen laapj trinhf vieen dduwowcj dowif sang thuws tuw. 	Lịch phỏng vấn ứng viên lập trình viên được dời sang thứ tư. 
+office	Em vuwaf guwir email ddinhs kemf file baos gias mowis nhaats cho anh rooif. 	Em vừa gửi email đính kèm file báo giá mới nhất cho anh rồi. 
+office	Khachs hangf phanr hooif raats tichs cuwcj veef banr thieets kees giao dieenj mowis. 	Khách hàng phản hồi rất tích cực về bản thiết kế giao diện mới. 
+office	Ddeef nghij cacs truwowngr nhoms toongr howpj kees hoachj coong vieecj tuaanf towis. 	Đề nghị các trưởng nhóm tổng hợp kế hoạch công việc tuần tới. 
+office	Cuoocj hopj vowis ddoois tacs nuwowcs ngoaif sex dieenx ra qua cuoocj goij video. 	Cuộc họp với đối tác nước ngoài sẽ diễn ra qua cuộc gọi video. 
+office	Nhowf booj phaanj hanhf chinhs ddawtj phongf hopj taangf nawm cho buooir ddaof taoj. 	Nhờ bộ phận hành chính đặt phòng họp tầng năm cho buổi đào tạo. 
+office	Bieen banr cuoocj hopj sangs nay ddax dduwowcj luwu trong thuw mucj chia ser. 	Biên bản cuộc họp sáng nay đã được lưu trong thư mục chia sẻ. 
+office	Doanh thu thangs nayf tawng truwowngr muwowif lawm phaanf trawm so vowis thangs truwowcs. 	Doanh thu tháng này tăng trưởng mười lăm phần trăm so với tháng trước. 
+office	Chungs tooi cam keets banf giao sanr phaamr ddungs thowif hanj ddax thoar thuaanj. 	Chúng tôi cam kết bàn giao sản phẩm đúng thời hạn đã thỏa thuận. 
+office	Xin looix anh vif suwj chaamj treex trong quas trinhf xuwr lys hoof sow. 	Xin lỗi anh vì sự chậm trễ trong quá trình xử lý hồ sơ. 
+office	Vui longf xacs nhaanj lichj henj truwowcs muwowif bayr giowf hoom nay. 	Vui lòng xác nhận lịch hẹn trước mười bảy giờ hôm nay. 
+office	Heej thoongs quanr lys khachs hangf sex baor trif vaof toois chur nhaatj. 	Hệ thống quản lý khách hàng sẽ bảo trì vào tối chủ nhật. 
+office	Nhaan vieen mowis caanf hoanf thanhf khoas hocj nooij quy trong tuaanf ddaauf tieen. 	Nhân viên mới cần hoàn thành khóa học nội quy trong tuần đầu tiên. 
+office	Booj phaanj kinh doanh ddang trieenr khai chuwowng trinhf khuyeens maix muaf hef. 	Bộ phận kinh doanh đang triển khai chương trình khuyến mãi mùa hè. 
+office	Banr duwj thaor ngaan sachs nawm towis caanf dduwowcj ban giams ddoocs phee duyeetj. 	Bản dự thảo ngân sách năm tới cần được ban giám đốc phê duyệt. 
+office	Anh cos theer chia ser manf hinhf ddeer moij nguwowif cungf xem bieeur ddoof khoong. 	Anh có thể chia sẻ màn hình để mọi người cùng xem biểu đồ không. 
+office	Camr own cacs banj ddax noox luwcj hoanf thanhf mucj tieeu doanh soos quys nayf. 	Cảm ơn các bạn đã nỗ lực hoàn thành mục tiêu doanh số quý này. 
+office	Chinhs sachs lamf vieecj tuwf xa sex aps dungj tuwf ddaauf thangs sau. 	Chính sách làm việc từ xa sẽ áp dụng từ đầu tháng sau. 
+office	Taif lieeuj huwowngs daanx suwr dungj ddax dduwowcj dichj sang car tieengs Vieetj vaf tieengs Anh. 	Tài liệu hướng dẫn sử dụng đã được dịch sang cả tiếng Việt và tiếng Anh. 
+office	Ddooij ngux chawm socs khachs hangf truwcj toongr ddaif hai muwowi boons giowf mooix ngayf. 	Đội ngũ chăm sóc khách hàng trực tổng đài hai mươi bốn giờ mỗi ngày. 
+office	Hoas ddown ddieenj tuwr sex dduwowcj guwir tuwj ddoongj veef ddiaj chir email ddawng kys. 	Hóa đơn điện tử sẽ được gửi tự động về địa chỉ email đăng ký. 
+office	Coong ty sex thuwowngr hieeuj suaats cho cacs cas nhaan ddatj thanhf tichs xuaats sawcs. 	Công ty sẽ thưởng hiệu suất cho các cá nhân đạt thành tích xuất sắc. 
+office	Nhowf anh kys duyeetj ddown xin nghir pheps giups em trong hoom nay. 	Nhờ anh ký duyệt đơn xin nghỉ phép giúp em trong hôm nay. 
+office	Baos caos kieemr toans nooij booj khoong phats hieenj sai sots ddangs keer naof. 	Báo cáo kiểm toán nội bộ không phát hiện sai sót đáng kể nào. 
+office	Quy trinhf phee duyeetj chi phis ddax dduwowcj ruts gonj ddeer tieets kieemj thowif gian. 	Quy trình phê duyệt chi phí đã được rút gọn để tiết kiệm thời gian. 
+office	Nhoms marketing ddang chuaanr bij chieens dichj quangr bas sanr phaamr mowis. 	Nhóm marketing đang chuẩn bị chiến dịch quảng bá sản phẩm mới. 
+office	Tyr leej giuwx chaan khachs hangf nawm nay ddatj muwcs cao nhaats tuwf truwowcs ddeens nay. 	Tỷ lệ giữ chân khách hàng năm nay đạt mức cao nhất từ trước đến nay. 
+office	Cacs phongf ban caanf phoois howpj chawtj chex ddeer ddamr baor chaats luwowngj dichj vuj. 	Các phòng ban cần phối hợp chặt chẽ để đảm bảo chất lượng dịch vụ. 
+office	Ddeef xuaats naang caaps haj taangf mays chur ddax dduwowcj thoong qua sangs nay. 	Đề xuất nâng cấp hạ tầng máy chủ đã được thông qua sáng nay. 
+office	Hoof sow duwj thaauf phair dduwowcj nieem phong vaf noopj truwowcs thowif hanj quy ddinhj. 	Hồ sơ dự thầu phải được niêm phong và nộp trước thời hạn quy định. 
+office	Anh nhows mang theo mays tinhs xachs tay vaf booj sacj khi ddi coong tacs. 	Anh nhớ mang theo máy tính xách tay và bộ sạc khi đi công tác. 
+office	Khoas ddaof taoj kyx nawng quanr lys thowif gian nhaanj dduwowcj nhieeuf ddanhs gias toots. 	Khóa đào tạo kỹ năng quản lý thời gian nhận được nhiều đánh giá tốt. 
+office	Chees ddooj baor hieemr suwcs khoer mowr roongj cho car nguwowif thaan cuar nhaan vieen. 	Chế độ bảo hiểm sức khỏe mở rộng cho cả người thân của nhân viên. 
+office	Chungs ta neen ddanhs gias laij hieeuj quar cuar tuwngf keenh truyeenf thoong. 	Chúng ta nên đánh giá lại hiệu quả của từng kênh truyền thông. 
+office	Banr kees hoachj hanhf ddoongj chi tieets sex dduwowcj coong boos vaof thuws hai. 	Bản kế hoạch hành động chi tiết sẽ được công bố vào thứ hai. 
+office	Xin chucs muwngf nhoms sanr phaamr ddax ra mawts phieen banr mowis thanhf coong. 	Xin chúc mừng nhóm sản phẩm đã ra mắt phiên bản mới thành công. 
+office	Moij thawcs mawcs veef luwowng thuwowngr xin lieen heej truwcj tieeps phongf nhaan suwj. 	Mọi thắc mắc về lương thưởng xin liên hệ trực tiếp phòng nhân sự. 
+office	Coong tacs banf giao coong vieecj caanf dduwowcj thuwcj hieenj caanr thaanj vaf ddaayf ddur. 	Công tác bàn giao công việc cần được thực hiện cẩn thận và đầy đủ. 
+office	Truwowngr phongf vuwaf guwir thoong baos thay ddooir quy trinhf chaams coong. 	Trưởng phòng vừa gửi thông báo thay đổi quy trình chấm công. 
+office	Duwj ans chuyeenr ddooir soos ddang buwowcs vaof giai ddoanj thuwr nghieemj thuwcj tees. 	Dự án chuyển đổi số đang bước vào giai đoạn thử nghiệm thực tế. 
+office	Ban lanhx ddaoj ddanhs gias cao tinh thaanf lamf vieecj chur ddoongj cuar toanf ddooij. 	Ban lãnh đạo đánh giá cao tinh thần làm việc chủ động của toàn đội. 
+office	Vawn phongf mowis cos khoong gian lamf vieecj mowr vaf khu vuwcj nghir ngowi roongj raix. 	Văn phòng mới có không gian làm việc mở và khu vực nghỉ ngơi rộng rãi. 
+office	Howpj ddoongf lao ddoongj chinhs thuwcs sex dduwowcj kys sau hai thangs thuwr vieecj. 	Hợp đồng lao động chính thức sẽ được ký sau hai tháng thử việc. 
+office	Anh kieemr tra giups em bangr tinhs Excel xem coong thuwcs ddax ddungs chuwa. 	Anh kiểm tra giúp em bảng tính Excel xem công thức đã đúng chưa. 
+office	Chij guwir laij link Google Drive chuwas booj anhr suwj kieenj cuoois nawm nhes. 	Chị gửi lại link Google Drive chứa bộ ảnh sự kiện cuối năm nhé. 
+office	Cuoocj hopj Zoom lucs muwowif boons giowf ddax bij dowif sang muwowif lawm giowf. 	Cuộc họp Zoom lúc mười bốn giờ đã bị dời sang mười lăm giờ. 
+office	Moij nguwowif nhows ddieenf form khaor sats muwcs ddooj haif longf truwowcs thuws nawm. 	Mọi người nhớ điền form khảo sát mức độ hài lòng trước thứ năm. 
+office	Em ddax taoj ticket hoox trowj cho khachs hangf vaf gawns ther uwu tieen cao. 	Em đã tạo ticket hỗ trợ cho khách hàng và gắn thẻ ưu tiên cao. 
+office	Baos caos KPI thangs nayf sex dduwowcj trinhf bayf treen dashboard chung. 	Báo cáo KPI tháng này sẽ được trình bày trên dashboard chung. 
+office	Ddooij ngux bans hangf caanf caapj nhaatj trangj thais lead leen CRM mooix ngayf. 	Đội ngũ bán hàng cần cập nhật trạng thái lead lên CRM mỗi ngày. 
+office	Nhowf anh review laij banr draft thoong caos baos chis truwowcs khi phats hanhf. 	Nhờ anh review lại bản draft thông cáo báo chí trước khi phát hành. 
+office	Khachs hangf yeeu caauf xuaats hoas ddown VAT kemf bangr kee chi tieets. 	Khách hàng yêu cầu xuất hóa đơn VAT kèm bảng kê chi tiết. 
+office	Lichj nghir leex quoocs khanhs nawm nay keos daif boons ngayf lieen tieeps. 	Lịch nghỉ lễ quốc khánh năm nay kéo dài bốn ngày liên tiếp. 
+office	Phongf kyx thuaatj sex hoox trowj caif ddawtj phaanf meemf cho toanf booj mays mowis. 	Phòng kỹ thuật sẽ hỗ trợ cài đặt phần mềm cho toàn bộ máy mới. 
+office	Chij ddax toongr howpj danh sachs caau hoir thuwowngf gawpj cho buooir hooij thaor. 	Chị đã tổng hợp danh sách câu hỏi thường gặp cho buổi hội thảo. 
+office	Ddeef nghij moij nguwowif tawts micro khi khoong phats bieeur trong cuoocj hopj online. 	Đề nghị mọi người tắt micro khi không phát biểu trong cuộc họp online. 
+office	Taif khoanr ngaan hangf coong ty ddax nhaanj dduwowcj khoanr thanh toans ddowtj mootj. 	Tài khoản ngân hàng công ty đã nhận được khoản thanh toán đợt một. 
+office	Nhoms thieets kees vuwaf hoanf thieenj booj nhaanj dieenj thuwowng hieeuj phieen banr hai. 	Nhóm thiết kế vừa hoàn thiện bộ nhận diện thương hiệu phiên bản hai. 
+office	Anh vui longf phanr hooif email cuar ddoois tacs truwowcs cuoois ngayf lamf vieecj. 	Anh vui lòng phản hồi email của đối tác trước cuối ngày làm việc. 
+office	Chungs ta caanf toois uwu chi phis vaanj hanhf maf vaanx giuwx vuwngx chaats luwowngj. 	Chúng ta cần tối ưu chi phí vận hành mà vẫn giữ vững chất lượng. 
+office	Bangr phaan coong truwcj hoox trowj kyx thuaatj cuoois tuaanf ddax dduwowcj dans leen nhoms. 	Bảng phân công trực hỗ trợ kỹ thuật cuối tuần đã được dán lên nhóm. 
+office	Khachs hangf doanh nghieepj ddanhs gias raats cao toocs ddooj phanr hooif cuar ddooij minhf. 	Khách hàng doanh nghiệp đánh giá rất cao tốc độ phản hồi của đội mình. 
+office	Em vuwaf caapj nhaatj lichj trinhf coong tacs Ddaf Nawngx leen lichj dungf chung. 	Em vừa cập nhật lịch trình công tác Đà Nẵng lên lịch dùng chung. 
+office	Booj phaanj phaps chees ddang xem xets cacs ddieeuf khoanr baor maatj thoong tin. 	Bộ phận pháp chế đang xem xét các điều khoản bảo mật thông tin. 
+office	Mucj tieeu quys boons laf mowr roongj thij truwowngf sang khu vuwcj mieenf Trung. 	Mục tiêu quý bốn là mở rộng thị trường sang khu vực miền Trung. 
+office	Camr own chij ddax hoox trowj chuaanr bij taif lieeuj cho buooir kys keets hoom qua. 	Cảm ơn chị đã hỗ trợ chuẩn bị tài liệu cho buổi ký kết hôm qua. 
+office	Heej thoongs chaams coong nhaanj dieenj khuoon mawtj hoatj ddoongj oonr ddinhj trowr laij. 	Hệ thống chấm công nhận diện khuôn mặt hoạt động ổn định trở lại. 
+office	Anh cos theer guwir banr PDF baos caos toongr keets nawm ngoais ddeer em tham khaor khoong. 	Anh có thể gửi bản PDF báo cáo tổng kết năm ngoái để em tham khảo không. 
+office	Chuwowng trinhf thuwcj taapj sinh muaf thu ddax thu huts hown hai trawm hoof sow. 	Chương trình thực tập sinh mùa thu đã thu hút hơn hai trăm hồ sơ. 
+office	Ddeef ans cair tieens quy trinhf ddongs gois giups giamr muwowif phaanf trawm chi phis. 	Đề án cải tiến quy trình đóng gói giúp giảm mười phần trăm chi phí. 
+office	Ban toor chuwcs sex guwir giaays mowif chinhs thuwcs qua dduwowngf buwu ddieenj vaf email. 	Ban tổ chức sẽ gửi giấy mời chính thức qua đường bưu điện và email. 
+office	Moij nguwowif nhows sao luwu duwx lieeuj quan trongj truwowcs khi naang caaps heej thoongs. 	Mọi người nhớ sao lưu dữ liệu quan trọng trước khi nâng cấp hệ thống. 
+office	Nhoms nghieen cuwus thij truwowngf vuwaf coong boos khaor sats hanhf vi nguwowif tieeu dungf. 	Nhóm nghiên cứu thị trường vừa công bố khảo sát hành vi người tiêu dùng. 
+office	Coong ty hoox trowj chi phis hocj ngoaij nguwx vaf chuwngs chir chuyeen moon cho nhaan vieen. 	Công ty hỗ trợ chi phí học ngoại ngữ và chứng chỉ chuyên môn cho nhân viên. 
+office	Anh xem giups em bangr baos gias cuar ba ddown vij cung caaps thieets bij vawn phongf. 	Anh xem giúp em bảng báo giá của ba đơn vị cung cấp thiết bị văn phòng. 
+office	Leex toongr keets cuoois nawm sex dduwowcj toor chuwcs taij trung taam hooij nghij thanhf phoos. 	Lễ tổng kết cuối năm sẽ được tổ chức tại trung tâm hội nghị thành phố. 
+office	Quy ddinhj baor maatj yeeu caauf ddooir maatj khaaur ddinhj kyf chins muwowi ngayf mootj laanf. 	Quy định bảo mật yêu cầu đổi mật khẩu định kỳ chín mươi ngày một lần. 
+office	Chij ddax guwir thuw camr own towis toanf booj dieenx giar tham gia suwj kieenj. 	Chị đã gửi thư cảm ơn tới toàn bộ diễn giả tham gia sự kiện. 
+office	Duwj baos doanh soos thangs towis raats khar quan nhowf cacs ddown hangf lowns mowis kys. 	Dự báo doanh số tháng tới rất khả quan nhờ các đơn hàng lớn mới ký. 
+office	Nhowf booj phaanj kho kieemr kee laij soos luwowngj hangf toonf vaof cuoois tuaanf nayf. 	Nhờ bộ phận kho kiểm kê lại số lượng hàng tồn vào cuối tuần này. 
+office	Heej thoongs quanr lys taif lieeuj hoox trowj timf kieems toanf vawn raats nhanh chongs. 	Hệ thống quản lý tài liệu hỗ trợ tìm kiếm toàn văn rất nhanh chóng. 
+office	Anh vui longf ddieenf ddaayf ddur thoong tin vaof maaux ddawng kys baor hieemr xax hooij. 	Anh vui lòng điền đầy đủ thông tin vào mẫu đăng ký bảo hiểm xã hội. 
+office	Chungs tooi raats mong dduwowcj howpj tacs laau daif cungf quys coong ty trong tuwowng lai. 	Chúng tôi rất mong được hợp tác lâu dài cùng quý công ty trong tương lai. 
+office	Ddooij ngux tuw vaans sex lieen heej laij vowis anh trong vongf hai muwowi boons giowf. 	Đội ngũ tư vấn sẽ liên hệ lại với anh trong vòng hai mươi bốn giờ. 
+office	Banr trinhf bayf caanf ngawns gonj, sucs tichs vaf taapj trung vaof soos lieeuj thuwcj tees. 	Bản trình bày cần ngắn gọn, súc tích và tập trung vào số liệu thực tế. 
+office	Nhaan suwj phuj trachs tuyeenr dungj ddang sangf locj hoof sow cho vij tris phaan tichs duwx lieeuj. 	Nhân sự phụ trách tuyển dụng đang sàng lọc hồ sơ cho vị trí phân tích dữ liệu. 
+office	Vui longf giuwx bis maatj thoong tin taif chinhs nooij booj theo ddungs cam keets. 	Vui lòng giữ bí mật thông tin tài chính nội bộ theo đúng cam kết. 
+office	Hooij ddoongf quanr trij sex hopj thuwowngf kyf vaof sangs thuws bayr tuaanf sau. 	Hội đồng quản trị sẽ họp thường kỳ vào sáng thứ bảy tuần sau. 
+office	Coong ty vuwaf kys keets thoar thuaanj howpj tacs chieens luwowcj vowis truwowngf ddaij hocj. 	Công ty vừa ký kết thỏa thuận hợp tác chiến lược với trường đại học. 
+office	Anh nhows xacs nhaanj tham duwj tieecj taats nieen treen heej thoongs nooij booj nhes. 	Anh nhớ xác nhận tham dự tiệc tất niên trên hệ thống nội bộ nhé. 
+office	Baos caos hieeuj quar quangr caos cho thaays tyr leej chuyeenr ddooir tawng manhj. 	Báo cáo hiệu quả quảng cáo cho thấy tỷ lệ chuyển đổi tăng mạnh. 
+office	Chij guwir giups em danh sachs khachs mowif VIP ddeer in ther teen ddaij bieeur. 	Chị gửi giúp em danh sách khách mời VIP để in thẻ tên đại biểu. 
+office	Toanf booj taif sanr coos ddinhj cuar vawn phongf ddax dduwowcj dans max vachj quanr lys. 	Toàn bộ tài sản cố định của văn phòng đã được dán mã vạch quản lý. 
+dev	Minhf vuwaf chayj cargo test toanf booj workspace vaf khoong thaays looix naof. 	Mình vừa chạy cargo test toàn bộ workspace và không thấy lỗi nào. 
+dev	Banj nhows chayj git pull truwowcs khi taoj branch mowis ddeer tranhs xung ddootj. 	Bạn nhớ chạy git pull trước khi tạo branch mới để tránh xung đột. 
+dev	Looix nayf xayr ra do socket bij ddongs ddootj ngootj khi client ngawts keets noois. 	Lỗi này xảy ra do socket bị đóng đột ngột khi client ngắt kết nối. 
+dev	Anh kieemr tra laij file config xem port lawngs nghe ddax mowr chuwa nhes. 	Anh kiểm tra lại file config xem port lắng nghe đã mở chưa nhé. 
+dev	Chungs ta neen dungf docker compose ddeer ddoongf booj mooi truwowngf phats trieenr. 	Chúng ta nên dùng docker compose để đồng bộ môi trường phát triển. 
+dev	Sau khi suwar bug xong thif nhows vieets theem unit test ddeer choongs tais phats. 	Sau khi sửa bug xong thì nhớ viết thêm unit test để chống tái phát. 
+dev	Heej thoongs CI tuwj ddoongj chayj clippy vaf rustfmt treen mooix pull request. 	Hệ thống CI tự động chạy clippy và rustfmt trên mỗi pull request. 
+dev	Minhf ddang debug vaans ddeef rof rir booj nhows treen server production. 	Mình đang debug vấn đề rò rỉ bộ nhớ trên server production. 
+dev	Banj ddaayr code leen nhanhs dev truwowcs rooif mowr merge request ddeer moij nguwowif review. 	Bạn đẩy code lên nhánh dev trước rồi mở merge request để mọi người review. 
+dev	Caanf toois uwu caau truy vaans SQL nayf vif bangr duwx lieeuj ddax vuwowtj muwowif trieeuj dongf. 	Cần tối ưu câu truy vấn SQL này vì bảng dữ liệu đã vượt mười triệu dòng. 
+dev	Dichj vuj systemd sex tuwj ddoongj khowir ddoongj laij daemon neeus tieens trinhf bij saapj. 	Dịch vụ systemd sẽ tự động khởi động lại daemon nếu tiến trình bị sập. 
+dev	Treen Wayland khoong neen phuj thuoocj vaof bieens mooi truwowngf IBus hay Fcitx. 	Trên Wayland không nên phụ thuộc vào biến môi trường IBus hay Fcitx. 
+dev	Hamf nayf chayj treen hot path neen tuyeetj ddoois khoong dduwowcj goij thread sleep. 	Hàm này chạy trên hot path nên tuyệt đối không được gọi thread sleep. 
+dev	Kieemr tra log cuar container xem nguyeen nhaan timeout khi goij API laf gif. 	Kiểm tra log của container xem nguyên nhân timeout khi gọi API là gì. 
+dev	Minhf ddax tachs module nayf ra file rieeng ddeer giuwx kichs thuwowcs max nguoonf gonj gangf. 	Mình đã tách module này ra file riêng để giữ kích thước mã nguồn gọn gàng. 
+dev	Banr build release chayj nhanh gaaps muwowif laanf so vowis banr debug. 	Bản build release chạy nhanh gấp mười lần so với bản debug. 
+dev	Nhows caaus hinhf firewall chir mowr ddungs port boons boons ba cho dichj vuj web. 	Nhớ cấu hình firewall chỉ mở đúng port bốn bốn ba cho dịch vụ web. 
+dev	Toocs ddooj phanr hooif trung binhf cuar engine chir khoangr mootj phaayr nawm micro giaay. 	Tốc độ phản hồi trung bình của engine chỉ khoảng một phẩy năm micro giây. 
+dev	Khi trieenr khai leen Kubernetes caanf thieets laapj ddaayf ddur liveness vaf readiness probe. 	Khi triển khai lên Kubernetes cần thiết lập đầy đủ liveness và readiness probe. 
+dev	Banj cos theer dungf curl ddeer kieemr tra nhanh endpoint REST API vuwaf vieets. 	Bạn có thể dùng curl để kiểm tra nhanh endpoint REST API vừa viết. 
+dev	Minhf vuwaf naang caaps phieen banr Rust toolchain vaf caapj nhaatj file Cargo.lock. 	Mình vừa nâng cấp phiên bản Rust toolchain và cập nhật file Cargo.lock. 
+dev	Dduwngf bao giowf luwu maatj khaaur hay API key truwcj tieeps trong max nguoonf git. 	Đừng bao giờ lưu mật khẩu hay API key trực tiếp trong mã nguồn git. 
+dev	Suwr dungj booj ddeemj vongf giups quanr lys lichj suwr tuwf maf khoong toons nhieeuf booj nhows. 	Sử dụng bộ đệm vòng giúp quản lý lịch sử từ mà không tốn nhiều bộ nhớ. 
+dev	Chuwngs chir SSL sex heets hanj vaof tuaanf towis neen caanf gia hanj tuwj ddoongj. 	Chứng chỉ SSL sẽ hết hạn vào tuần tới nên cần gia hạn tự động. 
+dev	Looix bieen dichj nayf xuaats phats tuwf vieecj thieeus feature flag trong Cargo.toml. 	Lỗi biên dịch này xuất phát từ việc thiếu feature flag trong Cargo.toml. 
+dev	Minhf ddax caaus hinhf nginx lamf reverse proxy cho toanf booj cacs dichj vuj nooij booj. 	Mình đã cấu hình nginx làm reverse proxy cho toàn bộ các dịch vụ nội bộ. 
+dev	Kieens trucs phaan taangf giups tachs bieetj hoanf toanf logic ngoon nguwx khoir giao thuwcs I/O. 	Kiến trúc phân tầng giúp tách biệt hoàn toàn logic ngôn ngữ khỏi giao thức I/O. 
+dev	Chayj cargo audit vaf cargo deny ddeer kieemr tra loox hoongr baor maatj chuooix cung uwngs. 	Chạy cargo audit và cargo deny để kiểm tra lỗ hổng bảo mật chuỗi cung ứng. 
+dev	Neeus redis cache bij troongs thif heej thoongs sex ddocj duwj phongf tuwf database chinhs. 	Nếu redis cache bị trống thì hệ thống sẽ đọc dự phòng từ database chính. 
+dev	Banj thuwr xoas thuw mucj target rooif bieen dichj laij tuwf ddaauf xem sao. 	Bạn thử xóa thư mục target rồi biên dịch lại từ đầu xem sao. 
+dev	Giao thuwcs virtual keyboard treen Wayland cho pheps chenf chuwx khoong caanf clipboard. 	Giao thức virtual keyboard trên Wayland cho phép chèn chữ không cần clipboard. 
+dev	Minhf dungf tmux keets howpj vowis neovim ddeer laapj trinhf truwcj tieeps qua ssh. 	Mình dùng tmux kết hợp với neovim để lập trình trực tiếp qua ssh. 
+dev	Caanf boor sung rate limit cho API ddawng nhaapj ddeer choongs taans coong dof maatj khaaur. 	Cần bổ sung rate limit cho API đăng nhập để chống tấn công dò mật khẩu. 
+dev	File binary sau khi nens chir nawngj chuwa towis ba trawm nawm muwowi kilobyte. 	File binary sau khi nén chỉ nặng chưa tới ba trăm năm mươi kilobyte. 
+dev	Hayx kieemr tra laij quyeenf truy caapj file user dict phair luoon laf khoong saus khoong khoong. 	Hãy kiểm tra lại quyền truy cập file user dict phải luôn là không sáu không không. 
+dev	Khi banf phims USB bij ruts ra thif daemon phair tuwj nhar heets cacs phims ddang giuwx. 	Khi bàn phím USB bị rút ra thì daemon phải tự nhả hết các phím đang giữ. 
+dev	Thuaatj toans bangr bawm mowr dungf hamf bawm FNV giups tra cuwus vowis ddooj phuwcs tapj hawngf soos. 	Thuật toán bảng băm mở dùng hàm băm FNV giúp tra cứu với độ phức tạp hằng số. 
+dev	Minhf vuwaf rebase nhanhs tinhs nawng leen nhanhs main mowis nhaats maf khoong bij conflict. 	Mình vừa rebase nhánh tính năng lên nhánh main mới nhất mà không bị conflict. 
+dev	Trong Linux kernel, cowf ICANON vaf khoong ECHO giups nhaanj dieenj oo nhaapj maatj khaaur terminal. 	Trong Linux kernel, cờ ICANON và không ECHO giúp nhận diện ô nhập mật khẩu terminal. 
+dev	Banr vas nayf loaij bor hoanf toanf blocking fsync khoir vongf lawpj bawts suwj kieenj phims. 	Bản vá này loại bỏ hoàn toàn blocking fsync khỏi vòng lặp bắt sự kiện phím. 
+dev	Banj xem giups minhf stack trace trong file log xem looix panic xayr ra owr dongf naof. 	Bạn xem giúp mình stack trace trong file log xem lỗi panic xảy ra ở dòng nào. 
+dev	Chungs ta dungf GitHub Actions ddeer tuwj ddoongj ddongs gois file deb cho Ubuntu vaf Debian. 	Chúng ta dùng GitHub Actions để tự động đóng gói file deb cho Ubuntu và Debian. 
+dev	Heej thoongs giams sats Prometheus guwir canhr baos khi CPU vuwowtj quas chins muwowi phaanf trawm. 	Hệ thống giám sát Prometheus gửi cảnh báo khi CPU vượt quá chín mươi phần trăm. 
+dev	Vieecj ghi file caaus hinhf phair dungf teepj tamj rooif rename ddeer ddamr baor tinhs nguyeen tuwr. 	Việc ghi file cấu hình phải dùng tệp tạm rồi rename để đảm bảo tính nguyên tử. 
+dev	Minhf ddax theem kieemr thuwr property test ddeer xacs minh mays trangj thais khoong bao giowf sai. 	Mình đã thêm kiểm thử property test để xác minh máy trạng thái không bao giờ sai. 
+dev	Trinhf duyeetj Chromium raats nhayj camr vowis thuws tuwj timestamp cuar suwj kieenj phims aor. 	Trình duyệt Chromium rất nhạy cảm với thứ tự timestamp của sự kiện phím ảo. 
+dev	Hayx kieemr tra xem dichj vuj postgres ddax nhaanj keets noois treen localhost chuwa. 	Hãy kiểm tra xem dịch vụ postgres đã nhận kết nối trên localhost chưa. 
+dev	Max nguoonf Python cuar script xaay duwngj moo hinhf ngoon nguwx chayj hoanf toanf offline. 	Mã nguồn Python của script xây dựng mô hình ngôn ngữ chạy hoàn toàn offline. 
+dev	Neeus keets noois mangj bij gians ddoanj thif client sex tuwj thuwr keets noois laij sau nawm giaay. 	Nếu kết nối mạng bị gián đoạn thì client sẽ tự thử kết nối lại sau năm giây. 
+dev	Minhf ddang caaus hinhf load balancer ddeer phaan tair luwu luwowngj giuwax ba node mays chur. 	Mình đang cấu hình load balancer để phân tải lưu lượng giữa ba node máy chủ. 
+dev	Thuw vieenj libxkbcommon giups kieemr chuwngs keymap tams caaps ddooj ngay trong unit test. 	Thư viện libxkbcommon giúp kiểm chứng keymap tám cấp độ ngay trong unit test. 
+dev	Caanf ddamr baor khoong cos baats kyf khoois unsafe naof trong taangf xuwr lys ngoon nguwx. 	Cần đảm bảo không có bất kỳ khối unsafe nào trong tầng xử lý ngôn ngữ. 
+dev	Banj chayj leenhj git status vaf git diff ddeer kieemr tra laij toanf booj thay ddooir nhes. 	Bạn chạy lệnh git status và git diff để kiểm tra lại toàn bộ thay đổi nhé. 
+dev	Duwx lieeuj telemetry khoong bao giowf dduwowcj guwir ra ngoaif mays nguwowif dungf. 	Dữ liệu telemetry không bao giờ được gửi ra ngoài máy người dùng. 
+dev	Minhf vuwaf suwar looix race condition khi hai luoongf cungf truy caapj banr ddoof trangj thais. 	Mình vừa sửa lỗi race condition khi hai luồng cùng truy cập bản đồ trạng thái. 
+dev	Hieeuj nawng timf kieems nhij phaan treen tuwf ddieenr ba muwowi lawm nghinf tuwf raats aans tuwowngj. 	Hiệu năng tìm kiếm nhị phân trên từ điển ba mươi lăm nghìn từ rất ấn tượng. 
+dev	Khi gox trong VS Code thif khoong dduwowcj lamf hongr tinhs nawng tuwj ddoongj ddongs ngoawcj. 	Khi gõ trong VS Code thì không được làm hỏng tính năng tự động đóng ngoặc. 
+dev	Teepj tin udev rule giups caaps quyeenf ddocj thieets bij ddaauf vaof cho nguwowif dungf thuwowngf. 	Tệp tin udev rule giúp cấp quyền đọc thiết bị đầu vào cho người dùng thường. 
+dev	Minhf ddang vieets benchmark ddo ddooj chinhs xacs song nguwx treen nawm trawm caau thuwcj tees. 	Mình đang viết benchmark đo độ chính xác song ngữ trên năm trăm câu thực tế. 
+dev	Hayx dungf khoas nguyeen tuwr ddeer ddoongf booj trangj thais baatj tawts giuwax cacs luoongf. 	Hãy dùng khóa nguyên tử để đồng bộ trạng thái bật tắt giữa các luồng. 
+dev	Keenh giao tieeps Unix socket non-blocking ddamr baor khoong bao giowf lamf ddow banf phims. 	Kênh giao tiếp Unix socket non-blocking đảm bảo không bao giờ làm đơ bàn phím. 
+dev	Banj kieemr tra laij bieeur thuwcs chinhs quy xem cos xuwr lys ddungs kys tuwj Unicode khoong. 	Bạn kiểm tra lại biểu thức chính quy xem có xử lý đúng ký tự Unicode không. 
+dev	Banr phats hanhf mowis ddax khawcs phucj trieetj ddeer looix dinhs chuwx khi gox toocs ddooj cao. 	Bản phát hành mới đã khắc phục triệt để lỗi dính chữ khi gõ tốc độ cao. 
+dev	Minhf caanf caaus hinhf laij DNS vaf kieemr tra banr ghi MX cho teen mieenf coong ty. 	Mình cần cấu hình lại DNS và kiểm tra bản ghi MX cho tên miền công ty. 
+dev	Heej thoongs sao luwu tuwj ddoongj chayj mooix ddeem vaf ddaayr banr nens leen kho luwu truwx ddams maay. 	Hệ thống sao lưu tự động chạy mỗi đêm và đẩy bản nén lên kho lưu trữ đám mây. 
+dev	Khi chuyeenr cuwar soor tuwf game sang uwngs dungj khacs thif chees ddooj bypass phair tuwj tawts. 	Khi chuyển cửa sổ từ game sang ứng dụng khác thì chế độ bypass phải tự tắt. 
+dev	Banj cos theer chayj leenhj dboard doctor ddeer chaanr ddoans nhanh toanf booj caaus hinhf heej thoongs. 	Bạn có thể chạy lệnh dboard doctor để chẩn đoán nhanh toàn bộ cấu hình hệ thống. 
+dev	Minhf dungf strace ddeer theo doix cacs lowif goij heej thoongs trong quas trinhf khowir ddoongj. 	Mình dùng strace để theo dõi các lời gọi hệ thống trong quá trình khởi động. 
+dev	Caaus trucs duwx lieeuj baats bieens giups tranhs looix chia ser trangj thais giuwax cacs test case. 	Cấu trúc dữ liệu bất biến giúp tránh lỗi chia sẻ trạng thái giữa các test case. 
+dev	Hayx kieemr tra xem nhanhs release ddax dduwowcj gawns tag phieen banr chinhs xacs chuwa. 	Hãy kiểm tra xem nhánh release đã được gắn tag phiên bản chính xác chưa. 
+dev	Vieecj tachs rieeng crate engine giups bieen dichj sang WebAssembly raats deex dangf. 	Việc tách riêng crate engine giúp biên dịch sang WebAssembly rất dễ dàng. 
+dev	Trinhf giar laapj terminal nhuw Alacritty vaf Kitty hoatj ddoongj muwowtj maf owr chees ddooj thoo. 	Trình giả lập terminal như Alacritty và Kitty hoạt động mượt mà ở chế độ thô. 
+dev	Minhf vuwaf suwar looix tranf booj ddeemj khi nguwowif dungf dans ddoanj vawn banr quas daif. 	Mình vừa sửa lỗi tràn bộ đệm khi người dùng dán đoạn văn bản quá dài. 
+dev	Caanf kieemr tra kyx hanhf vi treen car COSMIC Desktop, Hyprland vaf Sway. 	Cần kiểm tra kỹ hành vi trên cả COSMIC Desktop, Hyprland và Sway. 
+dev	Taats car cacs baif kieemr thuwr khois phair chayj dduwowcj trong mooi truwowngf headless khoong caanf manf hinhf. 	Tất cả các bài kiểm thử khói phải chạy được trong môi trường headless không cần màn hình. 
+dev	Banj nhows kieemr tra file yaml xem thutj leef cos bij sai khoangr trawngs khoong. 	Bạn nhớ kiểm tra file yaml xem thụt lề có bị sai khoảng trắng không. 
+dev	Minhf ddax theem booj locj choongs dooij phims cho cacs banf phims cow bij double click. 	Mình đã thêm bộ lọc chống dội phím cho các bàn phím cơ bị double click. 
+dev	Heej thoongs tuwj ddoongj phats hieenj banf phims Bluetooth mowis cawms vaof maf khoong caanf khowir ddoongj laij. 	Hệ thống tự động phát hiện bàn phím Bluetooth mới cắm vào mà không cần khởi động lại. 
+dev	Khi nhaanj tins hieeuj SIGTERM thif daemon phair luwu sachj booj ddeemj truwowcs khi thoats. 	Khi nhận tín hiệu SIGTERM thì daemon phải lưu sạch bộ đệm trước khi thoát. 
+dev	Looix nayf chir xuaats hieenj khi baatj ddoongf thowif car CapsLock vaf NumLock. 	Lỗi này chỉ xuất hiện khi bật đồng thời cả CapsLock và NumLock. 
+dev	Minhf vuwaf toois uwu dung luwowngj booj nhows cuar bangr bigram giamr xuoongs conf mootj nuwar. 	Mình vừa tối ưu dung lượng bộ nhớ của bảng bigram giảm xuống còn một nửa. 
+dev	Banj thuwr kieemr tra xem gois caif ddawtj cos bij thieeus thuw vieenj ddoongj naof khoong. 	Bạn thử kiểm tra xem gói cài đặt có bị thiếu thư viện động nào không. 
+dev	Quas trinhf kieemr thuwr aps luwcj muwowif hai nghinf phims baams ddax vuwowtj qua khoong cos looix. 	Quá trình kiểm thử áp lực mười hai nghìn phím bấm đã vượt qua không có lỗi. 
+dev	Hayx ddamr baor moij hamf coong khai ddeeuf cos taif lieeuj huwowngs daanx rox rangf. 	Hãy đảm bảo mọi hàm công khai đều có tài liệu hướng dẫn rõ ràng. 
+dev	Minhf ddang chuyeenr heej thoongs ddawng nhaapj sang chuaanr OAuth2 vaf JWT token. 	Mình đang chuyển hệ thống đăng nhập sang chuẩn OAuth2 và JWT token. 
+dev	Cow chees hoanf tacs mootj chamj giups nguwowif dungf khooi phucj tuwf goocs chir bawngf mootj phims Backspace. 	Cơ chế hoàn tác một chạm giúp người dùng khôi phục từ gốc chỉ bằng một phím Backspace. 
+dev	Taats car max nguoonf phair vuwowtj qua clippy vowis cowf tuwf choois moij canhr baos. 	Tất cả mã nguồn phải vượt qua clippy với cờ từ chối mọi cảnh báo. 
+dev	Minhf ddax kieemr tra bawngf valgrind vaf khoong phats hieenj looix truy caapj booj nhows. 	Mình đã kiểm tra bằng valgrind và không phát hiện lỗi truy cập bộ nhớ. 
+dev	Vieecj tachs bieetj hoanf toanf taangf giao dieenj khay heej thoongs giups daemon nhej vaf oonr ddinhj. 	Việc tách biệt hoàn toàn tầng giao diện khay hệ thống giúp daemon nhẹ và ổn định. 
+dev	Banj nhows caapj nhaatj file changelog truwowcs khi taoj banr phats hanhf chinhs thuwcs nhes. 	Bạn nhớ cập nhật file changelog trước khi tạo bản phát hành chính thức nhé. 
+dev	Minhf vuwaf kieemr tra hieeuj nawng soak test vaf ddooj treex phaan vij chins chins duwowis saus micro giaay. 	Mình vừa kiểm tra hiệu năng soak test và độ trễ phân vị chín chín dưới sáu micro giây. 
+dev	Hayx kieemr tra laij quyeenf sowr huwux tieens trinhf truwowcs khi guwir tins hieeuj keets thucs. 	Hãy kiểm tra lại quyền sở hữu tiến trình trước khi gửi tín hiệu kết thúc. 
+dev	Khi dungf SSH towis mays chur tuwf xa thif heej thoongs tuwj ddoongj nhaanj dieenj oo nhaapj maatj khaaur. 	Khi dùng SSH tới máy chủ từ xa thì hệ thống tự động nhận diện ô nhập mật khẩu. 
+dev	Caanf kieemr tra khar nawng tuwowng thichs nguwowcj vowis cacs file caaus hinhf cux cuar nguwowif dungf. 	Cần kiểm tra khả năng tương thích ngược với các file cấu hình cũ của người dùng. 
+dev	Minhf ddang nghieen cuwus theem giao thuwcs hoox trowj cho GNOME vaf KDE trong tuwowng lai. 	Mình đang nghiên cứu thêm giao thức hỗ trợ cho GNOME và KDE trong tương lai. 
+dev	Ddoanj max xuwr lys clipboard dda ddinhj dangj giuwx nguyeen car ddinhj dangj HTML laanx vawn banr thuaanf. 	Đoạn mã xử lý clipboard đa định dạng giữ nguyên cả định dạng HTML lẫn văn bản thuần. 
+dev	Banj thuwr mowr trinhf duyeetj Chrome vaf gox tieengs Vieetj treen thanh ddiaj chir xem conf bij nuoots chuwx khoong. 	Bạn thử mở trình duyệt Chrome và gõ tiếng Việt trên thanh địa chỉ xem còn bị nuốt chữ không. 
+dev	Minhf vuwaf hoanf taats vieecj donj depj nowj kyx thuaatj vaf giamr kichs thuwowcs cacs file coots loix. 	Mình vừa hoàn tất việc dọn dẹp nợ kỹ thuật và giảm kích thước các file cốt lõi. 
+dev	Heej thoongs ghi nhaatj kys xoay vongf tuwj ddoongj giups tranhs lamf ddaayf oor ddiax cuwngs. 	Hệ thống ghi nhật ký xoay vòng tự động giúp tránh làm đầy ổ đĩa cứng. 
+dev	Car booj gox Telex laanx VNI ddeeuf ddax ddatj ddooj tuwowng dduwowng hanhf vi treen moij truwowngf howpj bieen. 	Cả bộ gõ Telex lẫn VNI đều đã đạt độ tương đương hành vi trên mọi trường hợp biên. 
+dev	Mowr file test.py vaf suwar laij hamf xuwr lys looix keets noois database nhes. 	Mở file test.py và sửa lại hàm xử lý lỗi kết nối database nhé. 
+dev	Xem file list.txt rooif caapj nhaatj laij caaus hinhf trong host.conf giups minhf. 	Xem file list.txt rồi cập nhật lại cấu hình trong host.conf giúp mình. 
+dev	Giair nens gois archive.tar.gz vaof thuw mucj duwj ans truwowcs khi chayj script caif ddawtj. 	Giải nén gói archive.tar.gz vào thư mục dự án trước khi chạy script cài đặt. 
+dev	Kieemr tra laij file main.rs vaf cargo.toml xem ddax khai baos ddungs phieen banr chuwa. 	Kiểm tra lại file main.rs và cargo.toml xem đã khai báo đúng phiên bản chưa. 
+dev	Banj ddaayr banr suwar looix trong script.sh leen nhanhs main rooif chayj laij pipeline CI. 	Bạn đẩy bản sửa lỗi trong script.sh lên nhánh main rồi chạy lại pipeline CI. 
+dev	Mowr file config.json vaf kieemr tra laij dduwowngf daanx towis thuw mucj log heej thoongs. 	Mở file config.json và kiểm tra lại đường dẫn tới thư mục log hệ thống. 
+dev	Suwar file style.css ddeer cawn giuwax thanh tieeu ddeef treen manf hinhf ddieenj thoaij. 	Sửa file style.css để căn giữa thanh tiêu đề trên màn hình điện thoại. 
+dev	Taoj file schema.sql mowis ddeer luwu truwx bangr lichj suwr giao dichj nguwowif dungf. 	Tạo file schema.sql mới để lưu trữ bảng lịch sử giao dịch người dùng. 
+dev	Ddocj file readme.md truwowcs khi caif ddawtj cacs gois phuj thuoocj treen mays chur Linux. 	Đọc file readme.md trước khi cài đặt các gói phụ thuộc trên máy chủ Linux. 
+dev	Luwu keets quar phaan tichs vaof file report.csv rooif guwir qua email cho nhoms duwx lieeuj. 	Lưu kết quả phân tích vào file report.csv rồi gửi qua email cho nhóm dữ liệu. 
+dev	Kieemr tra bieens mooi truwowngf trong file .env xem khoas bis maatj ddax dduwowcj thieets laapj chuwa. 	Kiểm tra biến môi trường trong file .env xem khóa bí mật đã được thiết lập chưa. 
+dev	Minhf vuwaf caapj nhaatj taif lieeuj kieens trucs trong docs vaf ddaayr commit leen kho luwu truwx. 	Mình vừa cập nhật tài liệu kiến trúc trong docs và đẩy commit lên kho lưu trữ. 
+dev	Caanf vieets theem integration test cho luoongf thanh toans vaf hoanf tieenf tuwj ddoongj. 	Cần viết thêm integration test cho luồng thanh toán và hoàn tiền tự động. 
+dev	Hayx kieemr tra laij caaus hinhf proxy trong trinhf duyeetj khi truy caapj mangj nooij booj. 	Hãy kiểm tra lại cấu hình proxy trong trình duyệt khi truy cập mạng nội bộ. 
+dev	Heej thoongs hangf ddowij tin nhawns Kafka xuwr lys oonr ddinhj hangf chucj nghinf suwj kieenj mooix giaay. 	Hệ thống hàng đợi tin nhắn Kafka xử lý ổn định hàng chục nghìn sự kiện mỗi giây. 
+pure_vn	Hoom nay trowif mats quas, lats nuwax chungs ta ddi awn too phowr bof nhes. 	Hôm nay trời mát quá, lát nữa chúng ta đi ăn tô phở bò nhé. 
+pure_vn	Ngayf Teets coor truyeenf nhaf naof cungx gois banhs chuwng vaf banhs tets. 	Ngày Tết cổ truyền nhà nào cũng gói bánh chưng và bánh tét. 
+pure_vn	Mej dawnj mua mootj lits daauf awn vaf hai caan gaoj neeps ngon. 	Mẹ dặn mua một lít dầu ăn và hai cân gạo nếp ngon. 
+pure_vn	Con chim hots lius lo treen canhf caay cao mooix buooir sangs sowms. 	Con chim hót líu lo trên cành cây cao mỗi buổi sáng sớm. 
+pure_vn	Anh aays laf mootj bacs six gioir vaf luoon taanj taam vowis beenhj nhaan. 	Anh ấy là một bác sĩ giỏi và luôn tận tâm với bệnh nhân. 
+pure_vn	Trowif muaf ddoong mieenf Bawcs raats rets neen moij nguwowif nhows mawcj aos aams. 	Trời mùa đông miền Bắc rất rét nên mọi người nhớ mặc áo ấm. 
+pure_vn	Cais bats suws nayf cos hoa vawn raats ddepj vaf tinh xaor. 	Cái bát sứ này có hoa văn rất đẹp và tinh xảo. 
+pure_vn	Em vuwaf ddi ruts tieenf owr caay tuwj ddoongj ngay been canhj sieeu thij. 	Em vừa đi rút tiền ở cây tự động ngay bên cạnh siêu thị. 
+pure_vn	Vui longf nhaapj ddungs max soos sinh vieen vaof phieeus ddawng kys duwj thi. 	Vui lòng nhập đúng mã số sinh viên vào phiếu đăng ký dự thi. 
+pure_vn	Phongf this nghieemj hoas hocj dduwowcj trang bij nhieeuf thieets bij hieenj ddaij. 	Phòng thí nghiệm hóa học được trang bị nhiều thiết bị hiện đại. 
+pure_vn	Baix bieenr mieenf Trung nooir tieengs vowis bowf cats trawngs trair daif vaf nuwowcs bieenr trong xanh. 	Bãi biển miền Trung nổi tiếng với bờ cát trắng trải dài và nước biển trong xanh. 
+pure_vn	Chuwx vieets cuar coo bes raats ddeeuf vaf rox nets tuwngf chuwx mootj. 	Chữ viết của cô bé rất đều và rõ nét từng chữ một. 
+pure_vn	Cown muwa raof muaf haj kemf theo saams sets lamf diuj ddi cais nongs oi buwcs. 	Cơn mưa rào mùa hạ kèm theo sấm sét làm dịu đi cái nóng oi bức. 
+pure_vn	Mor than Quangr Ninh laf mootj trong nhuwngx nguoonf taif nguyeen quan trongj cuar ddaats nuwowcs. 	Mỏ than Quảng Ninh là một trong những nguồn tài nguyên quan trọng của đất nước. 
+pure_vn	Chungs tooi ngooif nois chuyeenj mootj lats rooif mowis ra veef vif trowif ddax toois. 	Chúng tôi ngồi nói chuyện một lát rồi mới ra về vì trời đã tối. 
+pure_vn	Quee huwowng tooi cos dongf soong hieenf hoaf chayr qua nhuwngx canhs ddoongf luas chins. 	Quê hương tôi có dòng sông hiền hòa chảy qua những cánh đồng lúa chín. 
+pure_vn	Coo Thuyr raats thichs cawms hoa sen vaf hoa quynhf trong phongf khachs. 	Cô Thủy rất thích cắm hoa sen và hoa quỳnh trong phòng khách. 
+pure_vn	Cacs banj hocj sinh ddang chawm chus giair baif taapj toans hocj khos. 	Các bạn học sinh đang chăm chú giải bài tập toán học khó. 
+pure_vn	Suwcs khoer laf voons quys nhaats cuar mooix con nguwowif trong cuoocj soongs. 	Sức khỏe là vốn quý nhất của mỗi con người trong cuộc sống. 
+pure_vn	Mons buns char Haf Nooij cos huwowng vij ddaamj ddaf khos queen vowis thuwcj khachs phuwowng xa. 	Món bún chả Hà Nội có hương vị đậm đà khó quên với thực khách phương xa. 
+pure_vn	Ddoanf tauf hoar lawn banhs chaamj raix qua ddeof Hair Vaan hungf vix. 	Đoàn tàu hỏa lăn bánh chậm rãi qua đèo Hải Vân hùng vĩ. 
+pure_vn	Chieeuf nay gia ddinhf tooi cungf nhau ddi daoj quanh hoof Hoanf Kieems. 	Chiều nay gia đình tôi cùng nhau đi dạo quanh hồ Hoàn Kiếm. 
+pure_vn	Muaf thu veef mang theo huwowng hoa suwax noongf nanf treen khawps phoos phuwowngf. 	Mùa thu về mang theo hương hoa sữa nồng nàn trên khắp phố phường. 
+pure_vn	Oong nooij tooi thuwowngf keer nhuwngx caau chuyeenj coor tichs raats hay cho cacs chaus nghe. 	Ông nội tôi thường kể những câu chuyện cổ tích rất hay cho các cháu nghe. 
+pure_vn	Nguwowif noong daan caanf cuf chawm socs vuwownf caay awn trais suoots boons muaf. 	Người nông dân cần cù chăm sóc vườn cây ăn trái suốt bốn mùa. 
+pure_vn	Tieengs ddanf baauf ngaan vang gowij nhows bieets bao kyr nieemj tuooir thow eem ddeemf. 	Tiếng đàn bầu ngân vang gợi nhớ biết bao kỷ niệm tuổi thơ êm đềm. 
+pure_vn	Cacs vaanj ddoongj vieen ddax thi ddaaus heets minhf vaf gianhf nhieeuf huy chuwowng vangf. 	Các vận động viên đã thi đấu hết mình và giành nhiều huy chương vàng. 
+pure_vn	Thuw vieenj thanhf phoos laf nowi lys tuwowngr ddeer ddocj sachs vaf nghieen cuwus taif lieeuj. 	Thư viện thành phố là nơi lý tưởng để đọc sách và nghiên cứu tài liệu. 
+pure_vn	Chowj nooir Cais Rawng nhoonj nhipj ghe thuyeenf buoon bans tuwf lucs tangr sangs. 	Chợ nổi Cái Răng nhộn nhịp ghe thuyền buôn bán từ lúc tảng sáng. 
+pure_vn	Ddeem trawng rawmf trung thu, trer em haos huwcs ruwowcs ddenf oong sao khawps xoms. 	Đêm trăng rằm trung thu, trẻ em háo hức rước đèn ông sao khắp xóm. 
+pure_vn	Caauf Roongf Ddaf Nawngx phun luwar vaf phun nuwowcs vaof mooix toois cuoois tuaanf. 	Cầu Rồng Đà Nẵng phun lửa và phun nước vào mỗi tối cuối tuần. 
+pure_vn	Caf phee suwax ddas laf thuwcs uoongs quen thuoocj cuar nhieeuf nguwowif Vieetj Nam. 	Cà phê sữa đá là thức uống quen thuộc của nhiều người Việt Nam. 
+pure_vn	Con dduwowngf langf rowpj bongs tre xanh mats ruwowij vaof nhuwngx truwa hef nawngs gawts. 	Con đường làng rợp bóng tre xanh mát rượi vào những trưa hè nắng gắt. 
+pure_vn	Anh aays luoon giuwx lowif huwas vaf soongs raats chaan thanhf vowis banj bef. 	Anh ấy luôn giữ lời hứa và sống rất chân thành với bạn bè. 
+pure_vn	Thanhf phoos Hoof Chis Minh laf trung taam kinh tees sooi ddoongj baacj nhaats car nuwowcs. 	Thành phố Hồ Chí Minh là trung tâm kinh tế sôi động bậc nhất cả nước. 
+pure_vn	Nhuwngx canhs dieeuf no gios bay cao treen baauf trowif xanh thawmr buooir chieeuf taf. 	Những cánh diều no gió bay cao trên bầu trời xanh thẳm buổi chiều tà. 
+pure_vn	Leex hooij ddeenf Hungf hangf nawm thu huts hangf trieeuj luwowtj khachs thaapj phuwowng veef duwj. 	Lễ hội đền Hùng hàng năm thu hút hàng triệu lượt khách thập phương về dự. 
+pure_vn	Buwax cowm gia ddinhf tuy gianr dij nhuwng luoon aams aps tinhf yeeu thuwowng. 	Bữa cơm gia đình tuy giản dị nhưng luôn ấm áp tình yêu thương. 
+pure_vn	Chungs ta caanf chung tay baor veej mooi truwowngf vaf troongf theem nhieeuf caay xanh. 	Chúng ta cần chung tay bảo vệ môi trường và trồng thêm nhiều cây xanh. 
+pure_vn	Tacs phaamr vawn hocj nayf phanr anhs chaan thuwcj ddowif soongs xax hooij dduwowng ddaij. 	Tác phẩm văn học này phản ánh chân thực đời sống xã hội đương đại. 
+pure_vn	Ddooij ngux y bacs six ddax ngayf ddeem chawm socs taanj tinhf cho nguwowif beenhj. 	Đội ngũ y bác sĩ đã ngày đêm chăm sóc tận tình cho người bệnh. 
+pure_vn	Nhuwngx hatj muwa xuaan laats phaats rowi treen mais ngois reeu phong coor kinhs. 	Những hạt mưa xuân lất phất rơi trên mái ngói rêu phong cổ kính. 
+pure_vn	Thaayf giaos giangr baif raats deex hieeur vaf luoon khuyeens khichs hocj sinh ddawtj caau hoir. 	Thầy giáo giảng bài rất dễ hiểu và luôn khuyến khích học sinh đặt câu hỏi. 
+pure_vn	Chieecs aos daif truyeenf thoongs toon leen ver ddepj diuj dangf cuar nguwowif phuj nuwx Vieetj. 	Chiếc áo dài truyền thống tôn lên vẻ đẹp dịu dàng của người phụ nữ Việt. 
+pure_vn	Ruwngf quoocs gia Cucs Phuwowng luwu giuwx nhieeuf loaif ddoongj thuwcj vaatj quys hieems. 	Rừng quốc gia Cúc Phương lưu giữ nhiều loài động thực vật quý hiếm. 
+pure_vn	Khachs du lichj quoocs tees raats aans tuwowngj vowis suwj thaan thieenj vaf meens khachs cuar nguwowif daan. 	Khách du lịch quốc tế rất ấn tượng với sự thân thiện và mến khách của người dân. 
+pure_vn	Mooix dipj xuaan veef, hoa ddaof mieenf Bawcs vaf hoa mai mieenf Nam laij ddua nhau khoe sawcs. 	Mỗi dịp xuân về, hoa đào miền Bắc và hoa mai miền Nam lại đua nhau khoe sắc. 
+pure_vn	Sangs chur nhaatj tooi thuwowngf chayj booj quanh coong vieen ddeer renf luyeenj suwcs khoer. 	Sáng chủ nhật tôi thường chạy bộ quanh công viên để rèn luyện sức khỏe. 
+pure_vn	Hoof sow xin caaps giaays pheps xaay duwngj ddax dduwowcj Uyr ban nhaan daan tieeps nhaanj. 	Hồ sơ xin cấp giấy phép xây dựng đã được Ủy ban nhân dân tiếp nhận. 
+pure_vn	Chuyeens du lichj Phus Quoocs ddeer laij cho car nhoms nhieeuf kyr nieemj tuyeetj ddepj. 	Chuyến du lịch Phú Quốc để lại cho cả nhóm nhiều kỷ niệm tuyệt đẹp. 
+pure_vn	Lanf gios bieenr mats lanhf thooir tan moij meetj moir sau mootj tuaanf lamf vieecj cawng thawngr. 	Làn gió biển mát lành thổi tan mọi mệt mỏi sau một tuần làm việc căng thẳng. 
+pure_vn	Tieengs troongs truwowngf roonj rax baos hieeuj mootj nawm hocj mowis ddaayf huwngs khowir bawts ddaauf. 	Tiếng trống trường rộn rã báo hiệu một năm học mới đầy hứng khởi bắt đầu. 
+pure_vn	Mons phowr cuoons chaams nuwowcs mawms chua ngotj awn raats vuwaf mieengj vaf thanh mats. 	Món phở cuốn chấm nước mắm chua ngọt ăn rất vừa miệng và thanh mát. 
+pure_vn	Anh hungf daan toocj ddax hy sinh vif ddoocj laapj tuwj do cuar Toor quoocs. 	Anh hùng dân tộc đã hy sinh vì độc lập tự do của Tổ quốc. 
+pure_vn	Nhuwngx ngooi nhaf coor owr phoos coor Hooij An vaanx giuwx nguyeen nets ddepj traamf mawcj qua hangf trawm nawm. 	Những ngôi nhà cổ ở phố cổ Hội An vẫn giữ nguyên nét đẹp trầm mặc qua hàng trăm năm. 
+pure_vn	Vinhj Haj Long dduwowcj coong nhaanj laf di sanr thieen nhieen thees giowis nhieeuf laanf. 	Vịnh Hạ Long được công nhận là di sản thiên nhiên thế giới nhiều lần. 
+pure_vn	Caay caauf mowis bawcs qua soong giups vieecj ddi laij cuar baf con thuaanj tieenj hown nhieeuf. 	Cây cầu mới bắc qua sông giúp việc đi lại của bà con thuận tiện hơn nhiều. 
+pure_vn	Tieengs cuwowif gionf tan cuar lux trer vang vongj khawps saan truwowngf giowf ra chowi. 	Tiếng cười giòn tan của lũ trẻ vang vọng khắp sân trường giờ ra chơi. 
+pure_vn	Huwowng thowm cuar nooif banhs chuwng luoocj ddeem giao thuwaf khieens ai cungx booif hooif. 	Hương thơm của nồi bánh chưng luộc đêm giao thừa khiến ai cũng bồi hồi. 
+pure_vn	Banj neen uoongs ddur nuwowcs mooix ngayf vaf ngur sowms ddeer giuwx ginf suwcs khoer. 	Bạn nên uống đủ nước mỗi ngày và ngủ sớm để giữ gìn sức khỏe. 
+pure_vn	Con meof muwowps nawmf cuoonj tronf ngur ngon lanhf been baacj theemf ddaayf nawngs. 	Con mèo mướp nằm cuộn tròn ngủ ngon lành bên bậc thềm đầy nắng. 
+pure_vn	Ddanf chim ens bay luwownj treen baauf trowif baos hieeuj muaf xuaan ddang ddeens raats gaanf. 	Đàn chim én bay lượn trên bầu trời báo hiệu mùa xuân đang đến rất gần. 
+pure_vn	Ngonj hair ddawng dduwngs suwngf suwngx giuwax bieenr khowi daanx dduwowngf cho tauf thuyeenf qua laij. 	Ngọn hải đăng đứng sừng sững giữa biển khơi dẫn đường cho tàu thuyền qua lại. 
+pure_vn	Cacs ngheej nhaan langf gooms Bats Trangf taoj ra nhieeuf sanr phaamr thur coong tinh tees. 	Các nghệ nhân làng gốm Bát Tràng tạo ra nhiều sản phẩm thủ công tinh tế. 
+pure_vn	Chuyeens xe khachs khowir hanhf ddungs giowf vaf dduwa chungs tooi veef quee an toanf. 	Chuyến xe khách khởi hành đúng giờ và đưa chúng tôi về quê an toàn. 
+pure_vn	Canhs ddoongf hoa tam giacs machj owr Haf Giang nowr rooj ruwcj rowx mooix ddooj cuoois thu. 	Cánh đồng hoa tam giác mạch ở Hà Giang nở rộ rực rỡ mỗi độ cuối thu. 
+pure_vn	Saan vaanj ddoongj chaatj kins khans giar coor vux noongf nhieetj cho ddooij tuyeenr quoocs gia. 	Sân vận động chật kín khán giả cổ vũ nồng nhiệt cho đội tuyển quốc gia. 
+pure_vn	Buwcs tranh sown maif theer hieenj taif nawng kheos leos cuar nguwowif hoaj six taif hoa. 	Bức tranh sơn mài thể hiện tài năng khéo léo của người họa sĩ tài hoa. 
+pure_vn	Muaf gawtj ddeens, huwowng luas mowis thowm ngats lan toar khawps car vungf quee yeen binhf. 	Mùa gặt đến, hương lúa mới thơm ngát lan tỏa khắp cả vùng quê yên bình. 
+pure_vn	Luwcj luwowngj cuwus hooj ddax nhanh chongs hoox trowj nguwowif daan vuwowtj qua ddowtj lux lutj. 	Lực lượng cứu hộ đã nhanh chóng hỗ trợ người dân vượt qua đợt lũ lụt. 
+pure_vn	Six quan trer nhaanj nhieemj vuj coong tacs taij vungf bieen giowis xa xooi. 	Sĩ quan trẻ nhận nhiệm vụ công tác tại vùng biên giới xa xôi. 
+pure_vn	Mawtj hoof phawngr lawngj nhuw guwowng phanr chieeus anhs hoangf hoon ddor ruwcj cuoois ngayf. 	Mặt hồ phẳng lặng như gương phản chiếu ánh hoàng hôn đỏ rực cuối ngày. 
+pure_vn	Chieecs nons las che nawngs che muwa gawns bos maatj thieets vowis ddowif soongs nguwowif lao ddoongj. 	Chiếc nón lá che nắng che mưa gắn bó mật thiết với đời sống người lao động. 
+pure_vn	Baf ngoaij pha aams traf sen thowm phuwcs mowif khachs quys ddeens chowi nhaf. 	Bà ngoại pha ấm trà sen thơm phức mời khách quý đến chơi nhà. 
+pure_vn	Traanj bongs ddas giao huwux dieenx ra sooi nooir vowis nhieeuf pha ghi banf ddepj mawts. 	Trận bóng đá giao hữu diễn ra sôi nổi với nhiều pha ghi bàn đẹp mắt. 
+pure_vn	Ddeem nhacj coor ddieenr taij nhaf hats lowns mang ddeens cho khans giar nhieeuf camr xucs saau lawngs. 	Đêm nhạc cổ điển tại nhà hát lớn mang đến cho khán giả nhiều cảm xúc sâu lắng. 
+pure_vn	Chowj hoa ddeem Quangr Bas taaps naapj nguwowif mua ker bans tuwf nuwar ddeem veef sangs. 	Chợ hoa đêm Quảng Bá tấp nập người mua kẻ bán từ nửa đêm về sáng. 
+pure_vn	Tuwngf ddowtj songs voox nhej vaof bowf cats taoj neen aam thanh eem diuj ddeens laj thuwowngf. 	Từng đợt sóng vỗ nhẹ vào bờ cát tạo nên âm thanh êm dịu đến lạ thường. 
+pure_vn	Mons chef hatj sen long nhanx mats lanhj raats thichs howpj cho ngayf hef nongs buwcs. 	Món chè hạt sen long nhãn mát lạnh rất thích hợp cho ngày hè nóng bức. 
+pure_vn	Ngooi chuaf coor nawmf aanr minhf giuwax ruwngf thoong xanh ngats treen ddinhr nuis cao. 	Ngôi chùa cổ nằm ẩn mình giữa rừng thông xanh ngát trên đỉnh núi cao. 
+pure_vn	Tinhf banj chaan thanhf laf mons quaf voo gias maf ai cungx neen traan trongj. 	Tình bạn chân thành là món quà vô giá mà ai cũng nên trân trọng. 
+pure_vn	Cacs nhaf khoa hocj ddang nghieen cuwus gioongs luas mowis chiuj hanj vaf cho nawng suaats cao. 	Các nhà khoa học đang nghiên cứu giống lúa mới chịu hạn và cho năng suất cao. 
+pure_vn	Dongf nguwowif hoois har trowr veef quee ddoanf tuj cungf gia ddinhf trong nhuwngx ngayf giaps Teets. 	Dòng người hối hả trở về quê đoàn tụ cùng gia đình trong những ngày giáp Tết. 
+pure_vn	Anhs binhf minh ruwcj rowx daanf los rangj sau dayx nuis trungf ddieepj phias chaan trowif. 	Ánh bình minh rực rỡ dần ló rạng sau dãy núi trùng điệp phía chân trời. 
+pure_vn	Ddooi banf tay chai saanf cuar cha ddax nuooi naangs chungs tooi khoon lowns neen nguwowif. 	Đôi bàn tay chai sần của cha đã nuôi nấng chúng tôi khôn lớn nên người. 
+pure_vn	Cuoons tieeur thuyeets lichj suwr nayf cuoons huts nguwowif ddocj ngay tuwf nhuwngx trang ddaauf tieen. 	Cuốn tiểu thuyết lịch sử này cuốn hút người đọc ngay từ những trang đầu tiên. 
+pure_vn	Tieengs rao ddeem thaan thuoocj vang leen trong con ngox nhor yeen tinhx giuwax longf thur ddoo. 	Tiếng rao đêm thân thuộc vang lên trong con ngõ nhỏ yên tĩnh giữa lòng thủ đô. 
+pure_vn	Muaf vair thieeuf Lucj Nganj chins ddor car mootj vungf ddooif trung du Bawcs Booj. 	Mùa vải thiều Lục Ngạn chín đỏ cả một vùng đồi trung du Bắc Bộ. 
+pure_vn	Leex hooij phaos hoa quoocs tees thawps sangs ruwcj rowx car baauf trowif ddeem been soong Hanf. 	Lễ hội pháo hoa quốc tế thắp sáng rực rỡ cả bầu trời đêm bên sông Hàn. 
+pure_vn	Nhuwngx giotj suwowng sowms long lanh ddongj treen las cor duwowis anhs nawngs ban mai. 	Những giọt sương sớm long lanh đọng trên lá cỏ dưới ánh nắng ban mai. 
+pure_vn	Vuwownf quoocs gia Phong Nha Ker Bangf sowr huwux heej thoongs hang ddoongj kyf vix baacj nhaats. 	Vườn quốc gia Phong Nha Kẻ Bàng sở hữu hệ thống hang động kỳ vĩ bậc nhất. 
+pure_vn	Cown gios thu se lanhj khex lay ddoongj nhuwngx chieecs las vangf rowi ddaayf mawtj dduwowngf. 	Cơn gió thu se lạnh khẽ lay động những chiếc lá vàng rơi đầy mặt đường. 
+pure_vn	Khucs hats ru ngotj ngaof cuar mej dduwa em bes vaof giaacs ngur say noongf. 	Khúc hát ru ngọt ngào của mẹ đưa em bé vào giấc ngủ say nồng. 
+pure_vn	Nhuwngx buwowcs chaan beenf bir cuar nguwowif leo nuis cuoois cungf cungx chamj towis ddinhr cao. 	Những bước chân bền bỉ của người leo núi cuối cùng cũng chạm tới đỉnh cao. 
+pure_vn	Maam coox ngayf rawmf dduwowcj chuaanr bij chu ddaos vowis ddaayf ddur huwowng hoa vaf trais caay tuwowi. 	Mâm cỗ ngày rằm được chuẩn bị chu đáo với đầy đủ hương hoa và trái cây tươi. 
+pure_vn	Taams longf nhaan ais vaf tinh thaanf tuwowng thaan tuwowng ais luoon toar sangs trong hoanj nanj. 	Tấm lòng nhân ái và tinh thần tương thân tương ái luôn tỏa sáng trong hoạn nạn. 
+pure_vn	Ddieeuj muas xoef Thais roonj rangf mang ddaamj banr sawcs vawn hoas vungf Taay Bawcs. 	Điệu múa xòe Thái rộn ràng mang đậm bản sắc văn hóa vùng Tây Bắc. 
+pure_vn	Chieecs thuyeenf nan nhej nhangf luwowts treen mawtj nuwowcs trong vawts cuar khu du lichj Trangf An. 	Chiếc thuyền nan nhẹ nhàng lướt trên mặt nước trong vắt của khu du lịch Tràng An. 
+pure_vn	Anhs ddenf loongf lung linh phanr chieeus xuoongs dongf soong Hoaif thow moongj veef ddeem. 	Ánh đèn lồng lung linh phản chiếu xuống dòng sông Hoài thơ mộng về đêm. 
+pure_vn	Cuoocj soongs trowr neen ys nghiax hown khi chungs ta bieets ser chia vaf yeeu thuwowng nhau. 	Cuộc sống trở nên ý nghĩa hơn khi chúng ta biết sẻ chia và yêu thương nhau. 
+pure_en	Please run the unit test suite before pushing your changes to main. 	Please run the unit test suite before pushing your changes to main. 
+pure_en	The build passed all checks with zero warnings on Linux. 	The build passed all checks with zero warnings on Linux. 
+pure_en	We need to check the server logs for any timeout errors. 	We need to check the server logs for any timeout errors. 
+pure_en	In case the network drops, the client should reconnect automatically. 	In case the network drops, the client should reconnect automatically. 
+pure_en	This service has been running smoothly for more than thirty days. 	This service has been running smoothly for more than thirty days. 
+pure_en	There are lots of edge cases to cover in the parser. 	There are lots of edge cases to cover in the parser. 
+pure_en	The response latency is fast enough for real time typing. 	The response latency is fast enough for real time typing. 
+pure_en	Make sure you do not commit any secret keys or passwords. 	Make sure you do not commit any secret keys or passwords. 
+pure_en	Let us review the pull request and merge it after lunch. 	Let us review the pull request and merge it after lunch. 
+pure_en	The database migration script completed without any issues. 	The database migration script completed without any issues. 
+pure_en	Please check the host configuration and open port eight zero eight zero. 	Please check the host configuration and open port eight zero eight zero. 
+pure_en	We should add more benchmarks to measure memory usage accurately. 	We should add more benchmarks to measure memory usage accurately. 
+pure_en	That was the best solution for the clipboard race condition. 	That was the best solution for the clipboard race condition. 
+pure_en	You must restart the daemon after editing the system service file. 	You must restart the daemon after editing the system service file. 
+pure_en	At least three reviewers approved the architecture design document. 	At least three reviewers approved the architecture design document. 
+pure_en	Just in case, keep a backup of the previous release binary. 	Just in case, keep a backup of the previous release binary. 
+pure_en	The container image size was reduced by more than half. 	The container image size was reduced by more than half. 
+pure_en	We need to sort the list of active connections by timestamp. 	We need to sort the list of active connections by timestamp. 
+pure_en	Please fill out the feedback form before Friday afternoon. 	Please fill out the feedback form before Friday afternoon. 
+pure_en	The new release fixes a crash when switching keyboard layouts. 	The new release fixes a crash when switching keyboard layouts. 
+pure_en	All integration tests must run in headless mode without a display. 	All integration tests must run in headless mode without a display. 
+pure_en	The worker thread flushes all pending writes before shutting down. 	The worker thread flushes all pending writes before shutting down. 
+pure_en	Check the git status and diff before creating a new commit. 	Check the git status and diff before creating a new commit. 
+pure_en	Our team uses Rust for low latency system daemons on Linux. 	Our team uses Rust for low latency system daemons on Linux. 
+pure_en	Too much blocking disk work on the event loop causes input lag. 	Too much blocking disk work on the event loop causes input lag. 
+pure_en	The virtual keyboard protocol avoids preedit underline glitches completely. 	The virtual keyboard protocol avoids preedit underline glitches completely. 
+pure_en	Always validate untrusted input at the boundary of your system. 	Always validate untrusted input at the boundary of your system. 
+pure_en	The cache hit rate improved after tuning the hash table size. 	The cache hit rate improved after tuning the hash table size. 
+pure_en	Please send the updated report to the engineering mailing list. 	Please send the updated report to the engineering mailing list. 
+pure_en	We should monitor CPU and memory metrics during the soak test. 	We should monitor CPU and memory metrics during the soak test. 
+pure_en	The login endpoint enforces strict rate limits against brute force. 	The login endpoint enforces strict rate limits against brute force. 
+pure_en	At last, the root cause of the flaky test has been identified. 	At last, the root cause of the flaky test has been identified. 
+pure_en	Read more details in the architecture reference guide. 	Read more details in the architecture reference guide. 
+pure_en	No more dropped spaces when typing fast in Electron apps. 	No more dropped spaces when typing fast in Electron apps. 
+pure_en	The binary is small, self contained, and has zero runtime dependencies. 	The binary is small, self contained, and has zero runtime dependencies. 
+pure_en	Please verify the checksum of the downloaded release archive. 	Please verify the checksum of the downloaded release archive. 
+pure_en	We fixed the deadlock between the clipboard worker and main loop. 	We fixed the deadlock between the clipboard worker and main loop. 
+pure_en	The hot path allocates zero heap memory per keystroke. 	The hot path allocates zero heap memory per keystroke. 
+pure_en	Use atomic rename when updating configuration files on disk. 	Use atomic rename when updating configuration files on disk. 
+pure_en	The proxy server forwards requests to the backend cluster. 	The proxy server forwards requests to the backend cluster. 
+pure_en	Every public function should have clear documentation and unit tests. 	Every public function should have clear documentation and unit tests. 
+pure_en	The staging environment mirrors production as closely as possible. 	The staging environment mirrors production as closely as possible. 
+pure_en	Please check why the nightly build failed on the latest commit. 	Please check why the nightly build failed on the latest commit. 
+pure_en	We need to update the dependency lockfile to patch a security advisory. 	We need to update the dependency lockfile to patch a security advisory. 
+pure_en	The command line tool prints a clear summary of all health checks. 	The command line tool prints a clear summary of all health checks. 
+pure_en	Make sure file permissions for user data are strictly private. 	Make sure file permissions for user data are strictly private. 
+pure_en	The dark mode theme looks crisp on high resolution monitors. 	The dark mode theme looks crisp on high resolution monitors. 
+pure_en	We can roll back the deployment in less than one minute. 	We can roll back the deployment in less than one minute. 
+pure_en	The search index supports prefix queries in logarithmic time. 	The search index supports prefix queries in logarithmic time. 
+pure_en	Please attach the stack trace when reporting a bug on GitHub. 	Please attach the stack trace when reporting a bug on GitHub. 
+pure_en	The load balancer distributes traffic evenly across all healthy nodes. 	The load balancer distributes traffic evenly across all healthy nodes. 
+pure_en	Too many open file descriptors caused the socket accept to fail. 	Too many open file descriptors caused the socket accept to fail. 
+pure_en	We moved the slow network call to a dedicated background thread. 	We moved the slow network call to a dedicated background thread. 
+pure_en	The benchmark measures both median and tail latency accurately. 	The benchmark measures both median and tail latency accurately. 
+pure_en	Please confirm the release notes before tagging version one. 	Please confirm the release notes before tagging version one. 
+pure_en	The password detector protects terminal prompts like sudo and ssh. 	The password detector protects terminal prompts like sudo and ssh. 
+pure_en	We added support for rich clipboard formats including HTML and images. 	We added support for rich clipboard formats including HTML and images. 
+pure_en	The event queue processes messages in strict FIFO order. 	The event queue processes messages in strict FIFO order. 
+pure_en	Check that the service starts cleanly after a system reboot. 	Check that the service starts cleanly after a system reboot. 
+pure_en	The parser rejects malformed input without panicking. 	The parser rejects malformed input without panicking. 
+pure_en	We kept the design simple, modular, and easy to maintain. 	We kept the design simple, modular, and easy to maintain. 
+pure_en	The new feature is disabled by default to preserve backwards compatibility. 	The new feature is disabled by default to preserve backwards compatibility. 
+pure_en	Please test the installer script inside a clean virtual machine. 	Please test the installer script inside a clean virtual machine. 
+pure_en	The socket connection times out cleanly after fifty milliseconds. 	The socket connection times out cleanly after fifty milliseconds. 
+pure_en	We removed dead code and simplified the state machine transitions. 	We removed dead code and simplified the state machine transitions. 
+pure_en	The documentation explains every invariant and verification step. 	The documentation explains every invariant and verification step. 
+pure_en	Make sure the tray icon updates immediately when toggling modes. 	Make sure the tray icon updates immediately when toggling modes. 
+pure_en	The keyboard hotplug handler retries grabbing new USB devices. 	The keyboard hotplug handler retries grabbing new USB devices. 
+pure_en	We verified that CapsLock and NumLock LEDs stay in sync. 	We verified that CapsLock and NumLock LEDs stay in sync. 
+pure_en	The statistical language model fits comfortably under the size budget. 	The statistical language model fits comfortably under the size budget. 
+pure_en	Please keep each source file concise and focused on one concern. 	Please keep each source file concise and focused on one concern. 
+pure_en	The fuzz test ran ten thousand iterations with zero panics. 	The fuzz test ran ten thousand iterations with zero panics. 
+pure_en	We tuned the threshold to balance precision and recall carefully. 	We tuned the threshold to balance precision and recall carefully. 
+pure_en	The desktop entry escapes special characters in the executable path. 	The desktop entry escapes special characters in the executable path. 
+pure_en	Always clean up temporary files when a write fails partway. 	Always clean up temporary files when a write fails partway. 
+pure_en	The release pipeline builds reproducible packages for Debian and Arch. 	The release pipeline builds reproducible packages for Debian and Arch. 
+pure_en	Please check the browser address bar autocomplete behavior. 	Please check the browser address bar autocomplete behavior. 
+pure_en	The backspace handler preserves surrounding document text safely. 	The backspace handler preserves surrounding document text safely. 
+pure_en	We tested rapid typing bursts at over one hundred words per minute. 	We tested rapid typing bursts at over one hundred words per minute. 
+pure_en	The daemon refuses to run as root to protect user session sockets. 	The daemon refuses to run as root to protect user session sockets. 
+pure_en	Please verify that all unit and property tests pass locally. 	Please verify that all unit and property tests pass locally. 
+pure_en	The memory footprint remains flat even after hours of continuous typing. 	The memory footprint remains flat even after hours of continuous typing. 
+pure_en	We separated protocol handling from linguistic composition cleanly. 	We separated protocol handling from linguistic composition cleanly. 
+pure_en	The audit found several subtle edge cases that are now resolved. 	The audit found several subtle edge cases that are now resolved. 
+pure_en	Thank you for reviewing the patch and providing helpful feedback. 	Thank you for reviewing the patch and providing helpful feedback. 
+pure_en	Let us ship version one once all verification gates are green. 	Let us ship version one once all verification gates are green. 
+pure_en	The terminal emulator handles control shortcuts without interference. 	The terminal emulator handles control shortcuts without interference. 
+pure_en	We use nonblocking sockets to avoid stalling the input thread. 	We use nonblocking sockets to avoid stalling the input thread. 
+pure_en	The test harness replays recorded keystrokes deterministically. 	The test harness replays recorded keystrokes deterministically. 
+pure_en	Everything is ready for the final release sign off. 	Everything is ready for the final release sign off. 
+code_switch	Lats nuwax minhf chayj test rooif guwir keets quar cho banj nhes. 	Lát nữa mình chạy test rồi gửi kết quả cho bạn nhé. 
+code_switch	Last night trowif muwa raats to neen dduwowngf ngaapj heets car. 	Last night trời mưa rất to nên đường ngập hết cả. 
+code_switch	Minhf thichs awn banhs tets conf banj aays ddang vieets unit test cho API. 	Mình thích ăn bánh tét còn bạn ấy đang viết unit test cho API. 
+code_switch	Xem list coong vieecj hoom nay xong thif mua giups minhf hai lits suwax tuwowi. 	Xem list công việc hôm nay xong thì mua giúp mình hai lít sữa tươi. 
+code_switch	Con chim hots ngoaif saan trong lucs minhf ddang suwar host treen server. 	Con chim hót ngoài sân trong lúc mình đang sửa host trên server. 
+code_switch	Mor than owr Quangr Ninh raats roongj, banj baams nuts read more ddeer xem theem nhes. 	Mỏ than ở Quảng Ninh rất rộng, bạn bấm nút read more để xem thêm nhé. 
+code_switch	Anh aays ruts tieenf xong rooif mowis quay veef code Rust cho duwj ans mowis. 	Anh ấy rút tiền xong rồi mới quay về code Rust cho dự án mới. 
+code_switch	Max soos ddown hangf ddax dduwowcj caapj nhaatj vowis gias trij max laf mootj trawm. 	Mã số đơn hàng đã được cập nhật với giá trị max là một trăm. 
+code_switch	Bacs six vaf six quan ddeeuf cos mawtj, toongr coongj cos six nguwowif tham gia. 	Bác sĩ và sĩ quan đều có mặt, tổng cộng có six người tham gia. 
+code_switch	Phongf this nghieemj mowr cuwar sowms, this morning cos ddoanf khachs ddeens thawm. 	Phòng thí nghiệm mở cửa sớm, this morning có đoàn khách đến thăm. 
+code_switch	Cats trawngs bieenr xanh raats ddepj, conf trong code thif hanj chees cast kieeur duwx lieeuj. 	Cát trắng biển xanh rất đẹp, còn trong code thì hạn chế cast kiểu dữ liệu. 
+code_switch	Chuwx vieets raats nets, conf chim ser ddang lamf toor trong nest treen mais nhaf. 	Chữ viết rất nét, còn chim sẻ đang làm tổ trong nest trên mái nhà. 
+code_switch	Trowif hoom nay mats mer, minhf ddang chayj benchmark so sanhs toocs ddooj. 	Trời hôm nay mát mẻ, mình đang chạy benchmark so sánh tốc độ. 
+code_switch	Awn too phowr xong rooif lamf tieeps vif deadline too close rooif banj owi. 	Ăn tô phở xong rồi làm tiếp vì deadline too close rồi bạn ơi. 
+code_switch	Nhaf minhf owr been kia soong, duwj ans nayf has been running hai nawm nay. 	Nhà mình ở bên kia sông, dự án này has been running hai năm nay. 
+code_switch	Chayj cargo test truwowcs khi push code leen nhanhs main nhes. 	Chạy cargo test trước khi push code lên nhánh main nhé. 
+code_switch	Mowr file config treen server ddeer kieemr tra laij port keets noois. 	Mở file config trên server để kiểm tra lại port kết nối. 
+code_switch	Suwar bug trong module nayf rooif caapj nhaatj docs luoon cho ddaayf ddur. 	Sửa bug trong module này rồi cập nhật docs luôn cho đầy đủ. 
+code_switch	Trong truwowngf howpj edge case nayf thif heej thoongs phair trar veef looix rox rangf. 	Trong trường hợp edge case này thì hệ thống phải trả về lỗi rõ ràng. 
+code_switch	Banj nhows check log cuar docker container xem taij sao service bij restart. 	Bạn nhớ check log của docker container xem tại sao service bị restart. 
+code_switch	Minhf vuwaf taoj branch mowis, lats nuwax sex mowr pull request nhowf anh review. 	Mình vừa tạo branch mới, lát nữa sẽ mở pull request nhờ anh review. 
+code_switch	Neeus in case mangj bij rowts thif client sex tuwj ddoongj retry sau ba giaay. 	Nếu in case mạng bị rớt thì client sẽ tự động retry sau ba giây. 
+code_switch	Dduwngf dungf sleep treen hot path vif sex lamf lag toanf booj banf phims. 	Đừng dùng sleep trên hot path vì sẽ làm lag toàn bộ bàn phím. 
+code_switch	Minhf caanf sort laij list nguwowif dungf theo thowif gian ddawng nhaapj gaanf nhaats. 	Mình cần sort lại list người dùng theo thời gian đăng nhập gần nhất. 
+code_switch	Banj ddieenf form ddawng kys rooif guwir email kemf file PDF cho phongf nhaan suwj. 	Bạn điền form đăng ký rồi gửi email kèm file PDF cho phòng nhân sự. 
+code_switch	Looix timeout xayr ra khi server quas tair hoawcj port bij firewall chawnj. 	Lỗi timeout xảy ra khi server quá tải hoặc port bị firewall chặn. 
+code_switch	Caanf toois uwu cost vaanj hanhf cloud bawngf cachs tawts cacs node khoong dungf ddeens. 	Cần tối ưu cost vận hành cloud bằng cách tắt các node không dùng đến. 
+code_switch	Anh vuwaf post baif thoong baos mowis leen nhoms chat coong ty rooif ddos. 	Anh vừa post bài thông báo mới lên nhóm chat công ty rồi đó. 
+code_switch	Giair phaps nayf laf best choice vif vuwaf nhanh vuwaf deex baor trif laau daif. 	Giải pháp này là best choice vì vừa nhanh vừa dễ bảo trì lâu dài. 
+code_switch	Hoom nay trowif rets quas, minhf owr nhaf vieets REST API vowis Rust cho aams. 	Hôm nay trời rét quá, mình ở nhà viết REST API với Rust cho ấm. 
+code_switch	Banj thuwr kieemr tra xem fast path cos bij chamj disk hay khoong. 	Bạn thử kiểm tra xem fast path có bị chạm disk hay không. 
+code_switch	Duwx lieeuj trong past quarter cho thaays doanh thu tawng truwowngr raats toots. 	Dữ liệu trong past quarter cho thấy doanh thu tăng trưởng rất tốt. 
+code_switch	Chungs ta phair tuaan thur quy ddinhj baor maatj, moij nguwowif must update password. 	Chúng ta phải tuân thủ quy định bảo mật, mọi người must update password. 
+code_switch	Just in case mays bij treo, banj nhows luwu file thuwowngf xuyeen nhes. 	Just in case máy bị treo, bạn nhớ lưu file thường xuyên nhé. 
+code_switch	Minhf vuwaf xoas cache trinhf duyeetj vaf tair laij trang web thif heets looix. 	Mình vừa xóa cache trình duyệt và tải lại trang web thì hết lỗi. 
+code_switch	Tawts proxy vaf vpn ddi rooif thuwr ping laij ddiaj chir host xem sao. 	Tắt proxy và vpn đi rồi thử ping lại địa chỉ host xem sao. 
+code_switch	Baatj debug mode leen ddeer xem chi tieets trace suwj kieenj phims baams. 	Bật debug mode lên để xem chi tiết trace sự kiện phím bấm. 
+code_switch	Dungf tmux treen linux raats tieenj khi phair lamf vieecj qua ssh car ngayf. 	Dùng tmux trên linux rất tiện khi phải làm việc qua ssh cả ngày. 
+code_switch	Caif docker vaf rust treen mays mowis maats chuwa ddaayf muwowif phuts. 	Cài docker và rust trên máy mới mất chưa đầy mười phút. 
+code_switch	Ddaayr image mowis leen registry xong thif deploy leen mooi truwowngf staging. 	Đẩy image mới lên registry xong thì deploy lên môi trường staging. 
+code_switch	Kieemr tra diff truwowcs khi commit ddeer tranhs ddaayr nhaamf file tamj leen git. 	Kiểm tra diff trước khi commit để tránh đẩy nhầm file tạm lên git. 
+code_switch	Guwir link taif lieeuj cho thanhf vieen mowis ddeer hoj ddocj readme vaf caif mooi truwowngf. 	Gửi link tài liệu cho thành viên mới để họ đọc readme và cài môi trường. 
+code_switch	Taoj token mowis treen GitHub rooif caaus hinhf vaof bieens mooi truwowngf CI. 	Tạo token mới trên GitHub rồi cấu hình vào biến môi trường CI. 
+code_switch	Looix syntax trong file yaml lamf pipeline build bij duwngf ngay buwowcs ddaauf. 	Lỗi syntax trong file yaml làm pipeline build bị dừng ngay bước đầu. 
+code_switch	Xoas nhanhs dev cux sau khi ddax merge vaof nhanhs main thanhf coong. 	Xóa nhánh dev cũ sau khi đã merge vào nhánh main thành công. 
+code_switch	Xem dashboard giams sats thaays latency giamr manhj sau banr caapj nhaatj. 	Xem dashboard giám sát thấy latency giảm mạnh sau bản cập nhật. 
+code_switch	Luwu state uwngs dungj vaof booj nhows giups chuyeenr ddooir giuwax cacs cuwar soor cuwcj nhanh. 	Lưu state ứng dụng vào bộ nhớ giúp chuyển đổi giữa các cửa sổ cực nhanh. 
+code_switch	Chonj dark mode cho trinhf soanj thaor ddeer ddowx moir mawts khi lamf vieecj ban ddeem. 	Chọn dark mode cho trình soạn thảo để đỡ mỏi mắt khi làm việc ban đêm. 
+code_switch	Ddooir font chuwx trong terminal sang kieeur ddown cachs ddeer ddocj code deex hown. 	Đổi font chữ trong terminal sang kiểu đơn cách để đọc code dễ hơn. 
+code_switch	Theem test case kieemr tra daaus caau tieengs Vieetj vaf teen file cos daaus chaams. 	Thêm test case kiểm tra dấu câu tiếng Việt và tên file có dấu chấm. 
+code_switch	Bor flag cux khoong conf dungf nuwax ddeer caaus hinhf gonj gangf hown. 	Bỏ flag cũ không còn dùng nữa để cấu hình gọn gàng hơn. 
+code_switch	Truy caapj mays chur qua ssh bawngf khoas coong khai an toanf hown dungf maatj khaaur. 	Truy cập máy chủ qua ssh bằng khóa công khai an toàn hơn dùng mật khẩu. 
+code_switch	Vieets script bawngf python ddeer tuwj ddoongj hoas vieecj xuwr lys duwx lieeuj hangf ngayf. 	Viết script bằng python để tự động hóa việc xử lý dữ liệu hàng ngày. 
+code_switch	Booj test tuwj ddoongj chayj xong trong chuwa towis hai giaay treen mays cas nhaan. 	Bộ test tự động chạy xong trong chưa tới hai giây trên máy cá nhân. 
+code_switch	File json nayf bij thieeus daaus ngoawcj neen booj phaan tichs baos looix ngay laapj tuwcs. 	File json này bị thiếu dấu ngoặc nên bộ phân tích báo lỗi ngay lập tức. 
+code_switch	Mays host ddang chayj oonr ddinhj vowis muwcs tieeu thuj RAM raats thaaps. 	Máy host đang chạy ổn định với mức tiêu thụ RAM rất thấp. 
+code_switch	Coongr port mawcj ddinhj ddax cos uwngs dungj khacs dungf neen minhf ddooir sang coongr khacs. 	Cổng port mặc định đã có ứng dụng khác dùng nên mình đổi sang cổng khác. 
+code_switch	Nhanhs release ddax sawnx sangf ddeer ddongs gois banr caif ddawtj cho nguwowif dungf. 	Nhánh release đã sẵn sàng để đóng gói bản cài đặt cho người dùng. 
+code_switch	Banr patch nhor nayf suwar trieetj ddeer looix hieenr thij treen khay heej thoongs. 	Bản patch nhỏ này sửa triệt để lỗi hiển thị trên khay hệ thống. 
+code_switch	Gox code trong VS Code vaf chat treen Telegram ddeeuf muwowtj nhuw Gboard. 	Gõ code trong VS Code và chat trên Telegram đều mượt như Gboard. 
+code_switch	Khi baatj safe mode thif toanf booj tinhs nawng thuwr nghieemj sex tuwj ddoongj tawts. 	Khi bật safe mode thì toàn bộ tính năng thử nghiệm sẽ tự động tắt. 
+code_switch	Kieemr tra root cause cuar suwj coos truwowcs khi vieets banr vas ddeer tranhs suwar chawps vas. 	Kiểm tra root cause của sự cố trước khi viết bản vá để tránh sửa chắp vá. 
+code_switch	Heej thoongs hoox trowj hot reload file caaus hinhf maf khoong caanf khowir ddoongj laij. 	Hệ thống hỗ trợ hot reload file cấu hình mà không cần khởi động lại. 
+code_switch	Thieets kees lock free giups giamr thieeur tranh chaaps giuwax cacs luoongf xuwr lys. 	Thiết kế lock free giúp giảm thiểu tranh chấp giữa các luồng xử lý. 
+code_switch	Ddoanj max nayf hoanf toanf thread safe vaf khoong cos baats kyf looix rof rir naof. 	Đoạn mã này hoàn toàn thread safe và không có bất kỳ lỗi rò rỉ nào. 
+code_switch	Minhf dungf curl goij thuwr endpoint ddawng nhaapj vaf nhaanj veef max hai trawm. 	Mình dùng curl gọi thử endpoint đăng nhập và nhận về mã hai trăm. 
+code_switch	Caaus trucs zero copy giups tieets kieemj ddangs keer bawng thoong booj nhows. 	Cấu trúc zero copy giúp tiết kiệm đáng kể băng thông bộ nhớ. 
+code_switch	Khi cos looix xayr ra thif heej thoongs tuwj ddoongj roll back veef phieen banr oonr ddinhj. 	Khi có lỗi xảy ra thì hệ thống tự động roll back về phiên bản ổn định. 
+code_switch	Trong truwowngf howpj khoong cos giao thuwcs mowis thif chuwowng trinhf sex fall back an toanf. 	Trong trường hợp không có giao thức mới thì chương trình sẽ fall back an toàn. 
+code_switch	Hamf call back xuwr lys suwj kieenj caanf chayj thaatj nhanh vaf khoong dduwowcj block. 	Hàm call back xử lý sự kiện cần chạy thật nhanh và không được block. 
+code_switch	Minhf vuwaf kieemr tra rate limit treen gateway vaf thaays hoatj ddoongj ddungs thieets kees. 	Mình vừa kiểm tra rate limit trên gateway và thấy hoạt động đúng thiết kế. 
+code_switch	Dduwngf queen ghi rox file path ddaayf ddur khi caaus hinhf dichj vuj neenf. 	Đừng quên ghi rõ file path đầy đủ khi cấu hình dịch vụ nền. 
+code_switch	Mooix user name chir dduwowcj ddawng kys mootj taif khoanr duy nhaats treen heej thoongs. 	Mỗi user name chỉ được đăng ký một tài khoản duy nhất trên hệ thống. 
+code_switch	Kieemr tra laij IP address cuar mays aor truwowcs khi keets noois tuwf xa. 	Kiểm tra lại IP address của máy ảo trước khi kết nối từ xa. 
+code_switch	Chayj smoke test treen mooi truwowngf sachj ddeer chawcs chawns gois caif ddawtj khoong looix. 	Chạy smoke test trên môi trường sạch để chắc chắn gói cài đặt không lỗi. 
+code_switch	Baif stress test moo phongr nguwowif dungf vawn phongf gox lieen tucj nhieeuf giowf. 	Bài stress test mô phỏng người dùng văn phòng gõ liên tục nhiều giờ. 
+code_switch	Keets quar load test cho thaays heej thoongs chiuj tair toots gaaps ba laanf duwj kieens. 	Kết quả load test cho thấy hệ thống chịu tải tốt gấp ba lần dự kiến. 
+code_switch	Trong use case thuwcj tees, nguwowif dungf thuwowngf xen kex tieengs Vieetj vaf tieengs Anh. 	Trong use case thực tế, người dùng thường xen kẽ tiếng Việt và tiếng Anh. 
+code_switch	Banr beta mowis nhaanj dduwowcj nhieeuf phanr hooif tichs cuwcj tuwf coongj ddoongf Linux. 	Bản beta mới nhận được nhiều phản hồi tích cực từ cộng đồng Linux. 
+code_switch	Nhowf anh kieemr tra giups em file log xem dichj vuj cos baos canhr baos naof khoong. 	Nhờ anh kiểm tra giúp em file log xem dịch vụ có báo cảnh báo nào không. 
+code_switch	Minhf vuwaf suwar xong looix clipboard khi copy bangr bieeur cos ddinhj dangj HTML. 	Mình vừa sửa xong lỗi clipboard khi copy bảng biểu có định dạng HTML. 
+code_switch	Banj thuwr mowr terminal mowis vaf chayj leenhj cargo check xem cos canhr baos khoong. 	Bạn thử mở terminal mới và chạy lệnh cargo check xem có cảnh báo không. 
+code_switch	Caanf ddamr baor time out keets noois socket khoong bao giowf vuwowtj quas nawm muwowi mili giaay. 	Cần đảm bảo time out kết nối socket không bao giờ vượt quá năm mươi mili giây. 
+code_switch	Anh guwir laij file config.toml maaux ddeer moij nguwowif tham khaor cachs thieets laapj. 	Anh gửi lại file config.toml mẫu để mọi người tham khảo cách thiết lập. 
+code_switch	Hoom nay nhoms minhf taapj trung hoanf thieenj booj benchmark ddooj chinhs xacs song nguwx. 	Hôm nay nhóm mình tập trung hoàn thiện bộ benchmark độ chính xác song ngữ. 
+code_switch	Vieecj tachs rieeng file test giups max nguoonf sanr xuaats luoon sachj vaf deex ddocj. 	Việc tách riêng file test giúp mã nguồn sản xuất luôn sạch và dễ đọc. 
+code_switch	Khi chuyeenr tuwf game sang trinhf duyeetj, booj gox tuwj ddoongj baatj laij tieengs Vieetj. 	Khi chuyển từ game sang trình duyệt, bộ gõ tự động bật lại tiếng Việt. 
+code_switch	Trong baif kieemr tra, tuwf nayf xuaats hieenj owr car nguwx canhr tieengs Vieetj laanx tieengs Anh. 	Trong bài kiểm tra, từ này xuất hiện ở cả ngữ cảnh tiếng Việt lẫn tiếng Anh. 
+code_switch	Minhf vuwaf caapj nhaatj booj gox vaf thaays toocs ddooj phanr hooif nhanh rox reetj. 	Mình vừa cập nhật bộ gõ và thấy tốc độ phản hồi nhanh rõ rệt. 
+code_switch	Ddeef nghij moij nguwowif chayj make lint vaf make test truwowcs khi mowr pull request. 	Đề nghị mọi người chạy make lint và make test trước khi mở pull request. 
+code_switch	Camr own cacs banj ddax baos looix chi tieets kemf cacs buwowcs tais hieenj raats rox rangf. 	Cảm ơn các bạn đã báo lỗi chi tiết kèm các bước tái hiện rất rõ ràng. 
+code_switch	Toois nay minhf ranhr, lats nuwax goij video banf tieeps kees hoachj naang caaps phieen banr hai. 	Tối nay mình rảnh, lát nữa gọi video bàn tiếp kế hoạch nâng cấp phiên bản hai. 
+code_switch	Banhs tets mieenf Nam awn kemf cur kieeuj raats ngon trong nhuwngx ngayf ddaauf xuaan. 	Bánh tét miền Nam ăn kèm củ kiệu rất ngon trong những ngày đầu xuân. 
+code_switch	Mootj lats nuwax trowif sex tanhj muwa, chungs ta tranh thur ddi sieeu thij mua ddoof awn. 	Một lát nữa trời sẽ tạnh mưa, chúng ta tranh thủ đi siêu thị mua đồ ăn. 
+code_switch	Cais bats nayf howi nongs, banj caanr thaanj keor bongr tay khi bee leen banf nhes. 	Cái bát này hơi nóng, bạn cẩn thận kẻo bỏng tay khi bê lên bàn nhé. 
+code_switch	Trowif mats thees nayf maf dduwowcj ngooif uoongs caf phee viar hef thif tuyeetj vowif bieets bao. 	Trời mát thế này mà được ngồi uống cà phê vỉa hè thì tuyệt vời biết bao. 
+code_switch	Minhf vuwaf awn too buns bof Huees cay xef nhuwng ngon heets saayr luoon banj aj. 	Mình vừa ăn tô bún bò Huế cay xè nhưng ngon hết sẩy luôn bạn ạ. 
+code_switch	Been canhj vieecj toois uwu toocs ddooj, tinhs oonr ddinhj vaf baor maatj luoon dduwowcj ddawtj leen hangf ddaauf. 	Bên cạnh việc tối ưu tốc độ, tính ổn định và bảo mật luôn được đặt lên hàng đầu. 
+code_switch	Ruts tieenf mawtj xong nhows kieemr tra kyx soos duw vaf nhaanj laij ther truwowcs khi rowif ddi. 	Rút tiền mặt xong nhớ kiểm tra kỹ số dư và nhận lại thẻ trước khi rời đi. 
+code_switch	This nghieemj cho thaays moo hinhf thoongs kee thuwcj tees chinhs xacs hown nhieeuf so vowis luaatj cuwngs. 	Thí nghiệm cho thấy mô hình thống kê thực tế chính xác hơn nhiều so với luật cứng. 
+code_switch	Hoof sow duwj ans vaf max soos howpj ddoongf ddeeuf ddax dduwowcj ddoongf booj leen heej thoongs luwu truwx. 	Hồ sơ dự án và mã số hợp đồng đều đã được đồng bộ lên hệ thống lưu trữ. 
+code_switch	Nhows kieemr tra kyx danh sachs file truwowcs khi xoas ddeer tranhs maats duwx lieeuj quan trongj. 	Nhớ kiểm tra kỹ danh sách file trước khi xóa để tránh mất dữ liệu quan trọng. 
+code_switch	Suwar host xong thif khowir ddoongj laij trinhf duyeetj ddeer aps dungj caaus hinhf mangj mowis. 	Sửa host xong thì khởi động lại trình duyệt để áp dụng cấu hình mạng mới. 
+code_switch	Chayj test xong heets rooif thif minhf ddongs gois banr phats hanhf guwir cho moij nguwowif dungf thuwr. 	Chạy test xong hết rồi thì mình đóng gói bản phát hành gửi cho mọi người dùng thử. 
+code_switch	Neeus conf baats kyf vaans ddeef naof phats sinh, banj cuws mowr issue mowis treen GitHub nhes. 	Nếu còn bất kỳ vấn đề nào phát sinh, bạn cứ mở issue mới trên GitHub nhé. 

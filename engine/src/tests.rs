@@ -102,7 +102,11 @@ fn regression_uppercase_atxx_restores_atx() {
 #[test]
 fn telex_reverts_double_d_for_english_continuation() {
     let mut e = Engine::new(InputMethod::Telex);
-    assert_eq!(get_display(&process_input(&mut e, "addd")), "add");
+    assert_eq!(get_display(&process_input(&mut e, "ddd")), "dd");
+    e.reset();
+    assert_eq!(get_display(&process_input(&mut e, "add")), "add");
+    e.reset();
+    assert_eq!(get_display(&process_input(&mut e, "addd")), "addd");
 }
 
 #[test]
@@ -817,4 +821,19 @@ fn office_audit_digraph_coda_acronyms_multitone_and_z_tone_removal() {
         }
     }
     assert_eq!(screen, "viêt ");
+}
+
+#[test]
+fn pasted_prefix_backspace_is_o1_single_char_delete() {
+    let mut eng = Engine::new(InputMethod::Telex);
+    let pasted = "a".repeat(2_000);
+    eng.update_with_pasted_text(&pasted);
+    match eng.process_key('\x08') {
+        Some(EngineEvent::Replace(rep)) => {
+            assert_eq!(rep.delete_before_cursor, 1);
+            assert!(rep.insert.is_empty());
+        }
+        other => panic!("expected O(1) Replace(1, \"\"), got {other:?}"),
+    }
+    assert_eq!(eng.buffer().len(), 1_999);
 }

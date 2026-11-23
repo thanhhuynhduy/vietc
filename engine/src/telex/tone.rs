@@ -7,6 +7,7 @@ pub struct ToneResolution {
     pub tone: Tone,
     pub target: Option<usize>,
     pub consumed: Vec<bool>,
+    pub tone_undone: bool,
 }
 
 fn lower(ch: char) -> char {
@@ -217,6 +218,7 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
                 tone: Tone::None,
                 target: None,
                 consumed,
+                tone_undone: false,
             };
         }
     }
@@ -257,6 +259,7 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
                             tone: Tone::None,
                             target: None,
                             consumed,
+                            tone_undone: true,
                         };
                     }
                     if is_valid_tone_trigger(raw, marks, &consumed, &vowels, i) {
@@ -304,6 +307,7 @@ pub fn resolve(raw: &[char], marks: &MarkResolution) -> ToneResolution {
             tone: Tone::None,
             target: None,
             consumed,
+            tone_undone: false,
         };
     };
 
@@ -403,5 +407,6 @@ fn compute_target(
         tone: if target.is_some() { tone } else { Tone::None },
         target,
         consumed,
+        tone_undone: false,
     }
 }

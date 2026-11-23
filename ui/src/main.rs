@@ -45,18 +45,17 @@ fn is_daemon_running() -> bool {
         .filter(|dir| !dir.is_empty() && std::path::Path::new(dir).is_dir())
         .map(|dir| format!("{}/dboard-daemon.lock", dir))
         .unwrap_or_else(|| format!("/tmp/dboard-daemon-{}.lock", uid));
-    if let Ok(path_c) = std::ffi::CString::new(lock_path) {
-        let fd = unsafe { libc::open(path_c.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-        if fd >= 0 {
-            let locked = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } != 0;
-            if !locked {
-                let _ = unsafe { libc::flock(fd, libc::LOCK_UN) };
-            }
-            unsafe {
-                libc::close(fd);
-            }
-            if locked {
-                return true;
+    // Never acquire `LOCK_EX` on `dboard-daemon.lock` here: racing with a
+    // starting `dboard-daemon` would cause the daemon to falsely exit.
+    if let Ok(pid_text) = std::fs::read_to_string(&lock_path) {
+        if let Ok(pid) = pid_text.trim().parse::<libc::pid_t>() {
+            if pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
+                if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+                    let name = comm.trim();
+                    if name == "dboard" || name == "dboard-daemon" {
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -138,14 +137,18 @@ pub fn stop_daemon() {
             libc::kill(pid, libc::SIGTERM);
         }
         for _ in 0..20 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if unsafe { libc::kill(pid, 0) } != 0 {
+            if DAEMON_PID.load(Ordering::SeqCst) != pid || unsafe { libc::kill(pid, 0) } != 0 {
                 eprintln!("[dboard-tray] Daemon exited");
                 return;
             }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
+        // Re-check `DAEMON_PID` right before `SIGKILL` so a PID recycled by the OS
+        // after `reap_in_background()` reaped our child is never signaled.
+        if DAEMON_PID.load(Ordering::SeqCst) == pid {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
         }
     }
 }
@@ -180,6 +183,10 @@ fn ensure_single_instance(name: &str) {
 
 pub fn should_exit() -> bool {
     STOPPING.load(Ordering::SeqCst)
+}
+
+pub fn request_exit() {
+    STOPPING.store(true, Ordering::SeqCst);
 }
 
 extern "C" fn handle_termination_signal(_sig: libc::c_int) {

@@ -142,17 +142,35 @@ pub fn create_injector(
 }
 
 pub fn create_injector_with_locks(
-    _display: display::DisplayServer,
+    display: display::DisplayServer,
     initial_caps_lock: bool,
     initial_num_lock: bool,
 ) -> Result<Box<dyn KeyInjector>, Box<dyn std::error::Error>> {
-    match dboard_protocol::uinput_monitor::UinputInjector::new_with_locks(
+    create_injector_with_locks_and_layout(
+        display,
+        initial_caps_lock,
+        initial_num_lock,
+        dboard_protocol::layout::KeyboardLayout::UsQwerty,
+    )
+}
+
+pub fn create_injector_with_locks_and_layout(
+    _display: display::DisplayServer,
+    initial_caps_lock: bool,
+    initial_num_lock: bool,
+    layout: dboard_protocol::layout::KeyboardLayout,
+) -> Result<Box<dyn KeyInjector>, Box<dyn std::error::Error>> {
+    match dboard_protocol::uinput_monitor::UinputInjector::new_with_locks_and_layout(
         "dboard",
         initial_caps_lock,
         initial_num_lock,
+        layout,
     ) {
         Ok(injector) => {
-            log_info("[dboard] Using uinput + Wayland virtual keyboard injection");
+            log_info(&format!(
+                "[dboard] Using uinput + Wayland virtual keyboard injection (layout={})",
+                layout.display_name()
+            ));
             return Ok(Box::new(injector));
         }
         Err(e) => {

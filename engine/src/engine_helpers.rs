@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Pure casing, boundary, and Telex transform classification helpers for `Engine`.
 
+use crate::english::{EnglishDict, LanguageContext};
+use crate::ring_buffer::CommittedWordEntry;
 use crate::state::{CaseShape, TransformKind, UndoPolicy};
 
 pub(crate) fn case_shape(raw: &str) -> CaseShape {
@@ -87,6 +89,49 @@ pub(crate) fn active_telex_transform(
     };
 
     mark.map(|(kind, policy)| (kind, trigger, policy))
+}
+
+pub(crate) fn active_vni_transform(
+    ch: char,
+    visible: &str,
+) -> Option<(TransformKind, char, UndoPolicy)> {
+    if !matches!(ch, '1'..='9') || visible.ends_with(ch) {
+        return None;
+    }
+    let kind = match ch {
+        '1'..='5' => TransformKind::Tone(ch),
+        '6' => TransformKind::Mark("6"),
+        '7' => TransformKind::Mark("7"),
+        '8' => TransformKind::Mark("8"),
+        '9' => TransformKind::StrokeDd,
+        _ => return None,
+    };
+    Some((kind, ch, UndoPolicy::AppendTrigger))
+}
+
+pub(crate) fn active_transform_for_method(
+    method: crate::InputMethod,
+    raw: &str,
+    ch: char,
+    visible: &str,
+) -> Option<(TransformKind, char, UndoPolicy)> {
+    match method {
+        crate::InputMethod::Telex => active_telex_transform(raw, ch, visible),
+        crate::InputMethod::Vni => active_vni_transform(ch, visible),
+    }
+}
+
+pub(crate) fn is_tone_strip_key(
+    method: crate::InputMethod,
+    ch: char,
+    previous: &str,
+    cased: &str,
+) -> bool {
+    let stripped = (method == crate::InputMethod::Telex
+        && ch.eq_ignore_ascii_case(&'z')
+        && !cased.ends_with(['z', 'Z']))
+        || (method == crate::InputMethod::Vni && ch == '0' && !cased.ends_with('0'));
+    stripped && !previous.is_ascii() && cased.chars().count() == previous.chars().count()
 }
 
 pub(crate) fn build_surrounding_prev_entry(
@@ -196,7 +241,7 @@ pub(crate) fn is_seedable_surrounding_word(visible_word: &str) -> bool {
         && crate::spelling::is_valid_vietnamese_prefix(visible_word)
 }
 
-pub(crate) fn is_flush_char(ch: char) -> bool {
+pub fn is_flush_char(ch: char) -> bool {
     matches!(
         ch,
         ' ' | '\t'
@@ -299,7 +344,7 @@ pub(crate) fn match_casing(raw: &str, processed: &str) -> String {
     } else if alpha[0].is_lowercase()
         && !processed.is_ascii()
         && !raw.eq_ignore_ascii_case("ddos")
-        && alpha.len() >= 3
+        && alpha.len() >= 5
         && alpha[1..].iter().filter(|c| c.is_uppercase()).count() == 1
         && processed.chars().skip(1).any(|c| c.is_uppercase())
         && crate::spelling::is_valid_vietnamese_syllable(processed)
@@ -536,5 +581,213 @@ impl crate::Engine {
             None,
             None,
         )
+    }
+
+    pub fn reduce(&mut self, event: crate::state::PhysicalEvent) -> Option<crate::EngineEvent> {
+        use crate::state::PhysicalEvent;
+        match event {
+            PhysicalEvent::Printable(ch) => self.process_key(ch),
+            PhysicalEvent::Backspace => self.process_key('\x08'),
+            PhysicalEvent::WordBoundary(ch) => {
+                if is_flush_char(ch) {
+                    self.process_key(ch)
+                } else {
+                    None
+                }
+            }
+            PhysicalEvent::Delete
+            | PhysicalEvent::Navigate
+            | PhysicalEvent::SelectionChanged
+            | PhysicalEvent::ExternalEdit
+            | PhysicalEvent::FocusChanged => {
+                self.invalidate_composition();
+                None
+            }
+            PhysicalEvent::Paste(text) => {
+                self.update_with_pasted_text(&text);
+                None
+            }
+            PhysicalEvent::ReplacementFailed => {
+                self.recover_composition();
+                None
+            }
+        }
+    }
+}
+
+pub(crate) fn commit_rehydrated_ascii_word(
+    ring_buffer: &mut crate::ring_buffer::CommittedRingBuffer,
+    dict: &EnglishDict,
+    word: String,
+    prior_context: LanguageContext,
+    ch: char,
+) -> LanguageContext {
+    let committed_context = if is_sentence_boundary(ch) {
+        LanguageContext::None
+    } else {
+        dict.classify_committed_word_with_prior(&word, &word, prior_context)
+    };
+    if ch == ' ' {
+        ring_buffer.push(CommittedWordEntry {
+            raw_keys: word.clone(),
+            visible_word: word,
+            trailing_delimiters: " ".to_string(),
+            prior_context,
+            committed_context,
+            was_auto_restored: true,
+            user_override_vn: false,
+        });
+    } else {
+        ring_buffer.clear();
+    }
+    committed_context
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_retroactive_pair(
+    ring_buffer: &mut crate::ring_buffer::CommittedRingBuffer,
+    prev_entry: CommittedWordEntry,
+    corrected_w1: String,
+    w1_restored: bool,
+    raw: String,
+    final_word: String,
+    autocorrected: Option<String>,
+    prev_len: usize,
+    ch: char,
+    should_restore: bool,
+    user_override: bool,
+) -> (usize, String, LanguageContext) {
+    let _ = ring_buffer.pop_last();
+    let effective_w2 = if w1_restored && !user_override {
+        autocorrected.unwrap_or_else(|| raw.clone())
+    } else {
+        final_word
+    };
+    let total_delete = prev_entry.visible_word.chars().count()
+        + prev_entry.trailing_delimiters.chars().count()
+        + prev_len;
+    let combined_insert = format!(
+        "{}{}{}",
+        corrected_w1, prev_entry.trailing_delimiters, effective_w2
+    );
+    let updated_ctx = if is_sentence_boundary(ch) {
+        LanguageContext::None
+    } else if w1_restored {
+        LanguageContext::English
+    } else {
+        LanguageContext::Vietnamese
+    };
+    if ch == ' ' {
+        let w1_ctx = if w1_restored {
+            LanguageContext::English
+        } else {
+            LanguageContext::Vietnamese
+        };
+        ring_buffer.push(CommittedWordEntry {
+            visible_word: corrected_w1,
+            was_auto_restored: w1_restored,
+            committed_context: w1_ctx,
+            ..prev_entry
+        });
+        ring_buffer.push(CommittedWordEntry {
+            raw_keys: raw,
+            visible_word: effective_w2,
+            trailing_delimiters: " ".to_string(),
+            prior_context: w1_ctx,
+            committed_context: updated_ctx,
+            was_auto_restored: should_restore || w1_restored,
+            user_override_vn: user_override,
+        });
+    } else {
+        ring_buffer.clear();
+    }
+    (total_delete, combined_insert, updated_ctx)
+}
+
+pub(crate) fn apply_bamboo_telex_undo(
+    bamboo: &mut crate::bamboo::BambooEngine,
+    raw_buffer: &mut String,
+    ch: char,
+) -> bool {
+    let Some(undo) = bamboo.undo_telex_transform(ch, raw_buffer) else {
+        return false;
+    };
+    let consumed_stroke_literal = if undo == crate::bamboo::TelexUndo::ConsumeTrigger {
+        raw_buffer.chars().last()
+    } else {
+        None
+    };
+    raw_buffer.push(ch);
+    match undo {
+        crate::bamboo::TelexUndo::AppendTrigger => bamboo.append_literal(ch),
+        crate::bamboo::TelexUndo::ConsumeTrigger => {
+            if let Some(literal) = consumed_stroke_literal {
+                bamboo.append_literal(literal);
+            }
+        }
+    }
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_pending_restore_undo(
+    undo: crate::user_dict::AutoRestoreUndo,
+    ring_buffer: &mut crate::ring_buffer::CommittedRingBuffer,
+    user_dict: &mut crate::user_dict::UserDict,
+    bamboo: &mut crate::bamboo::BambooEngine,
+    raw_buffer: &mut String,
+    prev_context: &mut LanguageContext,
+    override_keep_vietnamese: &mut bool,
+    rehydrated_word: &mut bool,
+    rehydrated_ascii_only: &mut bool,
+) -> (usize, String) {
+    use crate::user_dict::AutoRestoreUndo;
+    match undo {
+        AutoRestoreUndo::SingleWord {
+            restored_ascii,
+            original_vn,
+            raw_keys,
+            boundary_char,
+            is_autocorrect,
+        } => {
+            let _ = ring_buffer.pop_last();
+            if is_autocorrect {
+                user_dict.record_keep_raw(&raw_keys);
+            } else {
+                user_dict.record_keep_vn(&raw_keys);
+            }
+            *raw_buffer = raw_keys;
+            if !is_autocorrect {
+                replay_bamboo(bamboo, raw_buffer);
+            } else {
+                bamboo.reset();
+            }
+            *override_keep_vietnamese = true;
+            *rehydrated_word = is_autocorrect;
+            *rehydrated_ascii_only = is_autocorrect;
+            (
+                restored_ascii.chars().count() + boundary_char.len_utf8().min(1),
+                original_vn,
+            )
+        }
+        AutoRestoreUndo::RetroactivePair {
+            rewritten_pair,
+            original_pair,
+            original_w1_entry,
+            w2_raw_keys,
+            boundary_char,
+        } => {
+            let _ = ring_buffer.pop_last();
+            let _ = ring_buffer.pop_last();
+            *prev_context = original_w1_entry.committed_context;
+            ring_buffer.push(original_w1_entry);
+            *raw_buffer = w2_raw_keys;
+            replay_bamboo(bamboo, raw_buffer);
+            *override_keep_vietnamese = true;
+            (
+                rewritten_pair.chars().count() + boundary_char.len_utf8().min(1),
+                original_pair,
+            )
+        }
     }
 }

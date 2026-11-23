@@ -146,43 +146,63 @@ impl UinputInjector {
         )
     }
 
+    fn backup_non_text_mimes(mimes: Vec<String>) -> Option<NonTextClipboard> {
+        let mut entries = Vec::with_capacity(mimes.len());
+        let mut total_bytes = 0usize;
+        for mime in mimes {
+            let Ok(mut cmd) = Self::user_cmd("wl-paste") else {
+                break;
+            };
+            cmd.args(["--type", &mime]);
+            let Some(output) = Self::run_cmd_with_timeout(cmd, Duration::from_millis(250)) else {
+                continue;
+            };
+            if !output.status.success()
+                || total_bytes.saturating_add(output.stdout.len()) > MAX_BINARY_CLIPBOARD_BYTES
+            {
+                continue;
+            }
+            total_bytes += output.stdout.len();
+            entries.push((mime, output.stdout));
+        }
+        (!entries.is_empty()).then_some(NonTextClipboard::MultiMime(entries))
+    }
+
     fn backup_non_text_clipboard() -> Option<NonTextClipboard> {
         let types = Self::clipboard_types()?;
         match classify_clipboard_types(&types) {
             ClipboardKind::Text => None,
             ClipboardKind::Empty => Some(NonTextClipboard::Empty),
-            ClipboardKind::Other(mime) => {
-                let mut cmd = Self::user_cmd("wl-paste").ok()?;
-                cmd.args(["--type", &mime]);
-                let output = Self::run_cmd_with_timeout(cmd, Duration::from_millis(250))?;
-                if !output.status.success() || output.stdout.len() > MAX_BINARY_CLIPBOARD_BYTES {
-                    return None;
-                }
-                Some(NonTextClipboard::Data {
-                    mime,
-                    bytes: output.stdout,
-                })
-            }
+            ClipboardKind::Rich(mimes) => Self::backup_non_text_mimes(mimes),
         }
     }
 
     fn restore_non_text_clipboard(backup: &NonTextClipboard) -> bool {
-        let Ok(mut cmd) = Self::user_cmd("wl-copy") else {
-            return false;
-        };
         match backup {
-            NonTextClipboard::Empty => {
-                cmd.arg("--clear");
-                cmd.stdout(std::process::Stdio::null());
-                cmd.stderr(std::process::Stdio::null());
-                cmd.status().map(|status| status.success()).unwrap_or(false)
-            }
-            NonTextClipboard::Data { mime, bytes } => {
+            NonTextClipboard::Empty => Self::user_cmd("wl-copy").ok().is_some_and(|mut cmd| {
+                cmd.arg("--clear")
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                cmd.status().map(|s| s.success()).unwrap_or(false)
+            }),
+            NonTextClipboard::MultiMime(entries) => {
+                if super::clipboard_backup::restore_multi_mime_native_first(
+                    entries,
+                    Duration::from_millis(250),
+                ) {
+                    return true;
+                }
+                let Some((mime, bytes)) = entries.first() else {
+                    return false;
+                };
+                let Ok(mut cmd) = Self::user_cmd("wl-copy") else {
+                    return false;
+                };
                 use std::io::Write;
-                cmd.args(["--type", mime]);
-                cmd.stdin(std::process::Stdio::piped());
-                cmd.stdout(std::process::Stdio::null());
-                cmd.stderr(std::process::Stdio::null());
+                cmd.args(["--type", mime])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
                 let Ok(mut child) = cmd.spawn() else {
                     return false;
                 };
@@ -486,8 +506,8 @@ impl UinputInjector {
         match classify_clipboard_types(&types) {
             ClipboardKind::Empty => Some(WaylandClipboardBackup::NonText(NonTextClipboard::Empty)),
             ClipboardKind::Text => Self::read_clipboard().map(WaylandClipboardBackup::Text),
-            ClipboardKind::Other(_) => {
-                Self::backup_non_text_clipboard().map(WaylandClipboardBackup::NonText)
+            ClipboardKind::Rich(mimes) => {
+                Self::backup_non_text_mimes(mimes).map(WaylandClipboardBackup::NonText)
             }
         }
     }
@@ -495,21 +515,36 @@ impl UinputInjector {
     #[cfg(feature = "wayland-protocol")]
     fn restore_wayland_clipboard(backup: &WaylandClipboardBackup) -> bool {
         use crate::clipboard_command::run_copy;
-        let Ok(mut command) = Self::user_cmd("wl-copy") else {
-            return false;
-        };
         match backup {
             WaylandClipboardBackup::Text(text) => {
-                command.args(["--type", "text/plain;charset=utf-8"]);
-                run_copy(command, text.as_bytes(), CLIPBOARD_READY_TIMEOUT)
-                    && Self::wait_for_clipboard_value(text)
+                Self::user_cmd("wl-copy").ok().is_some_and(|mut command| {
+                    command.args(["--type", "text/plain;charset=utf-8"]);
+                    run_copy(command, text.as_bytes(), CLIPBOARD_READY_TIMEOUT)
+                        && Self::wait_for_clipboard_value(text)
+                })
             }
             WaylandClipboardBackup::NonText(NonTextClipboard::Empty) => {
-                command.arg("--clear");
-                run_copy(command, &[], CLIPBOARD_READY_TIMEOUT)
-                    && Self::clipboard_types().is_some_and(|types| types.is_empty())
+                Self::user_cmd("wl-copy").ok().is_some_and(|mut command| {
+                    command.arg("--clear");
+                    run_copy(command, &[], CLIPBOARD_READY_TIMEOUT)
+                        && Self::clipboard_types().is_some_and(|types| types.is_empty())
+                })
             }
-            WaylandClipboardBackup::NonText(NonTextClipboard::Data { mime, bytes }) => {
+            WaylandClipboardBackup::NonText(NonTextClipboard::MultiMime(entries)) => {
+                if crate::wayland_clipboard_restore::restore_multi_mime_native(
+                    entries.clone(),
+                    CLIPBOARD_READY_TIMEOUT,
+                )
+                .is_ok()
+                {
+                    return true;
+                }
+                let Some((mime, bytes)) = entries.first() else {
+                    return false;
+                };
+                let Ok(mut command) = Self::user_cmd("wl-copy") else {
+                    return false;
+                };
                 command.args(["--type", mime]);
                 if !run_copy(command, bytes, CLIPBOARD_READY_TIMEOUT) {
                     return false;
@@ -1058,165 +1093,5 @@ mod clipboard_observation_tests {
 }
 
 #[cfg(test)]
-mod restorer_tests {
-    use super::*;
-    use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc;
-
-    #[test]
-    fn shutdown_wakes_and_joins_restorer_deterministically() {
-        let exited = Arc::new(AtomicBool::new(false));
-        let worker_exited = Arc::clone(&exited);
-        let state = Arc::new(ClipState {
-            inner: Mutex::new(ClipInner {
-                burst: ClipboardBurstState::default(),
-                restore_due: None,
-                shutdown: false,
-                active_window: String::new(),
-            }),
-            io_lock: Mutex::new(()),
-            cv: Condvar::new(),
-            focus_generation: Mutex::new(None),
-        });
-        let (started_tx, started_rx) = mpsc::channel();
-
-        let mut restorer = ClipboardRestorer::spawn(Arc::clone(&state), move |state| {
-            started_tx.send(()).unwrap();
-            run_restorer_with(state, || None, |_| true);
-            worker_exited.store(true, Ordering::SeqCst);
-        });
-
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        restorer.shutdown_and_join().unwrap();
-
-        assert!(exited.load(Ordering::SeqCst));
-        assert!(restorer.is_joined());
-    }
-
-    #[test]
-    fn shutdown_prevents_restore_after_join() {
-        let restored = Arc::new(Mutex::new(Vec::new()));
-        let worker_restored = Arc::clone(&restored);
-        let state = Arc::new(ClipState {
-            inner: Mutex::new(ClipInner {
-                burst: {
-                    let mut burst = ClipboardBurstState::default();
-                    burst.begin_injection(Some("user clipboard".to_string()), "injected text", 1);
-                    burst
-                },
-                restore_due: Some(Instant::now()),
-                shutdown: false,
-                active_window: String::new(),
-            }),
-            io_lock: Mutex::new(()),
-            cv: Condvar::new(),
-            focus_generation: Mutex::new(None),
-        });
-
-        let mut restorer = ClipboardRestorer::spawn(Arc::clone(&state), move |state| {
-            run_restorer_with(
-                state,
-                || Some("injected text".to_string()),
-                |text| {
-                    worker_restored
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push(text.to_string());
-                    true
-                },
-            );
-        });
-
-        restorer.shutdown_and_join().unwrap();
-        let restore_count_after_join = restored
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .len();
-        std::thread::sleep(Duration::from_millis(20));
-
-        assert_eq!(
-            restored
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .len(),
-            restore_count_after_join
-        );
-    }
-
-    #[test]
-    fn user_clipboard_change_during_restore_io_is_not_overwritten() {
-        let reads = Arc::new(Mutex::new(VecDeque::from([
-            Some("injected text".to_string()),
-            Some("new user clipboard".to_string()),
-        ])));
-        let worker_reads = Arc::clone(&reads);
-        let restored = Arc::new(Mutex::new(Vec::new()));
-        let worker_restored = Arc::clone(&restored);
-        let state = Arc::new(ClipState {
-            inner: Mutex::new(ClipInner {
-                burst: {
-                    let mut burst = ClipboardBurstState::default();
-                    burst.begin_injection(
-                        Some("old user clipboard".to_string()),
-                        "injected text",
-                        1,
-                    );
-                    burst
-                },
-                restore_due: Some(Instant::now()),
-                shutdown: false,
-                active_window: String::new(),
-            }),
-            io_lock: Mutex::new(()),
-            cv: Condvar::new(),
-            focus_generation: Mutex::new(None),
-        });
-        let worker_state = Arc::clone(&state);
-
-        let handle = std::thread::spawn(move || {
-            run_restorer_with(
-                worker_state,
-                || {
-                    worker_reads
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .pop_front()
-                        .flatten()
-                },
-                |text| {
-                    worker_restored
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .push(text.to_string());
-                    true
-                },
-            );
-        });
-
-        for _ in 0..100 {
-            if reads
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .is_empty()
-            {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        {
-            let mut inner = state
-                .inner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            inner.shutdown = true;
-        }
-        state.cv.notify_all();
-        handle.join().unwrap();
-
-        assert!(restored
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_empty());
-    }
-}
+#[path = "clipboard_restorer_tests.rs"]
+mod restorer_tests;

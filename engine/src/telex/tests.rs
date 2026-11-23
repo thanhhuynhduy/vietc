@@ -241,3 +241,26 @@ fn english_intervocalic_tone_and_silent_e_words_stay_intact() {
         );
     }
 }
+
+#[test]
+fn dd_only_transforms_before_first_vowel_and_never_flashes_in_english_words() {
+    // Onset `dd` and consonant-only Vietnamese abbreviations transform cleanly
+    assert_eq!(super::resolve_and_render("ddi"), "đi");
+    assert_eq!(super::resolve_and_render("ddos"), "đó");
+    assert_eq!(super::resolve_and_render("ddang"), "đang");
+    assert_eq!(super::resolve_and_render("DDANG"), "ĐANG");
+    assert_eq!(super::resolve_and_render("QDD"), "QĐ");
+    assert_eq!(super::resolve_and_render("ddd"), "dd");
+    assert_eq!(super::resolve_and_render("dddi"), "ddi");
+
+    // Mid-word / post-vowel English `dd` NEVER flashes `đ` even before Space
+    for word in [
+        "add", "odd", "reddit", "hidden", "middle", "wedding", "addd", "padding",
+    ] {
+        assert_eq!(
+            super::resolve_and_render(word),
+            word,
+            "expected {word:?} never to flash đ"
+        );
+    }
+}

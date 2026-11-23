@@ -906,3 +906,236 @@ fn p2_sentence_initial_vietnamese_compounds_and_code_autocorrect_guards() {
     assert_eq!(type_str(true, "foo_teh /usr/adn "), "foo_teh /usr/adn ");
     assert_eq!(type_str(true, "xets nghieemj adn "), "xét nghiệm adn ");
 }
+
+#[test]
+fn short_camelcase_preserved_while_early_shift_vietnamese_works() {
+    let type_line = |input: &str| -> String {
+        let mut engine = Engine::new(InputMethod::Telex);
+        engine.set_enabled(true);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            match engine.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(rep.delete_before_cursor);
+                    screen = screen.chars().take(keep).collect();
+                    screen.push_str(&rep.insert);
+                    if ch == ' ' {
+                        screen.push(ch);
+                    }
+                }
+                None => screen.push(ch),
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        screen
+    };
+
+    // Short 3-4 char camelCase tech tokens stay intact
+    assert_eq!(
+        type_line("dOs cAs tOs iOs mAc dDos "),
+        "dOs cAs tOs iOs mAc dDos "
+    );
+    // Early-Shift trailing modifier & long-word Vietnamese syllables still compose cleanly
+    assert_eq!(
+        type_line("chaoF VieetJ cHAOF vieeTj nguowIf dduowNgf "),
+        "chào Việt cHÀO việt người đường "
+    );
+    // English mid-word `dd` words never flash `đ` and stay English
+    assert_eq!(
+        type_line("add reddit hidden middle wedding "),
+        "add reddit hidden middle wedding "
+    );
+}
+
+#[test]
+fn task_a4_telex_vni_parity_and_circumflex_across_coda() {
+    use dboard_engine::ReplacementReason;
+
+    let type_with = |method: InputMethod, input: &str| -> String {
+        let mut engine = Engine::new(method);
+        engine.set_enabled(true);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            match engine.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(rep.delete_before_cursor);
+                    screen = screen.chars().take(keep).collect();
+                    screen.push_str(&rep.insert);
+                    if dboard_engine::is_flush_char(ch) {
+                        screen.push(ch);
+                    }
+                }
+                None => screen.push(ch),
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        screen
+    };
+
+    // 1. `ddsd` / `ddsf`: no bamboo-vs-telex undo desync (never emits false UndoTransform)
+    let mut ddsd = Engine::new(InputMethod::Telex);
+    assert!(ddsd.process_key('d').is_none());
+    assert!(matches!(
+        ddsd.process_key('d'),
+        Some(EngineEvent::Replace(r)) if r.insert == "đ"
+    ));
+    for ch in ['s', 'd'] {
+        if let Some(EngineEvent::Replace(r)) = ddsd.process_key(ch) {
+            assert_ne!(r.reason, ReplacementReason::UndoTransform);
+        }
+    }
+    assert_eq!(ddsd.buffer(), "đsd");
+
+    // 2. `seed_surrounding_context` immediately after `invalidate_composition` uses Recomposition
+    let mut inv = Engine::new(InputMethod::Telex);
+    inv.invalidate_composition();
+    assert!(inv.seed_surrounding_context(Some("thương"), Some("yêu"), false));
+    assert_eq!(inv.buffer(), "thương");
+
+    // 3. VNI active_transform parity: `a1` -> `a2` emits ReplaceTransform; `a11` emits UndoTransform
+    let mut vni = Engine::new(InputMethod::Vni);
+    assert!(vni.process_key('a').is_none());
+    assert!(matches!(
+        vni.process_key('1'),
+        Some(EngineEvent::Replace(r)) if r.insert == "á" && r.reason == ReplacementReason::ApplyTransform
+    ));
+    assert!(matches!(
+        vni.process_key('2'),
+        Some(EngineEvent::Replace(r)) if r.insert == "à" && r.reason == ReplacementReason::ReplaceTransform
+    ));
+    assert!(matches!(
+        vni.process_key('2'),
+        Some(EngineEvent::Replace(r)) if r.insert == "a2" && r.reason == ReplacementReason::UndoTransform
+    ));
+
+    // 4. VNI `'0'` and Telex `'z'` tone-strip set `override_keep_vietnamese` even when result is ASCII
+    assert_eq!(type_with(InputMethod::Vni, "toan10 "), "toan ");
+    assert_eq!(type_with(InputMethod::Telex, "toansz "), "toan ");
+
+    // 5. Telex circumflex across Vietnamese coda (`khongo`, `vietej`, `tienges`, `tana`)
+    assert_eq!(
+        type_with(InputMethod::Telex, "khongo vietej tienges tana "),
+        "không việt tiếng tân "
+    );
+    // English words must remain untouched
+    assert_eq!(
+        type_with(
+            InputMethod::Telex,
+            "banana canada delete choose mono mama meme benefit manage tenet "
+        ),
+        "banana canada delete choose mono mama meme benefit manage tenet "
+    );
+}
+
+#[test]
+fn task_b2_and_b3_vni_autocorrect_retroactive_undo_and_smart_autocap() {
+    let type_sim = |method: InputMethod, autocorr: bool, autocap: bool, input: &str| -> String {
+        let mut engine = Engine::new(method);
+        engine.set_enabled(true);
+        engine.set_autocorrect(autocorr);
+        engine.set_auto_capitalize(autocap);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            match engine.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(rep.delete_before_cursor);
+                    screen = screen.chars().take(keep).collect();
+                    screen.push_str(&rep.insert);
+                    if dboard_engine::is_flush_char(ch) {
+                        screen.push(ch);
+                    }
+                }
+                None => {
+                    if ch == '\x08' {
+                        screen.pop();
+                    } else {
+                        screen.push(ch);
+                    }
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        screen
+    };
+
+    // 1. Task B2.1: VNI digit spatial autocorrect (`tieng71` -> `tiếng` via adjacent `7 -> 6`,
+    //    `d9uoc65` -> `được` via `6 -> 7`) + One-Tap Undo on Backspace
+    assert_eq!(
+        type_sim(InputMethod::Vni, true, false, "tieng71 "),
+        "tiếng "
+    );
+    assert_eq!(
+        type_sim(InputMethod::Vni, true, false, "tieng71 \x08"),
+        "tieng71"
+    );
+    assert_eq!(type_sim(InputMethod::Vni, true, false, "d9uoc65 "), "được ");
+    // Cross-row safety: top-row letters never mutate into digits
+    assert_eq!(
+        type_sim(InputMethod::Vni, true, false, "qwerty "),
+        "qwerty "
+    );
+
+    // 2. Task B2.2: Retroactive 2-word One-Tap Undo (`Last nuwax ` -> `Lát nữa `, BS -> `Last nữa`)
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, false, "Last nuwax "),
+        "Lát nữa "
+    );
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, false, "Last nuwax \x08"),
+        "Last nữa"
+    );
+    // Pressing Space + typing a 3rd word after RetroactivePair One-Tap Undo must NOT re-trigger `Lát nữa`
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, false, "Last nuwax \x08 nha "),
+        "Last nữa nha "
+    );
+
+    // Cross-coda circumflex double-key undo (`khongoo` -> `khongo`, `tanaa` -> `tana`, `vietee` -> `viete`)
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, false, "khongoo"),
+        "khongo"
+    );
+    assert_eq!(type_sim(InputMethod::Telex, false, false, "tanaa"), "tana");
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, false, "vietee"),
+        "viete"
+    );
+
+    // Leading digit after dot must clear dot-filename stem and never corrupt screen text
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, false, "awn basnh test.1py "),
+        "ăn bánh tét.1py "
+    );
+
+    // 3. Task B3: Smart Auto-Capitalization closing quotes/brackets & abbreviation guard
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, true, "\"Chaof.\" hoom "),
+        "\"Chào.\" Hôm "
+    );
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, true, "“Chaof.” hoom "),
+        "“Chào.” Hôm "
+    );
+    assert_eq!(
+        type_sim(InputMethod::Telex, false, true, "(Xong rooif!) tieesp "),
+        "(Xong rồi!) Tiếp "
+    );
+    assert_eq!(
+        type_sim(
+            InputMethod::Telex,
+            false,
+            true,
+            "TP. hcm Mr. nam TS. nguyeenx "
+        ),
+        "TP. hcm Mr. nam TS. nguyễn "
+    );
+}

@@ -62,23 +62,24 @@ pub fn get_device_phys_id(path: &std::path::Path) -> Option<String> {
         return None;
     }
 
-    // 1. Check uniq (Bluetooth MAC address or device serial)
-    if let Ok(uniq) = fs::read_to_string(dev_path.join("uniq")) {
-        let u = uniq.trim();
-        if !u.is_empty() {
-            return Some(format!("uniq:{}", u));
-        }
-    }
-
-    // 2. Check phys. Keep the complete interface path: composite USB
-    // keyboards can expose separate keyboard interfaces such as input0 and
-    // input2. Collapsing both to the USB prefix causes the real typing
-    // interface to be skipped when another interface is discovered first.
-    if let Ok(phys) = fs::read_to_string(dev_path.join("phys")) {
-        let ph = phys.trim();
-        if !ph.is_empty() {
-            return Some(format!("phys:{}", ph));
-        }
+    // 1. Check uniq + phys together: composite USB/Bluetooth keyboards expose
+    // multiple keyboard interfaces sharing the same `uniq` serial/MAC but
+    // distinct `phys` paths (e.g. input0 vs input2). Combining both prevents
+    // skipping the real typing interface while still deduplicating the same
+    // logical device across reconnects.
+    let uniq = fs::read_to_string(dev_path.join("uniq"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let phys = fs::read_to_string(dev_path.join("phys"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    match (uniq, phys) {
+        (Some(u), Some(ph)) => return Some(format!("uniq:{}|phys:{}", u, ph)),
+        (Some(u), None) => return Some(format!("uniq:{}", u)),
+        (None, Some(ph)) => return Some(format!("phys:{}", ph)),
+        (None, None) => {}
     }
 
     // 3. Fallback to parent sysfs path — use full canonical path (unique per event)

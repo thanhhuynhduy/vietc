@@ -1,53 +1,6 @@
 /// Characters that flush the current word and start a new one.
 pub fn is_flush_char(ch: char) -> bool {
-    matches!(
-        ch,
-        ' ' | '\t'
-            | '\n'
-            | '\r'
-            | '\u{00A0}'
-            | '.'
-            | ','
-            | '!'
-            | '?'
-            | ';'
-            | ':'
-            | '/'
-            | '\\'
-            | '-'
-            | '_'
-            | '('
-            | ')'
-            | '['
-            | ']'
-            | '{'
-            | '}'
-            | '<'
-            | '>'
-            | '='
-            | '+'
-            | '*'
-            | '&'
-            | '%'
-            | '$'
-            | '#'
-            | '@'
-            | '~'
-            | '`'
-            | '"'
-            | '\''
-            | '|'
-            | '^'
-            | '—'
-            | '–'
-            | '…'
-            | '“'
-            | '”'
-            | '‘'
-            | '’'
-            | '«'
-            | '»'
-    )
+    dboard_engine::is_flush_char(ch)
 }
 
 pub fn is_vn_control_key(method: &str, ch: char) -> bool {
@@ -121,30 +74,36 @@ pub fn update_keyboard_state(
 
 pub fn is_toggle_key(key: evdev::KeyCode, key_name: &str) -> bool {
     let lower = key_name.to_lowercase();
-    if matches!(lower.as_str(), "alt+z" | "z") {
-        return matches!(
-            key,
-            evdev::KeyCode::KEY_Z | evdev::KeyCode::KEY_LEFTALT | evdev::KeyCode::KEY_RIGHTALT
-        );
-    }
-    if key == evdev::KeyCode::KEY_LEFTCTRL || key == evdev::KeyCode::KEY_RIGHTCTRL {
-        return true;
-    }
-    let target = match lower.as_str() {
-        "space" | "ctrl+space" => evdev::KeyCode::KEY_SPACE,
+    let is_ctrl = matches!(
+        key,
+        evdev::KeyCode::KEY_LEFTCTRL | evdev::KeyCode::KEY_RIGHTCTRL
+    );
+    match lower.as_str() {
+        // Modifier + non-modifier chords must only trigger when the target key is
+        // pressed *after* the modifier is already held, so fast-typing rollover
+        // (e.g., Space -> Ctrl+C or 'z' -> Alt+Tab) never triggers a false toggle
+        // or swallows Ctrl/Alt.
+        "space" | "ctrl+space" => key == evdev::KeyCode::KEY_SPACE,
+        "alt+z" | "z" => key == evdev::KeyCode::KEY_Z,
+        "capslock" => key == evdev::KeyCode::KEY_CAPSLOCK,
+        // Pure modifier chords remain order-independent.
         "shift" | "ctrl+shift" => {
-            return key == evdev::KeyCode::KEY_LEFTSHIFT || key == evdev::KeyCode::KEY_RIGHTSHIFT
-        }
-        "capslock" => evdev::KeyCode::KEY_CAPSLOCK,
-        "ctrl" => {
-            return key == evdev::KeyCode::KEY_LEFTCTRL || key == evdev::KeyCode::KEY_RIGHTCTRL
+            is_ctrl
+                || matches!(
+                    key,
+                    evdev::KeyCode::KEY_LEFTSHIFT | evdev::KeyCode::KEY_RIGHTSHIFT
+                )
         }
         "alt" | "ctrl+alt" => {
-            return key == evdev::KeyCode::KEY_LEFTALT || key == evdev::KeyCode::KEY_RIGHTALT
+            is_ctrl
+                || matches!(
+                    key,
+                    evdev::KeyCode::KEY_LEFTALT | evdev::KeyCode::KEY_RIGHTALT
+                )
         }
-        _ => return false,
-    };
-    key == target
+        "ctrl" => is_ctrl,
+        _ => false,
+    }
 }
 
 pub fn is_toggle_combination_state(
@@ -204,8 +163,18 @@ pub fn consume_released_or_repeated_key(
     }
 }
 
+#[cfg(test)]
 pub fn key_to_char_with_case(key: evdev::KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
     dboard_protocol::layout::keycode_to_char(key.code(), shift, caps_lock)
+}
+
+pub fn key_to_char_with_layout(
+    layout: dboard_protocol::layout::KeyboardLayout,
+    key: evdev::KeyCode,
+    shift: bool,
+    caps_lock: bool,
+) -> Option<char> {
+    dboard_protocol::layout::keycode_to_char_for_layout(layout, key.code(), shift, caps_lock)
 }
 
 /// Keys that move the caret, toggle Insert/Overwrite mode, invoke function/menu
@@ -371,11 +340,26 @@ mod tests {
 
     #[test]
     fn test_toggle_key_filtering() {
+        // Modifier + non-modifier chords only trigger on the non-modifier key,
+        // preventing fast-typing rollover (Space -> Ctrl+C, z -> Alt+Tab) from
+        // firing a false toggle and swallowing the modifier.
         assert!(is_toggle_key(evdev::KeyCode::KEY_SPACE, "space"));
-        assert!(is_toggle_key(evdev::KeyCode::KEY_LEFTCTRL, "space"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_SPACE, "ctrl+space"));
+        assert!(!is_toggle_key(evdev::KeyCode::KEY_LEFTCTRL, "space"));
+        assert!(!is_toggle_key(evdev::KeyCode::KEY_RIGHTCTRL, "ctrl+space"));
         assert!(!is_toggle_key(evdev::KeyCode::KEY_T, "space"));
+
+        assert!(is_toggle_key(evdev::KeyCode::KEY_Z, "alt+z"));
+        assert!(!is_toggle_key(evdev::KeyCode::KEY_LEFTALT, "alt+z"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_CAPSLOCK, "capslock"));
+        assert!(!is_toggle_key(evdev::KeyCode::KEY_LEFTCTRL, "capslock"));
+
+        // Pure modifier chords remain order-independent.
         assert!(is_toggle_key(evdev::KeyCode::KEY_LEFTSHIFT, "shift"));
         assert!(is_toggle_key(evdev::KeyCode::KEY_RIGHTSHIFT, "shift"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_LEFTCTRL, "shift"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_LEFTCTRL, "ctrl+alt"));
+        assert!(is_toggle_key(evdev::KeyCode::KEY_LEFTALT, "ctrl+alt"));
     }
 
     #[test]

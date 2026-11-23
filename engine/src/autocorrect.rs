@@ -24,47 +24,153 @@ const QWERTY_ALPHA: [char; 26] = [
     'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l',
     'z', 'x', 'c', 'v', 'b', 'n', 'm',
 ];
+const QWERTY_VNI_DIGITS: [char; 9] = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
 
-/// Physical key coordinates `(row, col)` on US QWERTY for spatial proximity scoring.
-fn key_coord(ch: char) -> Option<(f32, f32)> {
-    let (row, col) = match ch.to_ascii_lowercase() {
-        'q' => (0.0, 0.0),
-        'w' => (0.0, 1.0),
-        'e' => (0.0, 2.0),
-        'r' => (0.0, 3.0),
-        't' => (0.0, 4.0),
-        'y' => (0.0, 5.0),
-        'u' => (0.0, 6.0),
-        'i' => (0.0, 7.0),
-        'o' => (0.0, 8.0),
-        'p' => (0.0, 9.0),
-        'a' => (1.0, 0.25),
-        's' => (1.0, 1.25),
-        'd' => (1.0, 2.25),
-        'f' => (1.0, 3.25),
-        'g' => (1.0, 4.25),
-        'h' => (1.0, 5.25),
-        'j' => (1.0, 6.25),
-        'k' => (1.0, 7.25),
-        'l' => (1.0, 8.25),
-        'z' => (2.0, 0.75),
-        'x' => (2.0, 1.75),
-        'c' => (2.0, 2.75),
-        'v' => (2.0, 3.75),
-        'b' => (2.0, 4.75),
-        'n' => (2.0, 5.75),
-        'm' => (2.0, 6.75),
-        _ => return None,
+/// Physical keyboard layout used for spatial typo proximity scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutocorrectLayout {
+    #[default]
+    UsQwerty,
+    Dvorak,
+    Colemak,
+}
+
+impl AutocorrectLayout {
+    pub fn from_str_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "dvorak" | "us-dvorak" | "us_dvorak" => Self::Dvorak,
+            "colemak" | "us-colemak" | "us_colemak" => Self::Colemak,
+            _ => Self::UsQwerty,
+        }
+    }
+}
+
+/// Physical key coordinates `(row, col)` for spatial proximity scoring across
+/// US QWERTY, Dvorak, and Colemak layouts (synchronized with `protocol/src/layout.rs`).
+fn key_coord_for_layout(layout: AutocorrectLayout, ch: char) -> Option<(f32, f32)> {
+    let lower = ch.to_ascii_lowercase();
+    let digit_coord = match lower {
+        '1' => Some((-1.0, 0.0)),
+        '2' => Some((-1.0, 1.0)),
+        '3' => Some((-1.0, 2.0)),
+        '4' => Some((-1.0, 3.0)),
+        '5' => Some((-1.0, 4.0)),
+        '6' => Some((-1.0, 5.0)),
+        '7' => Some((-1.0, 6.0)),
+        '8' => Some((-1.0, 7.0)),
+        '9' => Some((-1.0, 8.0)),
+        '0' => Some((-1.0, 9.0)),
+        _ => None,
+    };
+    if digit_coord.is_some() {
+        return digit_coord;
+    }
+    let (row, col) = match layout {
+        AutocorrectLayout::UsQwerty => match lower {
+            'q' => (0.0, 0.0),
+            'w' => (0.0, 1.0),
+            'e' => (0.0, 2.0),
+            'r' => (0.0, 3.0),
+            't' => (0.0, 4.0),
+            'y' => (0.0, 5.0),
+            'u' => (0.0, 6.0),
+            'i' => (0.0, 7.0),
+            'o' => (0.0, 8.0),
+            'p' => (0.0, 9.0),
+            'a' => (1.0, 0.25),
+            's' => (1.0, 1.25),
+            'd' => (1.0, 2.25),
+            'f' => (1.0, 3.25),
+            'g' => (1.0, 4.25),
+            'h' => (1.0, 5.25),
+            'j' => (1.0, 6.25),
+            'k' => (1.0, 7.25),
+            'l' => (1.0, 8.25),
+            'z' => (2.0, 0.75),
+            'x' => (2.0, 1.75),
+            'c' => (2.0, 2.75),
+            'v' => (2.0, 3.75),
+            'b' => (2.0, 4.75),
+            'n' => (2.0, 5.75),
+            'm' => (2.0, 6.75),
+            _ => return None,
+        },
+        AutocorrectLayout::Dvorak => match lower {
+            'p' => (0.0, 3.0),
+            'y' => (0.0, 4.0),
+            'f' => (0.0, 5.0),
+            'g' => (0.0, 6.0),
+            'c' => (0.0, 7.0),
+            'r' => (0.0, 8.0),
+            'l' => (0.0, 9.0),
+            'a' => (1.0, 0.25),
+            'o' => (1.0, 1.25),
+            'e' => (1.0, 2.25),
+            'u' => (1.0, 3.25),
+            'i' => (1.0, 4.25),
+            'd' => (1.0, 5.25),
+            'h' => (1.0, 6.25),
+            't' => (1.0, 7.25),
+            'n' => (1.0, 8.25),
+            's' => (1.0, 9.25),
+            'q' => (2.0, 1.75),
+            'j' => (2.0, 2.75),
+            'k' => (2.0, 3.75),
+            'x' => (2.0, 4.75),
+            'b' => (2.0, 5.75),
+            'm' => (2.0, 6.75),
+            'w' => (2.0, 7.75),
+            'v' => (2.0, 8.75),
+            'z' => (2.0, 9.75),
+            _ => return None,
+        },
+        AutocorrectLayout::Colemak => match lower {
+            'q' => (0.0, 0.0),
+            'w' => (0.0, 1.0),
+            'f' => (0.0, 2.0),
+            'p' => (0.0, 3.0),
+            'g' => (0.0, 4.0),
+            'j' => (0.0, 5.0),
+            'l' => (0.0, 6.0),
+            'u' => (0.0, 7.0),
+            'y' => (0.0, 8.0),
+            'a' => (1.0, 0.25),
+            'r' => (1.0, 1.25),
+            's' => (1.0, 2.25),
+            't' => (1.0, 3.25),
+            'd' => (1.0, 4.25),
+            'h' => (1.0, 5.25),
+            'n' => (1.0, 6.25),
+            'e' => (1.0, 7.25),
+            'i' => (1.0, 8.25),
+            'o' => (1.0, 9.25),
+            'z' => (2.0, 0.75),
+            'x' => (2.0, 1.75),
+            'c' => (2.0, 2.75),
+            'v' => (2.0, 3.75),
+            'b' => (2.0, 4.75),
+            'k' => (2.0, 5.75),
+            'm' => (2.0, 6.75),
+            _ => return None,
+        },
     };
     Some((row, col))
 }
 
-/// Euclidean distance on a US QWERTY physical keyboard (adjacent keys <= 1.25).
-pub(crate) fn key_distance(a: char, b: char) -> f32 {
-    match (key_coord(a), key_coord(b)) {
+pub(crate) fn key_distance_for_layout(layout: AutocorrectLayout, a: char, b: char) -> f32 {
+    match (
+        key_coord_for_layout(layout, a),
+        key_coord_for_layout(layout, b),
+    ) {
         (Some((r1, c1)), Some((r2, c2))) => ((r1 - r2).powi(2) + (c1 - c2).powi(2)).sqrt(),
         _ => f32::INFINITY,
     }
+}
+
+/// Euclidean distance on a US QWERTY physical keyboard (adjacent keys <= 1.25).
+#[cfg(test)]
+pub(crate) fn key_distance(a: char, b: char) -> f32 {
+    key_distance_for_layout(AutocorrectLayout::UsQwerty, a, b)
 }
 
 fn is_valid_diacritic_vn_word(candidate: &str) -> bool {
@@ -176,6 +282,7 @@ fn try_vn_duplicate_consonant_delete(
 fn try_vn_spatial_substitution(
     chars: &[char],
     method: InputMethod,
+    layout: AutocorrectLayout,
     compose: &impl Fn(&str) -> String,
 ) -> Option<String> {
     if chars.len() < 4 {
@@ -184,8 +291,21 @@ fn try_vn_spatial_substitution(
     let mut unique: Option<String> = None;
     for i in 0..chars.len() {
         let orig = chars[i];
-        for &neighbor in &QWERTY_ALPHA {
-            if neighbor == orig || key_distance(orig, neighbor) > MAX_SPATIAL_KEY_DISTANCE {
+        let neighbors: &[char] = if orig.is_ascii_digit() {
+            if method == InputMethod::Vni {
+                &QWERTY_VNI_DIGITS
+            } else {
+                continue;
+            }
+        } else if orig.is_ascii_alphabetic() {
+            &QWERTY_ALPHA
+        } else {
+            continue;
+        };
+        for &neighbor in neighbors {
+            if neighbor == orig
+                || key_distance_for_layout(layout, orig, neighbor) > MAX_SPATIAL_KEY_DISTANCE
+            {
                 continue;
             }
             let mut mutated = chars.to_vec();
@@ -193,8 +313,14 @@ fn try_vn_spatial_substitution(
             let cand_raw: String = mutated.into_iter().collect();
             let cand_vn = compose(&cand_raw);
             if is_valid_diacritic_vn_word(&cand_vn)
-                && crate::ring_buffer::visible_to_canonical_raw(&cand_vn, method)
-                    .is_some_and(|canon| canon.len() == cand_raw.len())
+                && crate::ring_buffer::visible_to_canonical_raw(&cand_vn, method).is_some_and(
+                    |canon| {
+                        canon.len() == cand_raw.len()
+                            || (method == InputMethod::Vni
+                                && cand_raw.contains('7')
+                                && canon.len() == cand_raw.len() + 1)
+                    },
+                )
             {
                 match &unique {
                     None => unique = Some(cand_vn),
@@ -232,6 +358,7 @@ fn try_core_english_transposition(chars: &[char], dict: &EnglishDict) -> Option<
 
 /// Suggest an unambiguous typo correction on Space, returning `None` whenever
 /// the input is already valid, protected by `UserDict`, or ambiguous.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn suggest_correction(
     dict: &EnglishDict,
@@ -239,6 +366,29 @@ pub(crate) fn suggest_correction(
     composed: &str,
     raw: &str,
     method: InputMethod,
+    prev_ctx: LanguageContext,
+    compose: impl Fn(&str) -> String,
+) -> Option<String> {
+    suggest_correction_for_layout(
+        dict,
+        user_dict,
+        composed,
+        raw,
+        method,
+        AutocorrectLayout::UsQwerty,
+        prev_ctx,
+        compose,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn suggest_correction_for_layout(
+    dict: &EnglishDict,
+    user_dict: &UserDict,
+    composed: &str,
+    raw: &str,
+    method: InputMethod,
+    layout: AutocorrectLayout,
     prev_ctx: LanguageContext,
     compose: impl Fn(&str) -> String,
 ) -> Option<String> {
@@ -300,8 +450,8 @@ pub(crate) fn suggest_correction(
             return Some(match_casing(raw, &vn));
         }
 
-        // 4. Vietnamese US QWERTY spatial key-proximity substitution (`tieemgs -> tiếng`, `khoonh -> không`).
-        if let Some(vn) = try_vn_spatial_substitution(&chars, method, &compose) {
+        // 4. Vietnamese layout-aware spatial key-proximity substitution (`tieemgs -> tiếng`, `khoonh -> không`).
+        if let Some(vn) = try_vn_spatial_substitution(&chars, method, layout, &compose) {
             return Some(match_casing(raw, &vn));
         }
     }

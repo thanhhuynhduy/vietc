@@ -63,6 +63,7 @@ pub struct UinputInjector {
     uinput_mod_mask: std::sync::atomic::AtomicU8,
     uinput_shift_mask: std::sync::atomic::AtomicU8,
     omnibox_inline_selection: std::sync::atomic::AtomicBool,
+    layout: crate::layout::KeyboardLayout,
 }
 
 fn system_modifier_bit(keycode: u16) -> Option<u8> {
@@ -87,13 +88,27 @@ fn shift_bit(keycode: u16) -> Option<u8> {
 
 impl UinputInjector {
     pub fn new(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::new_with_locks(name, false, false)
+        Self::new_with_locks_and_layout(name, false, false, crate::layout::KeyboardLayout::UsQwerty)
     }
 
     pub fn new_with_locks(
         name: &str,
         initial_caps_lock: bool,
         initial_num_lock: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_locks_and_layout(
+            name,
+            initial_caps_lock,
+            initial_num_lock,
+            crate::layout::KeyboardLayout::UsQwerty,
+        )
+    }
+
+    pub fn new_with_locks_and_layout(
+        name: &str,
+        initial_caps_lock: bool,
+        initial_num_lock: bool,
+        layout: crate::layout::KeyboardLayout,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let _ = std::process::Command::new("modprobe")
             .args(["uinput"])
@@ -138,13 +153,15 @@ impl UinputInjector {
             let vk = if disabled {
                 None
             } else {
-                match crate::wayland_vk::WaylandVirtualKeyboard::connect(
+                match crate::wayland_vk::WaylandVirtualKeyboard::connect_with_layout(
+                    layout,
                     initial_caps_lock,
                     initial_num_lock,
                 ) {
                     Ok(vk) => {
                         eprintln!(
-                            "[dboard] Wayland zwp_virtual_keyboard_v1 active (zero-clipboard direct Unicode mode)"
+                            "[dboard] Wayland zwp_virtual_keyboard_v1 active (zero-clipboard direct Unicode mode, layout={})",
+                            layout.display_name()
                         );
                         Some(vk)
                     }
@@ -196,6 +213,7 @@ impl UinputInjector {
             uinput_mod_mask: std::sync::atomic::AtomicU8::new(0),
             uinput_shift_mask: std::sync::atomic::AtomicU8::new(0),
             omnibox_inline_selection: std::sync::atomic::AtomicBool::new(false),
+            layout,
         })
     }
 
@@ -221,7 +239,8 @@ impl UinputInjector {
                 .is_none_or(|prev| now.duration_since(prev) >= Duration::from_secs(3));
             if can_retry {
                 slot.last_attempt = Some(now);
-                match crate::wayland_vk::WaylandVirtualKeyboard::connect(
+                match crate::wayland_vk::WaylandVirtualKeyboard::connect_with_layout(
+                    self.layout,
                     self.caps_lock.load(Ordering::Relaxed),
                     self.num_lock.load(Ordering::Relaxed),
                 ) {
@@ -324,7 +343,8 @@ impl KeyInjector for UinputInjector {
     fn send_backspace(&self) -> InjectResult {
         #[cfg(feature = "wayland-protocol")]
         if !self.bypass_mode.load(Ordering::Relaxed)
-            && self.uinput_mod_mask.load(Ordering::Relaxed) == 0
+            && self.uinput_mod_mask.load(Ordering::Acquire) == 0
+            && !self.is_in_mod_release_cooldown()
             && self
                 .with_wayland_vk(|vk| vk.replace_text(1, 0, "").is_ok())
                 .unwrap_or(false)
@@ -350,8 +370,12 @@ impl KeyInjector for UinputInjector {
                         self.send_uinput_event_unlocked(EV_KEY, keycode, 0)?;
                         self.send_uinput_event_unlocked(0, 0, 0)
                     });
+                    let _ = self.with_wayland_vk(|vk| vk.mark_uinput_activity());
                     self.record_mod_release();
                     self.transfer_uinput_shift_to_vk();
+                    if self.uinput_mod_mask.load(Ordering::Acquire) == 0 {
+                        let _ = self.with_wayland_vk(|vk| vk.sync_locked_modifiers(false));
+                    }
                     return if matches!(result, Ok(Ok(()))) {
                         InjectResult::Success
                     } else {
@@ -391,6 +415,14 @@ impl KeyInjector for UinputInjector {
             self.send_uinput_event_unlocked(EV_KEY, keycode, value)?;
             self.send_uinput_event_unlocked(0, 0, 0)
         });
+        #[cfg(feature = "wayland-protocol")]
+        {
+            let _ = self.with_wayland_vk(|vk| vk.mark_uinput_activity());
+            if value == 0 && self.uinput_mod_mask.load(Ordering::Acquire) == 0 {
+                let is_lock_key = keycode == 69 || keycode == 58;
+                let _ = self.with_wayland_vk(|vk| vk.sync_locked_modifiers(is_lock_key));
+            }
+        }
         if matches!(result, Ok(Ok(()))) {
             InjectResult::Success
         } else {
@@ -413,7 +445,9 @@ impl KeyInjector for UinputInjector {
         }
 
         let caps_active = self.caps_lock.load(Ordering::Relaxed);
-        if let Some((keycode, base_shift)) = crate::layout::char_to_evdev_and_shift(ch) {
+        if let Some((keycode, base_shift)) =
+            crate::layout::char_to_evdev_and_shift_for_layout(self.layout, ch)
+        {
             let needs_shift = if ch.is_ascii_alphabetic() {
                 base_shift ^ caps_active
             } else {
@@ -426,7 +460,9 @@ impl KeyInjector for UinputInjector {
             };
         }
         let ascii = strip_vn_diacritic(ch);
-        if let Some((keycode, base_shift)) = crate::layout::char_to_evdev_and_shift(ascii) {
+        if let Some((keycode, base_shift)) =
+            crate::layout::char_to_evdev_and_shift_for_layout(self.layout, ascii)
+        {
             let needs_shift = if ascii.is_ascii_alphabetic() {
                 base_shift ^ caps_active
             } else {
@@ -453,7 +489,7 @@ impl KeyInjector for UinputInjector {
 
         let is_layout_direct = s
             .chars()
-            .all(|c| crate::layout::char_to_evdev_and_shift(c).is_some());
+            .all(|c| crate::layout::char_to_evdev_and_shift_for_layout(self.layout, c).is_some());
 
         if is_layout_direct {
             for ch in s.chars() {
@@ -641,10 +677,9 @@ impl UinputInjector {
             return InjectResult::Failed;
         }
 
-        if text
-            .chars()
-            .all(|c| crate::layout::char_to_evdev_and_shift(c).is_some() || c == '\n')
-        {
+        if text.chars().all(|c| {
+            crate::layout::char_to_evdev_and_shift_for_layout(self.layout, c).is_some() || c == '\n'
+        }) {
             if backspaces > 0 && self.send_backspaces(backspaces).is_err() {
                 return InjectResult::Failed;
             }

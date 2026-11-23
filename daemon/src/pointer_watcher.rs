@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
-//! Read-only pointer button watcher.
+//! Read-only pointer button and touchpad tap-to-click watcher.
 //!
-//! A mouse/touchpad click can move the caret or change window focus without
-//! any keyboard event, leaving a half-typed word in the engine that no longer
-//! matches what is on screen (the next key would then delete/replace text the
-//! user never typed). Like other IMEs, we treat any pointer button press as a
-//! composition boundary. Devices are only opened for reading, never grabbed.
+//! A mouse click or touchpad tap-to-click can move the caret or change window
+//! focus without any keyboard event, leaving a half-typed word in the engine
+//! that no longer matches what is on screen. Devices are only opened for
+//! reading, never grabbed.
 
 use std::collections::HashSet;
 use std::os::unix::io::AsRawFd;
@@ -15,6 +14,8 @@ use std::time::{Duration, Instant};
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 const POLL_TIMEOUT_MS: i32 = 200;
+const TAP_MAX_DURATION: Duration = Duration::from_millis(200);
+const TAP_MAX_TRAVEL: i32 = 30;
 
 fn is_pointer_button(code: u16) -> bool {
     matches!(
@@ -23,15 +24,101 @@ fn is_pointer_button(code: u16) -> bool {
     )
 }
 
+fn is_multitouch_tool(code: u16) -> bool {
+    matches!(
+        evdev::KeyCode(code),
+        evdev::KeyCode::BTN_TOOL_DOUBLETAP
+            | evdev::KeyCode::BTN_TOOL_TRIPLETAP
+            | evdev::KeyCode::BTN_TOOL_QUADTAP
+            | evdev::KeyCode::BTN_TOOL_QUINTTAP
+    )
+}
+
 fn is_pointer_device(device: &evdev::Device) -> bool {
-    device
-        .supported_keys()
-        .is_some_and(|keys| keys.contains(evdev::KeyCode::BTN_LEFT))
+    device.supported_keys().is_some_and(|keys| {
+        keys.contains(evdev::KeyCode::BTN_LEFT) || keys.contains(evdev::KeyCode::BTN_TOUCH)
+    })
+}
+
+/// Per-device tap-to-click state machine distinguishing short single-finger
+/// taps (`BTN_TOUCH` press -> release in `< 200ms` with minimal travel) from
+/// palm brushes, drags, two-finger scrolls, and physical clickpad presses.
+#[derive(Debug, Default)]
+struct TapTracker {
+    touch_down_at: Option<Instant>,
+    moved_or_multitouch: bool,
+    clicked_during_touch: bool,
+    start_x: Option<i32>,
+    start_y: Option<i32>,
+}
+
+impl TapTracker {
+    fn observe_event(
+        &mut self,
+        event_type: evdev::EventType,
+        code: u16,
+        value: i32,
+        now: Instant,
+    ) -> bool {
+        match event_type {
+            evdev::EventType::KEY => {
+                if value == 1 && is_pointer_button(code) {
+                    self.clicked_during_touch = true;
+                    return true;
+                }
+                if value == 1 && is_multitouch_tool(code) {
+                    self.moved_or_multitouch = true;
+                    return false;
+                }
+                if evdev::KeyCode(code) == evdev::KeyCode::BTN_TOUCH {
+                    if value == 1 {
+                        self.touch_down_at = Some(now);
+                        self.moved_or_multitouch = false;
+                        self.clicked_during_touch = false;
+                        self.start_x = None;
+                        self.start_y = None;
+                    } else if value == 0 {
+                        let short_tap = self.touch_down_at.take().is_some_and(|down| {
+                            now.saturating_duration_since(down) < TAP_MAX_DURATION
+                        });
+                        let fire =
+                            short_tap && !self.moved_or_multitouch && !self.clicked_during_touch;
+                        self.moved_or_multitouch = false;
+                        self.clicked_during_touch = false;
+                        self.start_x = None;
+                        self.start_y = None;
+                        return fire;
+                    }
+                }
+                false
+            }
+            evdev::EventType::ABSOLUTE if self.touch_down_at.is_some() => {
+                let axis = evdev::AbsoluteAxisCode(code);
+                if axis == evdev::AbsoluteAxisCode::ABS_X
+                    || axis == evdev::AbsoluteAxisCode::ABS_MT_POSITION_X
+                {
+                    let origin = *self.start_x.get_or_insert(value);
+                    if (value - origin).abs() > TAP_MAX_TRAVEL {
+                        self.moved_or_multitouch = true;
+                    }
+                } else if axis == evdev::AbsoluteAxisCode::ABS_Y
+                    || axis == evdev::AbsoluteAxisCode::ABS_MT_POSITION_Y
+                {
+                    let origin = *self.start_y.get_or_insert(value);
+                    if (value - origin).abs() > TAP_MAX_TRAVEL {
+                        self.moved_or_multitouch = true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
 }
 
 fn scan_new(
     open_paths: &mut HashSet<std::path::PathBuf>,
-) -> Vec<(std::path::PathBuf, evdev::Device)> {
+) -> Vec<(std::path::PathBuf, evdev::Device, TapTracker)> {
     let mut found = Vec::new();
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
         return found;
@@ -48,7 +135,7 @@ fn scan_new(
         if let Ok(device) = evdev::Device::open(&path) {
             if is_pointer_device(&device) {
                 open_paths.insert(path.clone());
-                found.push((path, device));
+                found.push((path, device, TapTracker::default()));
             }
         }
     }
@@ -56,15 +143,15 @@ fn scan_new(
 }
 
 /// Spawn the watcher. The returned counter increments on every pointer button
-/// press; consumers compare it with the last value they saw. Pre-click
-/// surrounding context is cleared immediately at click time so fresh post-click
-/// AT-SPI `TextCaretMoved` context survives until the next keypress.
+/// press or touchpad tap-to-click; consumers compare it with the last value
+/// they saw. Pre-click surrounding context is cleared immediately at click time
+/// so fresh post-click AT-SPI `TextCaretMoved` context survives until the next keypress.
 pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) -> Arc<AtomicU64> {
     let counter = Arc::new(AtomicU64::new(0));
     let shared = counter.clone();
     std::thread::spawn(move || {
         let mut open_paths: HashSet<std::path::PathBuf> = HashSet::new();
-        let mut devices: Vec<(std::path::PathBuf, evdev::Device)> = Vec::new();
+        let mut devices: Vec<(std::path::PathBuf, evdev::Device, TapTracker)> = Vec::new();
         let mut last_scan: Option<Instant> = None;
         loop {
             if crate::signal::SIGNAL_EXIT.load(Ordering::SeqCst) {
@@ -80,7 +167,7 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
             }
             let mut pfds: Vec<libc::pollfd> = devices
                 .iter()
-                .map(|(_, device)| libc::pollfd {
+                .map(|(_, device, _)| libc::pollfd {
                     fd: device.as_raw_fd(),
                     events: libc::POLLIN,
                     revents: 0,
@@ -97,6 +184,7 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
                 continue;
             }
             let mut dead = Vec::new();
+            let now = Instant::now();
             for (index, pfd) in pfds.iter().enumerate() {
                 if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
                     dead.push(index);
@@ -105,13 +193,16 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
                 if pfd.revents & libc::POLLIN == 0 {
                     continue;
                 }
-                match devices[index].1.fetch_events() {
+                let (_, ref mut dev, ref mut tracker) = devices[index];
+                match dev.fetch_events() {
                     Ok(events) => {
                         for event in events {
-                            if event.event_type() == evdev::EventType::KEY
-                                && event.value() == 1
-                                && is_pointer_button(event.code())
-                            {
+                            if tracker.observe_event(
+                                event.event_type(),
+                                event.code(),
+                                event.value(),
+                                now,
+                            ) {
                                 crate::focus::record_pointer_click(&shared_focus);
                                 shared.fetch_add(1, Ordering::SeqCst);
                             }
@@ -124,7 +215,7 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
             dead.sort_unstable();
             dead.dedup();
             for index in dead.into_iter().rev() {
-                let (path, _) = devices.remove(index);
+                let (path, _, _) = devices.remove(index);
                 open_paths.remove(&path);
             }
         }
@@ -134,7 +225,7 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
 
 #[cfg(test)]
 mod tests {
-    use super::is_pointer_button;
+    use super::*;
 
     #[test]
     fn only_real_pointer_buttons_count() {
@@ -143,5 +234,105 @@ mod tests {
         assert!(is_pointer_button(evdev::KeyCode::BTN_MIDDLE.code()));
         assert!(!is_pointer_button(evdev::KeyCode::KEY_A.code()));
         assert!(!is_pointer_button(evdev::KeyCode::BTN_TOUCH.code()));
+    }
+
+    #[test]
+    fn touchpad_tap_tracker_distinguishes_short_tap_from_drag_scroll_and_clickpad() {
+        let mut tracker = TapTracker::default();
+        let t0 = Instant::now();
+
+        // 1. Short single-finger tap (< 200ms, minimal movement) -> fires on release
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            1,
+            t0,
+        ));
+        assert!(tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            0,
+            t0 + Duration::from_millis(80),
+        ));
+
+        // 2. Long touch (>= 200ms) -> does NOT fire
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            1,
+            t0,
+        ));
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            0,
+            t0 + Duration::from_millis(250),
+        ));
+
+        // 3. Large finger travel (scroll/swipe/palm) -> does NOT fire
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            1,
+            t0,
+        ));
+        assert!(!tracker.observe_event(
+            evdev::EventType::ABSOLUTE,
+            evdev::AbsoluteAxisCode::ABS_MT_POSITION_X.0,
+            100,
+            t0 + Duration::from_millis(10),
+        ));
+        assert!(!tracker.observe_event(
+            evdev::EventType::ABSOLUTE,
+            evdev::AbsoluteAxisCode::ABS_MT_POSITION_X.0,
+            180,
+            t0 + Duration::from_millis(20),
+        ));
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            0,
+            t0 + Duration::from_millis(60),
+        ));
+
+        // 4. Two-finger tap/scroll -> does NOT fire
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            1,
+            t0,
+        ));
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOOL_DOUBLETAP.code(),
+            1,
+            t0 + Duration::from_millis(5),
+        ));
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            0,
+            t0 + Duration::from_millis(50),
+        ));
+
+        // 5. Clickpad (`BTN_TOUCH` + `BTN_LEFT`) -> fires ONCE on `BTN_LEFT`, not twice
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            1,
+            t0,
+        ));
+        assert!(tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_LEFT.code(),
+            1,
+            t0 + Duration::from_millis(30),
+        ));
+        assert!(!tracker.observe_event(
+            evdev::EventType::KEY,
+            evdev::KeyCode::BTN_TOUCH.code(),
+            0,
+            t0 + Duration::from_millis(70),
+        ));
     }
 }

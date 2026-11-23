@@ -38,7 +38,7 @@ pub struct Config {
     #[serde(default)]
     pub app_state: AppStateConfig,
 
-    #[serde(default)]
+    #[serde(default = "default_macros")]
     pub macros: HashMap<String, String>,
 
     #[serde(default = "default_true")]
@@ -61,10 +61,20 @@ pub struct Config {
 
     #[serde(default = "default_dedup_window_ms")]
     pub deduplicate_window_ms: u64,
+
+    #[serde(default = "default_keyboard_layout")]
+    pub keyboard_layout: String,
+
+    #[serde(default = "default_false")]
+    pub candidate_bar: bool,
 }
 
 fn default_dedup_window_ms() -> u64 {
     35
+}
+
+fn default_keyboard_layout() -> String {
+    "us".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,18 +347,48 @@ impl Config {
     }
 }
 
+fn default_macros() -> HashMap<String, String> {
+    let mut macros = HashMap::new();
+    macros.insert("ko".into(), "không".into());
+    macros.insert("kc".into(), "không có".into());
+    macros.insert("dc".into(), "được".into());
+    macros.insert("ng".into(), "người".into());
+    macros.insert("nk".into(), "như".into());
+    macros.insert("lm".into(), "làm".into());
+    macros.insert("rd".into(), "rất".into());
+    macros.insert("bt".into(), "biết".into());
+    macros
+}
+
+/// Formats `toggle_key` into a human-readable chord label (e.g. `"space"` ->
+/// `"Ctrl+Space"`, `"alt+z"` -> `"Alt+Z"`, `"ctrl+shift"` -> `"Ctrl+Shift"`).
+pub fn format_toggle_key(toggle_key: &str) -> String {
+    let trimmed = toggle_key.trim();
+    if trimmed.is_empty() {
+        return "Ctrl+Space".into();
+    }
+    let parts: Vec<String> = trimmed
+        .split('+')
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| {
+            let lower = p.trim().to_ascii_lowercase();
+            let mut chars = lower.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect();
+    if parts.len() == 1 {
+        format!("Ctrl+{}", parts[0])
+    } else {
+        parts.join("+")
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
-        let mut macros = HashMap::new();
-        macros.insert("ko".into(), "không".into());
-        macros.insert("kc".into(), "không có".into());
-        macros.insert("ko dc".into(), "không được".into());
-        macros.insert("dc".into(), "được".into());
-        macros.insert("ng".into(), "người".into());
-        macros.insert("nk".into(), "như".into());
-        macros.insert("lm".into(), "làm".into());
-        macros.insert("rd".into(), "rất".into());
-        macros.insert("bt".into(), "biết".into());
+        let macros = default_macros();
 
         Self {
             input_method: default_input_method(),
@@ -369,6 +409,8 @@ impl Default for Config {
             deduplicate_keys: false,
             deduplicate_two_back: false,
             deduplicate_window_ms: default_dedup_window_ms(),
+            keyboard_layout: default_keyboard_layout(),
+            candidate_bar: false,
         }
     }
 }
@@ -642,5 +684,36 @@ toggle_method_key = "shift"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.toggle_method_key, "shift");
+    }
+
+    #[test]
+    fn omitted_macros_preserves_defaults_without_ko_dc() {
+        let config: Config = toml::from_str("input_method = \"telex\"\n").unwrap();
+        assert_eq!(config.macros.get("ko").map(String::as_str), Some("không"));
+        assert_eq!(config.macros.get("dc").map(String::as_str), Some("được"));
+        assert!(
+            !config.macros.contains_key("ko dc"),
+            "unreachable multi-word macro 'ko dc' must not be present"
+        );
+    }
+
+    #[test]
+    fn format_toggle_key_handles_single_and_chord_forms() {
+        assert_eq!(format_toggle_key("space"), "Ctrl+Space");
+        assert_eq!(format_toggle_key("alt+z"), "Alt+Z");
+        assert_eq!(format_toggle_key("ctrl+shift"), "Ctrl+Shift");
+    }
+
+    #[test]
+    fn broken_toml_returns_parse_error() {
+        let path =
+            std::env::temp_dir().join(format!("dboard-broken-config-{}.toml", std::process::id()));
+        let _ = fs::write(&path, "input_method = [broken\n");
+        let res = Config::load_from(&path);
+        let _ = fs::remove_file(&path);
+        assert!(
+            res.is_err(),
+            "broken TOML must return Err, not silent default"
+        );
     }
 }

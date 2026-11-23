@@ -51,110 +51,125 @@ fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
         if reader.read_line(&mut input)? == 0 {
             return Ok(());
         }
-        let input = input.trim();
+        let line = input.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
 
-        if input.is_empty() {
+        if trimmed.is_empty() {
             continue;
         }
 
-        if input == "quit" || input == "exit" {
+        if trimmed == "quit" || trimmed == "exit" {
             break;
         }
 
-        if input.starts_with(':') {
-            handle_command(&mut state, input);
+        if trimmed.starts_with(':') {
+            handle_command(&mut state, trimmed);
             continue;
         }
 
-        state.engine.reset();
-
-        let mut output = String::new();
-        let mut events = Vec::new();
-        let mut word_screen_len: usize = 0;
-
-        for ch in input.chars() {
-            state.events.push(InputEvent::KeyTyped(ch));
-
-            match state.engine.process_key(ch) {
-                None => {
-                    output.push(ch);
-                    if is_flush_char(ch) {
-                        word_screen_len = 0;
-                    } else {
-                        word_screen_len += 1;
-                    }
-                }
-                Some(event) => {
-                    events.push((ch, event.clone()));
-                    match &event {
-                        EngineEvent::Insert(text) | EngineEvent::Flush(text) => {
-                            output.push_str(text);
-                            word_screen_len = 0;
-                        }
-                        EngineEvent::Paste(text) => {
-                            output.push_str(text);
-                            word_screen_len = 0;
-                        }
-                        EngineEvent::Replace(replacement) => {
-                            for _ in 0..replacement.delete_before_cursor {
-                                output.push('\x08');
-                            }
-                            output.push_str(&replacement.insert);
-                            if is_flush_char(ch) {
-                                output.push(ch);
-                                word_screen_len = 0;
-                            } else {
-                                word_screen_len = word_screen_len
-                                    .saturating_sub(replacement.delete_before_cursor)
-                                    + replacement.insert.chars().count();
-                            }
-                        }
-                        EngineEvent::UndoTones {
-                            backspaces,
-                            restored,
-                        } => {
-                            for _ in 0..*backspaces {
-                                output.push('\x08');
-                            }
-                            output.push_str(restored);
-                            word_screen_len = word_screen_len.saturating_sub(*backspaces)
-                                + restored.chars().count();
-                        }
-                        EngineEvent::AutoRestore(word) => {
-                            let del = if word_screen_len > 0 {
-                                word_screen_len
-                            } else {
-                                word.chars().count()
-                            };
-                            for _ in 0..del {
-                                output.push('\x08');
-                            }
-                            output.push_str(word);
-                            word_screen_len = 0;
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(event) = state.engine.flush() {
-            match &event {
-                EngineEvent::Flush(text) | EngineEvent::Insert(text) => {
-                    output.push_str(text);
-                }
-                _ => {}
-            }
-            events.push(('\n', event));
-        }
+        let (output, display, events) = simulate_line(&mut state, line);
 
         println!("  Events: {:?}", events);
         println!("  Raw: {:?}", output);
-
-        let display = apply_backspaces(&output);
         println!("  Screen: {}", display);
     }
 
     Ok(())
+}
+
+fn simulate_line(state: &mut CliState, input: &str) -> (String, String, Vec<(char, EngineEvent)>) {
+    state.engine.reset();
+
+    let mut output = String::new();
+    let mut events = Vec::new();
+    let mut word_screen_len: usize = 0;
+
+    for ch in input.chars() {
+        state.events.push(InputEvent::KeyTyped(ch));
+
+        match state.engine.process_key(ch) {
+            None => {
+                output.push(ch);
+                if dboard_engine::is_flush_char(ch) {
+                    word_screen_len = 0;
+                } else {
+                    word_screen_len += 1;
+                }
+            }
+            Some(event) => {
+                events.push((ch, event.clone()));
+                match &event {
+                    EngineEvent::Insert(text) | EngineEvent::Flush(text) => {
+                        output.push_str(text);
+                        word_screen_len = 0;
+                    }
+                    EngineEvent::Paste(text) => {
+                        output.push_str(text);
+                        word_screen_len = 0;
+                    }
+                    EngineEvent::Replace(replacement) => {
+                        for _ in 0..replacement.delete_before_cursor {
+                            output.push('\x08');
+                        }
+                        output.push_str(&replacement.insert);
+                        if dboard_engine::is_flush_char(ch) {
+                            output.push(ch);
+                            word_screen_len = 0;
+                        } else {
+                            word_screen_len = word_screen_len
+                                .saturating_sub(replacement.delete_before_cursor)
+                                + replacement.insert.chars().count();
+                        }
+                    }
+                    EngineEvent::UndoTones {
+                        backspaces,
+                        restored,
+                    } => {
+                        for _ in 0..*backspaces {
+                            output.push('\x08');
+                        }
+                        output.push_str(restored);
+                        word_screen_len =
+                            word_screen_len.saturating_sub(*backspaces) + restored.chars().count();
+                    }
+                    EngineEvent::AutoRestore(word) => {
+                        let del = if word_screen_len > 0 {
+                            word_screen_len
+                        } else {
+                            word.chars().count()
+                        };
+                        for _ in 0..del {
+                            output.push('\x08');
+                        }
+                        output.push_str(word);
+                        if dboard_engine::is_flush_char(ch) {
+                            output.push(ch);
+                        }
+                        word_screen_len = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(event) = state.engine.flush() {
+        match &event {
+            EngineEvent::Flush(text) | EngineEvent::Insert(text) => {
+                output.push_str(text);
+            }
+            EngineEvent::Replace(replacement) => {
+                for _ in 0..replacement.delete_before_cursor {
+                    output.push('\x08');
+                }
+                output.push_str(&replacement.insert);
+            }
+            _ => {}
+        }
+        events.push(('\n', event));
+    }
+
+    let display = apply_backspaces(&output);
+    (output, display, events)
 }
 
 fn main() -> io::Result<()> {
@@ -347,10 +362,6 @@ fn handle_command(state: &mut CliState, input: &str) {
     }
 }
 
-fn is_flush_char(ch: char) -> bool {
-    matches!(ch, ' ' | '\t' | '.' | ',' | '!' | '?' | ';' | ':' | '\n')
-}
-
 fn apply_backspaces(s: &str) -> String {
     let mut result = String::new();
     for ch in s.chars() {
@@ -405,5 +416,31 @@ mod phase4_tests {
         let error = run(&mut input, &mut output).unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn simulate_line_preserves_all_flush_delimiters_and_filenames() {
+        let mut state = CliState::new();
+        assert_eq!(
+            simulate_line(&mut state, "raw_buf [test]").1,
+            "raw_buf [test]"
+        );
+        assert_eq!(
+            simulate_line(&mut state, "raw_buf [test] (nhuw) foo-bar/baz.py ").1,
+            "raw_buf [test] (như) foo-bar/baz.py "
+        );
+        assert_eq!(
+            simulate_line(&mut state, "mowr test.py xem list.txt suwar host.conf ").1,
+            "mở test.py xem list.txt sửa host.conf "
+        );
+        assert_eq!(
+            simulate_line(&mut state, "dOs cAs tOs add reddit hidden ").1,
+            "dOs cAs tOs add reddit hidden "
+        );
+        // Trailing space flush + macro expansion
+        state
+            .engine
+            .add_macro("ko".to_string(), "không".to_string());
+        assert_eq!(simulate_line(&mut state, "ko cos ").1, "không có ");
     }
 }
