@@ -1139,3 +1139,68 @@ fn task_b2_and_b3_vni_autocorrect_retroactive_undo_and_smart_autocap() {
         "TP. hcm Mr. nam TS. nguyễn "
     );
 }
+
+#[test]
+fn audit_high_fixes_retroactive_pair_undo_sync_and_vni_literal_digit() {
+    use dboard_engine::ReplacementReason;
+
+    let type_sim = |method: InputMethod, keys: &str| -> String {
+        let mut engine = Engine::new(method);
+        let mut screen = String::new();
+        for ch in keys.chars() {
+            if ch == '\x08' {
+                match engine.process_key('\x08') {
+                    Some(EngineEvent::Replace(rep)) => {
+                        let keep = screen
+                            .chars()
+                            .count()
+                            .saturating_sub(rep.delete_before_cursor);
+                        screen = screen.chars().take(keep).collect();
+                        screen.push_str(&rep.insert);
+                    }
+                    None => {
+                        let _ = screen.pop();
+                    }
+                    other => panic!("unexpected backspace event: {other:?}"),
+                }
+                continue;
+            }
+            match engine.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    let keep = screen
+                        .chars()
+                        .count()
+                        .saturating_sub(rep.delete_before_cursor);
+                    screen = screen.chars().take(keep).collect();
+                    screen.push_str(&rep.insert);
+                    if dboard_engine::is_flush_char(ch) {
+                        screen.push(ch);
+                    }
+                }
+                None => screen.push(ch),
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        screen
+    };
+
+    // Direction-A RetroactivePair One-Tap Undo: "Lots of " -> "Lots of " (rewritten from "Lót of")
+    // Backspace #1 restores "Lót of"; Backspace #2 must cleanly delete 'f' -> "Lót o" (no "Lót oo" desync).
+    assert_eq!(type_sim(InputMethod::Telex, "Lots of \x08"), "Lót of");
+    assert_eq!(type_sim(InputMethod::Telex, "Lots of \x08\x08"), "Lót o");
+
+    // VNI: typing literal '7' after "a6" ("â") is NOT an undo of '6' and must never fire UndoTransform.
+    let mut vni = Engine::new(InputMethod::Vni);
+    let _ = vni.process_key('a');
+    let _ = vni.process_key('6');
+    assert_eq!(vni.buffer(), "â");
+    let ev = vni.process_key('7');
+    assert!(
+        !matches!(
+            ev,
+            Some(EngineEvent::Replace(ref r)) if r.reason == ReplacementReason::UndoTransform
+        ),
+        "VNI literal '7' after 'a6' must not emit UndoTransform, got {ev:?}"
+    );
+    assert_eq!(vni.buffer(), "â7");
+}

@@ -732,6 +732,7 @@ pub(crate) fn apply_bamboo_telex_undo(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_pending_restore_undo(
     undo: crate::user_dict::AutoRestoreUndo,
+    learning_enabled: bool,
     ring_buffer: &mut crate::ring_buffer::CommittedRingBuffer,
     user_dict: &mut crate::user_dict::UserDict,
     bamboo: &mut crate::bamboo::BambooEngine,
@@ -751,10 +752,12 @@ pub(crate) fn apply_pending_restore_undo(
             is_autocorrect,
         } => {
             let _ = ring_buffer.pop_last();
-            if is_autocorrect {
-                user_dict.record_keep_raw(&raw_keys);
-            } else {
-                user_dict.record_keep_vn(&raw_keys);
+            if learning_enabled {
+                if is_autocorrect {
+                    user_dict.record_keep_raw(&raw_keys);
+                } else {
+                    user_dict.record_keep_vn(&raw_keys);
+                }
             }
             *raw_buffer = raw_keys;
             if !is_autocorrect {
@@ -775,6 +778,7 @@ pub(crate) fn apply_pending_restore_undo(
             original_pair,
             original_w1_entry,
             w2_raw_keys,
+            w2_was_ascii,
             boundary_char,
         } => {
             let _ = ring_buffer.pop_last();
@@ -782,8 +786,14 @@ pub(crate) fn apply_pending_restore_undo(
             *prev_context = original_w1_entry.committed_context;
             ring_buffer.push(original_w1_entry);
             *raw_buffer = w2_raw_keys;
-            replay_bamboo(bamboo, raw_buffer);
-            *override_keep_vietnamese = true;
+            if w2_was_ascii {
+                bamboo.reset();
+            } else {
+                replay_bamboo(bamboo, raw_buffer);
+            }
+            *override_keep_vietnamese = !w2_was_ascii;
+            *rehydrated_word = w2_was_ascii;
+            *rehydrated_ascii_only = w2_was_ascii;
             (
                 rewritten_pair.chars().count() + boundary_char.len_utf8().min(1),
                 original_pair,

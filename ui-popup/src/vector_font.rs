@@ -48,6 +48,7 @@ pub fn draw_candidate_label(
     logical_h: u32,
     scale: u32,
     slot_x: i32,
+    slot_end_x: i32,
     label: &str,
     badge_fg: [u8; 4],
     fg: [u8; 4],
@@ -55,8 +56,8 @@ pub fn draw_candidate_label(
 ) {
     if let Some(font) = system_font_bytes().and_then(|b| FontRef::from_index(b, 0)) {
         draw_vector_label(
-            font, buf, width, height, logical_w, logical_h, scale, slot_x, label, badge_fg, fg,
-            blend,
+            font, buf, width, height, logical_w, logical_h, scale, slot_x, slot_end_x, label,
+            badge_fg, fg, blend,
         );
     } else {
         draw_bitmap_label(
@@ -75,6 +76,7 @@ fn draw_vector_label(
     logical_h: u32,
     scale: u32,
     slot_x: i32,
+    slot_end_x: i32,
     label: &str,
     badge_fg: [u8; 4],
     fg: [u8; 4],
@@ -84,7 +86,10 @@ fn draw_vector_label(
     let metrics = font.metrics(&[]).scale(px_size);
     let text_h = metrics.ascent + metrics.descent;
     let baseline_y = ((logical_h * scale) as f32 - text_h) * 0.5 + metrics.ascent;
-    let max_x = (logical_w.saturating_sub(8) * scale) as f32;
+    let slot_clip = (slot_end_x.max(slot_x + 8) as u32)
+        .saturating_sub(4)
+        .min(logical_w.saturating_sub(8));
+    let max_x = (slot_clip * scale) as f32;
     let mut pen_x = ((slot_x + 8).max(8) as u32 * scale) as f32;
 
     let cmap = font.charmap();

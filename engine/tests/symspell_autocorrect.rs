@@ -255,4 +255,31 @@ fn vni_symspell_and_extended_english_corrections_preserve_safety() {
     assert_eq!(simulate_autocorrect("algoritm "), "algorithm ");
     assert_eq!(simulate_autocorrect("tomorow "), "tomorrow ");
     assert_eq!(simulate_autocorrect("necesary "), "necessary ");
+
+    // 3. VNI end-marked spatial typo (`tieng71` -> `tiếng`) must not be dropped by early seen.insert
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "tieng71 "),
+        "tiếng "
+    );
+
+    // 4. OOV English compounds must NEVER be falsely split into Vietnamese pairs
+    assert_eq!(simulate_autocorrect("xem hostlist "), "xem hostlist ");
+    assert_eq!(simulate_autocorrect("xem testlist "), "xem testlist ");
+    assert_eq!(simulate_autocorrect("xem lastpost "), "xem lastpost ");
+}
+
+#[test]
+fn one_tap_undo_respects_learning_disabled_privacy_guard() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    engine.set_autocorrect(true);
+    engine.set_learning_enabled(false);
+    for ch in "khoog ".chars() {
+        let _ = engine.process_key(ch);
+    }
+    // One-Tap Undo with learning disabled must NOT mutate UserDict
+    let _ = engine.process_key('\x08');
+    assert!(
+        engine.take_user_dict_for_save().is_none(),
+        "One-Tap Undo must not mark UserDict dirty when learning_enabled is false"
+    );
 }

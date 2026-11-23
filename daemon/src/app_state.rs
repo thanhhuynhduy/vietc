@@ -463,12 +463,16 @@ impl AppStateManager {
             return false;
         }
 
+        let was_password = self.is_password_field;
+
         // Layer 1: AT-SPI2 (event-driven O(1) role check across any web/native DOM depth).
         // When AT-SPI2 reports `false` (e.g. a terminal widget whose role is ROLE_TERMINAL),
         // fall through to Layers 2-4 so `pinentry`, `polkit`, and `sudo`/`passwd` are caught.
         if self.check_atspi2 && self.password_detector.check() == Some(true) {
             self.is_password_field = true;
-            log_password_detection("AT-SPI2", &self.current_app);
+            if !was_password {
+                log_password_detection("AT-SPI2", &self.current_app);
+            }
             return true;
         }
 
@@ -476,7 +480,9 @@ impl AppStateManager {
         for pattern in &self.password_apps {
             if class_matches(&self.current_app, pattern) {
                 self.is_password_field = true;
-                log_password_detection("window-class", &self.current_app);
+                if !was_password {
+                    log_password_detection("window-class", &self.current_app);
+                }
                 return true;
             }
         }
@@ -487,7 +493,9 @@ impl AppStateManager {
                 for keyword in &self.title_keywords {
                     if title.contains(keyword.as_str()) {
                         self.is_password_field = true;
-                        log_password_detection("window-title", keyword);
+                        if !was_password {
+                            log_password_detection("window-title", keyword);
+                        }
                         return true;
                     }
                 }
@@ -499,7 +507,9 @@ impl AppStateManager {
             || (self.is_terminal_app() && crate::password_detector::cached_pty_no_echo());
         if is_sudo {
             self.is_password_field = true;
-            log_password_detection("process-sudo", &self.current_app);
+            if !was_password {
+                log_password_detection("process-sudo", &self.current_app);
+            }
             return true;
         }
 

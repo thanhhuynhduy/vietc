@@ -37,44 +37,6 @@ fn clear_omnibox_shield(
     injector.set_omnibox_inline_selection(false);
 }
 
-/// Apply the focused app's class to per-app state (enabled/bypass/method) and
-/// to the injector (terminal paste & bypass mode). Must run before any per-app
-/// decision for a key so the first key typed in a newly focused window already
-/// obeys that window's rules.
-fn sync_app_class(
-    daemon: &mut Daemon,
-    injector: &dyn dboard_protocol::inject::KeyInjector,
-    shared_focus: &SharedFocusSnapshot,
-    last_window_class: &mut String,
-) {
-    if !daemon.config.app_state.enabled {
-        injector.set_bypass_mode(false);
-        return;
-    }
-    let (class, identity) = {
-        let focus = shared_focus
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        (
-            focus.class.clone().unwrap_or_default(),
-            focus.identity.clone(),
-        )
-    };
-    if class.is_empty() || class == *last_window_class {
-        return;
-    }
-    crate::password_detector::clear_atspi_password_flag_if_non_atspi(identity.as_deref());
-    *last_window_class = class.clone();
-    injector.set_active_window(&class);
-    daemon.check_app_change_with(class);
-    injector.set_terminal_app(daemon.app_state.is_terminal_app());
-    let bypassed = daemon.is_current_app_bypassed();
-    injector.set_bypass_mode(bypassed);
-    if bypassed {
-        daemon.reset_composition_state();
-    }
-}
-
 fn finish_forwarded_stroke(
     injector: &dyn dboard_protocol::KeyInjector,
     keycode: u16,
@@ -349,7 +311,7 @@ pub fn run_with_evdev(
         } else {
             pfds.as_mut_ptr()
         };
-        let poll_ret = unsafe { libc::poll(pfds_ptr, pfds.len() as libc::nfds_t, 100) };
+        let poll_ret = unsafe { libc::poll(pfds_ptr, pfds.len() as libc::nfds_t, 50) };
         if poll_ret < 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
@@ -418,12 +380,7 @@ pub fn run_with_evdev(
         }
 
         if poll_ret == 0 {
-            sync_app_class(
-                daemon,
-                &*injector,
-                &shared_focus,
-                &mut focus_sync.last_window_class,
-            );
+            focus_sync.sync_on_idle(daemon, &*injector, &shared_focus);
             if daemon.config.candidate_bar
                 && daemon.engine.is_enabled()
                 && daemon.engine.buffer().is_empty()
@@ -449,6 +406,9 @@ pub fn run_with_evdev(
             if let Some(idx) = daemon.candidate_ipc.poll_clicked_index() {
                 let commands = daemon.select_candidate(idx);
                 crate::focus::clear_surrounding_word(&shared_focus);
+                // Absorb the popup's own BTN_LEFT click so the next keypress does not
+                // reset `ring_buffer` and break chained next-word prediction.
+                last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
                 if !commands.is_empty() {
                     let outcome = execute_commands(
                         &*injector,

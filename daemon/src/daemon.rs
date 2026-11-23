@@ -168,9 +168,9 @@ impl Daemon {
 
     pub fn write_status(&self) {
         let enabled = self.engine.is_enabled();
-        self.engine_enabled.store(enabled, Ordering::SeqCst);
         let status_str = if enabled { "vn" } else { "en" };
         Self::write_ipc_file(&self.status_file_path(), status_str);
+        self.engine_enabled.store(enabled, Ordering::SeqCst);
     }
 
     pub fn write_method_status(&self) {
@@ -185,7 +185,6 @@ impl Daemon {
             next_toggle_state(&self.config.toggle_modes, is_enabled, current_method);
 
         self.engine.set_enabled(new_enabled);
-        self.engine_enabled.store(new_enabled, Ordering::SeqCst);
         self.config.input_method = new_method.clone();
         self.app_state.set_global_enabled(new_enabled);
         self.app_state.set_global_method(&new_method);
@@ -221,31 +220,37 @@ impl Daemon {
         let mut changed = false;
         let mut status_enabled_override = None;
         let status_path = self.status_file_path();
-        if let Ok(content) = fs::read_to_string(&status_path) {
-            let s = content.trim();
-            if s == "vn" || s == "en" {
-                let expect_enabled = s == "vn";
-                if self.engine.is_enabled() != expect_enabled {
-                    self.engine.set_enabled(expect_enabled);
-                    self.engine_enabled.store(expect_enabled, Ordering::SeqCst);
-                    self.app_state.set_global_enabled(expect_enabled);
-                    status_enabled_override = Some(expect_enabled);
-                    changed = true;
+        if !self.app_state.is_password_active()
+            && !crate::user_dict_store::has_pending_write(&status_path)
+        {
+            if let Ok(content) = fs::read_to_string(&status_path) {
+                let s = content.trim();
+                if s == "vn" || s == "en" {
+                    let expect_enabled = s == "vn";
+                    if self.engine.is_enabled() != expect_enabled {
+                        self.engine.set_enabled(expect_enabled);
+                        self.engine_enabled.store(expect_enabled, Ordering::SeqCst);
+                        self.app_state.set_global_enabled(expect_enabled);
+                        status_enabled_override = Some(expect_enabled);
+                        changed = true;
+                    }
                 }
             }
         }
         let method_path = self.method_file_path();
-        if let Ok(content) = fs::read_to_string(&method_path) {
-            let expect_method = content.trim().to_ascii_lowercase();
-            if (expect_method == "vni" || expect_method == "telex")
-                && !self
-                    .config
-                    .input_method
-                    .eq_ignore_ascii_case(&expect_method)
-            {
-                self.config.input_method = expect_method.clone();
-                self.app_state.set_global_method(&expect_method);
-                changed = true;
+        if !crate::user_dict_store::has_pending_write(&method_path) {
+            if let Ok(content) = fs::read_to_string(&method_path) {
+                let expect_method = content.trim().to_ascii_lowercase();
+                if (expect_method == "vni" || expect_method == "telex")
+                    && !self
+                        .config
+                        .input_method
+                        .eq_ignore_ascii_case(&expect_method)
+                {
+                    self.config.input_method = expect_method.clone();
+                    self.app_state.set_global_method(&expect_method);
+                    changed = true;
+                }
             }
         }
         if changed {

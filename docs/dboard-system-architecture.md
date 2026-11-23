@@ -269,8 +269,8 @@ Dboard tập trung tối ưu hoàn toàn cho **Pure Wayland (`zwp_virtual_keyboa
 ### 4.2. Bố cục Keymap Tĩnh XKB 8 Cấp độ (`wayland_vk_keymap.rs`)
 Đây là phát minh kỹ thuật đột phá của Dboard nhằm loại bỏ hoàn toàn hiện tượng nhấp nháy gạch chân:
 - **Nguyên lý Upload Duy nhất 1 Lần:** Keymap XKB hoàn chỉnh được biên dịch thành chuỗi định dạng XKB v1 và đẩy lên Compositor thông qua shared memory (`memfd_create`) **duy nhất một lần** trong suốt vòng đời của daemon.
-- **Cấu trúc 8 Cấp độ (`DBOARD_EIGHT_LEVEL`):**
-  23 phím chữ cái vật lý (`Q..P`, `A..L`, `Z..V`, evdev `16..=47`; 3 phím `B`, `N`, `M` dùng 2 cấp độ chuẩn) được định nghĩa 8 ký tự tương ứng với các trạng thái tổ hợp modifier:
+- **Cấu trúc 8 Cấp độ (`DBOARD_EIGHT_LEVEL` & `DBOARD_EIGHT_LEVEL_NONALPHA`):**
+  23 phím vật lý (`Q..P`, `A..L`, `Z..V`, evdev `16..=47`; 3 phím `B`, `N`, `M` dùng 2 cấp độ chuẩn) được định nghĩa 8 ký tự tương ứng với các trạng thái tổ hợp modifier (các phím dấu câu trên bố cục Dvorak như `'`, `,`, `.`, `;` dùng `DBOARD_EIGHT_LEVEL_NONALPHA` không ánh xạ `Lock -> Level2` để bật `CapsLock` không làm đổi dấu câu):
   - Cấp 1: Ký tự chữ thường cơ bản (Base, ví dụ: `a`)
   - Cấp 2: Ký tự chữ hoa cơ bản (`Shift`, ví dụ: `A`)
   - Cấp 3: Ký tự tiếng Việt thường nhóm 1 (`Mod5`, ví dụ: `á`)

@@ -217,7 +217,16 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LayerState {
                 _ => {}
             },
             wl_registry::Event::GlobalRemove { name } => {
-                state.outputs.retain(|o| o.global_name != name);
+                state.outputs.retain(|o| {
+                    if o.global_name == name {
+                        if let Some(ref out) = o.output {
+                            out.release();
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
             _ => {}
         }
@@ -456,8 +465,16 @@ impl WaylandLayerBar {
         Ok(())
     }
 
-    fn rebind_layer_surface_for_output(&mut self, target_output: Option<u32>) -> io::Result<()> {
-        if self.bound_output_name == target_output {
+    fn rebind_layer_surface_for_output(
+        &mut self,
+        target_output: Option<u32>,
+        bar_w: u32,
+        placement: PillPlacement,
+    ) -> io::Result<()> {
+        let bound_still_exists = self
+            .bound_output_name
+            .is_none_or(|n| self.state.outputs.iter().any(|o| o.global_name == n));
+        if self.bound_output_name == target_output && bound_still_exists {
             return Ok(());
         }
         let Some(layer_shell) = self.state.layer_shell.clone() else {
@@ -482,11 +499,30 @@ impl WaylandLayerBar {
             &qh,
             (),
         );
+        next.set_size(bar_w, BAR_HEIGHT);
+        if placement.anchored_to_caret {
+            next.set_anchor(
+                zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left,
+            );
+        } else {
+            next.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
+        }
+        next.set_margin(
+            placement.margin_top,
+            0,
+            placement.margin_bottom,
+            placement.margin_left,
+        );
         next.set_exclusive_zone(0);
         next.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
         self.layer_surface = next;
-        self.bound_output_name = target_output;
-        self.last_placement = None;
+        self.bound_output_name = if wl_out.is_some() {
+            target_output
+        } else {
+            None
+        };
+        self.last_width = bar_w;
+        self.last_placement = Some(placement);
         self.state.configured = false;
         self.surface.commit();
         self.queue
@@ -503,10 +539,18 @@ impl WaylandLayerBar {
 
         let (target_output, out_w, out_h, scale, local_caret) =
             select_output_and_local_caret(&self.state.outputs, caret);
-        if self.state.outputs.len() > 1 {
-            self.rebind_layer_surface_for_output(target_output)?;
-        }
         let placement = compute_pill_placement(local_caret, bar_w, BAR_HEIGHT, out_w, out_h);
+        let bound_removed = self
+            .bound_output_name
+            .is_some_and(|n| !self.state.outputs.iter().any(|o| o.global_name == n));
+        if self.state.outputs.len() > 1 || bound_removed {
+            let effective_target = if self.state.outputs.len() > 1 {
+                target_output
+            } else {
+                None
+            };
+            self.rebind_layer_surface_for_output(effective_target, bar_w, placement)?;
+        }
 
         if self.last_width != bar_w || self.last_placement != Some(placement) {
             self.layer_surface.set_size(bar_w, BAR_HEIGHT);
@@ -719,7 +763,7 @@ pub fn render_gboard_pill_argb8888(
     }
 
     // Draw candidate badges & Vietnamese glyphs via anti-aliased TrueType (or 8x16 bitmap fallback)
-    for (idx, (cand, &(sx, _))) in candidates
+    for (idx, (cand, &(sx, ex))) in candidates
         .iter()
         .take(3)
         .zip(slot_bounds.iter())
@@ -734,6 +778,7 @@ pub fn render_gboard_pill_argb8888(
             logical_h,
             scale,
             sx,
+            ex,
             &label,
             badge_fg,
             fg,

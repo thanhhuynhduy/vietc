@@ -416,7 +416,7 @@ impl KeyInjector for UinputInjector {
             self.send_uinput_event_unlocked(0, 0, 0)
         });
         #[cfg(feature = "wayland-protocol")]
-        {
+        if !bypassed {
             let _ = self.with_wayland_vk(|vk| vk.mark_uinput_activity());
             if value == 0 && self.uinput_mod_mask.load(Ordering::Acquire) == 0 {
                 let is_lock_key = keycode == 69 || keycode == 58;
@@ -431,8 +431,10 @@ impl KeyInjector for UinputInjector {
     }
 
     fn send_char(&self, ch: char) -> InjectResult {
+        let vk_fifo_safe =
+            self.uinput_mod_mask.load(Ordering::Acquire) == 0 && !self.is_in_mod_release_cooldown();
         #[cfg(feature = "wayland-protocol")]
-        {
+        if vk_fifo_safe || !ch.is_ascii() {
             let mut buf = [0u8; 4];
             let s = ch.encode_utf8(&mut buf);
             if crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(s)
@@ -478,18 +480,21 @@ impl KeyInjector for UinputInjector {
     }
 
     fn send_string(&self, s: &str) -> InjectResult {
+        let is_layout_direct = s
+            .chars()
+            .all(|c| crate::layout::char_to_evdev_and_shift_for_layout(self.layout, c).is_some());
+        let vk_fifo_safe =
+            self.uinput_mod_mask.load(Ordering::Acquire) == 0 && !self.is_in_mod_release_cooldown();
+
         #[cfg(feature = "wayland-protocol")]
-        if crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(s)
+        if (vk_fifo_safe || !is_layout_direct)
+            && crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(s)
             && self
                 .with_wayland_vk(|vk| vk.replace_text(0, 0, s).is_ok())
                 .unwrap_or(false)
         {
             return InjectResult::Success;
         }
-
-        let is_layout_direct = s
-            .chars()
-            .all(|c| crate::layout::char_to_evdev_and_shift_for_layout(self.layout, c).is_some());
 
         if is_layout_direct {
             for ch in s.chars() {
@@ -649,12 +654,21 @@ impl UinputInjector {
             usize::from(self.omnibox_inline_selection.swap(false, Ordering::AcqRel));
 
         #[cfg(feature = "wayland-protocol")]
-        if crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(text)
-            && self
-                .with_wayland_vk(|vk| vk.replace_text(backspaces, extra_deletes, text).is_ok())
-                .unwrap_or(false)
         {
-            return InjectResult::Success;
+            let is_layout_direct = text.is_empty()
+                || text.chars().all(|c| {
+                    crate::layout::char_to_evdev_and_shift_for_layout(self.layout, c).is_some()
+                });
+            let vk_fifo_safe = self.uinput_mod_mask.load(Ordering::Acquire) == 0
+                && !self.is_in_mod_release_cooldown();
+            if (vk_fifo_safe || !is_layout_direct)
+                && crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(text)
+                && self
+                    .with_wayland_vk(|vk| vk.replace_text(backspaces, extra_deletes, text).is_ok())
+                    .unwrap_or(false)
+            {
+                return InjectResult::Success;
+            }
         }
 
         #[cfg(feature = "wayland-protocol")]

@@ -7,13 +7,13 @@
 //! all backed-up `(mime, bytes)` pairs on a single Wayland data source and serves
 //! each requested MIME until the user copies something new (`Cancelled`).
 
-use std::io::{self, Write};
+use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use wayland_client::backend::WaylandError;
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols::ext::data_control::v1::client::{
@@ -24,6 +24,8 @@ use wayland_protocols_wlr::data_control::v1::client::{
     zwlr_data_control_device_v1, zwlr_data_control_manager_v1, zwlr_data_control_offer_v1,
     zwlr_data_control_source_v1,
 };
+
+const PIPE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct RestoreState {
     globals: Vec<(u32, String)>,
@@ -40,9 +42,74 @@ impl RestoreState {
     }
 }
 
+fn block_sigpipe_on_thread() {
+    let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+    unsafe {
+        libc::sigemptyset(set.as_mut_ptr());
+        libc::sigaddset(set.as_mut_ptr(), libc::SIGPIPE);
+        let _ = libc::pthread_sigmask(libc::SIG_BLOCK, set.as_ptr(), std::ptr::null_mut());
+    }
+}
+
 fn write_pipe_nonblocking(fd: OwnedFd, bytes: &[u8]) {
-    let mut file = std::fs::File::from(fd);
-    let _ = file.write_all(bytes);
+    write_pipe_nonblocking_with_timeout(fd, bytes, PIPE_TRANSFER_TIMEOUT);
+}
+
+fn write_pipe_nonblocking_with_timeout(fd: OwnedFd, bytes: &[u8], timeout: Duration) -> bool {
+    let raw_fd = fd.as_raw_fd();
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe { libc::fstat(raw_fd, stat.as_mut_ptr()) } < 0 {
+        return false;
+    }
+    let kind = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+    if kind != libc::S_IFIFO && kind != libc::S_IFSOCK {
+        return false;
+    }
+    let flags = unsafe { libc::fcntl(raw_fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(raw_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return false;
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let chunk = &bytes[offset..bytes.len().min(offset + 65536)];
+        let n = unsafe { libc::write(raw_fd, chunk.as_ptr().cast(), chunk.len()) };
+        if n > 0 {
+            offset += n as usize;
+            continue;
+        }
+        if n == 0 {
+            return false;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if err.kind() != io::ErrorKind::WouldBlock {
+            return false;
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        let wait_ms = remaining.as_millis().clamp(1, 200) as libc::c_int;
+        let mut pfd = libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let rc = unsafe { libc::poll(&mut pfd, 1, wait_ms) };
+        if rc < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return false;
+        }
+        if (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+            return false;
+        }
+    }
+    true
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for RestoreState {
@@ -134,30 +201,7 @@ impl_restore_dispatch!(
 );
 
 fn connect_wayland_display() -> io::Result<Connection> {
-    if std::env::var_os("WAYLAND_SOCKET").is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "inherited WAYLAND_SOCKET is unsupported",
-        ));
-    }
-    let display = std::env::var_os("WAYLAND_DISPLAY").filter(|v| !v.is_empty());
-    let display = PathBuf::from(display.unwrap_or_else(|| "wayland-0".into()));
-    let path = if display.is_absolute() {
-        display
-    } else {
-        let runtime =
-            PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR missing")
-            })?);
-        if !runtime.is_absolute() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "runtime directory must be absolute",
-            ));
-        }
-        runtime.join(display)
-    };
-    let stream = crate::wayland_vk_connect::connect_unix_nonblocking(&path)?;
+    let stream = crate::wayland_vk_connect::connect_wayland_socket()?;
     Connection::from_socket(stream).map_err(io::Error::other)
 }
 
@@ -166,6 +210,7 @@ fn serve_multi_mime_connection(
     entries: Vec<(String, Vec<u8>)>,
     ready_tx: mpsc::SyncSender<io::Result<()>>,
 ) {
+    block_sigpipe_on_thread();
     let mut queue = connection.new_event_queue::<RestoreState>();
     let qh = queue.handle();
     let display = connection.display();
@@ -254,8 +299,20 @@ fn serve_multi_mime_connection(
         };
         let rc = unsafe { libc::poll(&mut pfd, 1, 200) };
         if rc > 0 {
-            if guard.read().is_err() {
+            if (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
                 break;
+            }
+            match guard.read() {
+                Ok(_) => {}
+                Err(WaylandError::Io(ref e))
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    continue;
+                }
+                Err(_) => break,
             }
             if queue.dispatch_pending(&mut state).is_err() {
                 break;
@@ -296,4 +353,49 @@ pub(crate) fn restore_multi_mime_native(
     ready_rx
         .recv_timeout(timeout)
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "multi-MIME restore timed out"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+
+    fn make_pipe() -> (OwnedFd, OwnedFd) {
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    #[test]
+    fn write_pipe_nonblocking_transfers_payload_larger_than_pipe_buffer() {
+        let (r_fd, w_fd) = make_pipe();
+        let payload: Vec<u8> = (0..(192 * 1024)).map(|i| (i % 251) as u8).collect();
+        let expected = payload.clone();
+        let reader = thread::spawn(move || {
+            let mut f = std::fs::File::from(r_fd);
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).unwrap();
+            buf
+        });
+        assert!(write_pipe_nonblocking_with_timeout(
+            w_fd,
+            &payload,
+            Duration::from_secs(2)
+        ));
+        assert_eq!(reader.join().unwrap(), expected);
+    }
+
+    #[test]
+    fn write_pipe_nonblocking_times_out_on_stalled_reader() {
+        let (_r_fd, w_fd) = make_pipe();
+        let payload = vec![0xABu8; 256 * 1024];
+        let start = Instant::now();
+        let ok = write_pipe_nonblocking_with_timeout(w_fd, &payload, Duration::from_millis(60));
+        assert!(!ok, "stalled pipe must abort after timeout");
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "must not block indefinitely on stalled reader"
+        );
+    }
 }

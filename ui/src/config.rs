@@ -25,30 +25,19 @@ impl Default for AutoRestoreConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppStateConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    #[serde(default)]
-    pub english_apps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub english_apps: Option<Vec<String>>,
 
-    #[serde(default)]
-    pub vietnamese_apps: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vietnamese_apps: Option<Vec<String>>,
 
     #[serde(flatten)]
     extra: std::collections::BTreeMap<String, toml::Value>,
-}
-
-impl Default for AppStateConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            english_apps: vec![],
-            vietnamese_apps: vec![],
-            extra: Default::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,11 +69,11 @@ pub struct Config {
     #[serde(default)]
     pub auto_restore: AutoRestoreConfig,
 
-    #[serde(default)]
-    pub app_state: AppStateConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_state: Option<AppStateConfig>,
 
-    #[serde(default)]
-    pub macros: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macros: Option<std::collections::HashMap<String, String>>,
 
     #[serde(default = "default_grab")]
     pub grab: bool,
@@ -136,8 +125,8 @@ impl Default for Config {
             keyboard_layout: default_keyboard_layout(),
             candidate_bar: default_false(),
             auto_restore: AutoRestoreConfig::default(),
-            app_state: AppStateConfig::default(),
-            macros: std::collections::HashMap::new(),
+            app_state: None,
+            macros: None,
             grab: default_grab(),
             debug: default_false(),
             extra: Default::default(),
@@ -362,5 +351,22 @@ mod tests {
                 assert_eq!(after.get(key), Some(value), "lost config key: {key}");
             }
         }
+    }
+
+    #[test]
+    fn minimal_config_save_does_not_clobber_daemon_default_macros_or_app_state() {
+        let minimal = "input_method = \"telex\"\nautocorrect = true\n";
+        let mut config: Config = toml::from_str(minimal).unwrap();
+        config.candidate_bar = true;
+        let saved_str = toml::to_string_pretty(&config).unwrap();
+        let saved: toml::Value = toml::from_str(&saved_str).unwrap();
+        assert!(
+            saved.get("macros").is_none(),
+            "minimal config save must not emit empty [macros] table: {saved_str}"
+        );
+        assert!(
+            saved.get("app_state").is_none(),
+            "minimal config save must not emit empty [app_state] table: {saved_str}"
+        );
     }
 }

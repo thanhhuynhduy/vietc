@@ -381,6 +381,28 @@ pub(crate) fn build_xkb_keymap_for_layout(layout: KeyboardLayout) -> String {
         level_name[Level7] = "7";
         level_name[Level8] = "8";
     };
+    type "DBOARD_EIGHT_LEVEL_NONALPHA" {
+        modifiers = Shift + Lock + Mod5 + Mod3;
+        map[none] = Level1;
+        map[Shift] = Level2;
+        map[Mod5] = Level3;
+        map[Shift+Mod5] = Level4;
+        map[Lock+Mod5] = Level4;
+        map[Mod3] = Level5;
+        map[Shift+Mod3] = Level6;
+        map[Lock+Mod3] = Level6;
+        map[Mod5+Mod3] = Level7;
+        map[Shift+Mod5+Mod3] = Level8;
+        map[Lock+Mod5+Mod3] = Level8;
+        level_name[Level1] = "1";
+        level_name[Level2] = "2";
+        level_name[Level3] = "3";
+        level_name[Level4] = "4";
+        level_name[Level5] = "5";
+        level_name[Level6] = "6";
+        level_name[Level7] = "7";
+        level_name[Level8] = "8";
+    };
 };
 xkb_compatibility "dboard_vk" {
     interpret VoidSymbol { repeat= False; };
@@ -471,11 +493,20 @@ xkb_symbols "dboard_vk" {
         }
     }
     for (i, &(name, evdev, default_lower, default_upper)) in EIGHT_LEVEL_KEYS.iter().enumerate() {
-        let ty = "DBOARD_EIGHT_LEVEL";
-        let (l1, l2) = if let Some((base, shifted)) = key_pair_for_layout(layout, evdev as u16) {
-            (ascii_to_xkb_keysym(base), ascii_to_xkb_keysym(shifted))
+        let (ty, l1, l2) = if let Some((base, shifted)) = key_pair_for_layout(layout, evdev as u16)
+        {
+            let ty = if base.is_ascii_alphabetic() {
+                "DBOARD_EIGHT_LEVEL"
+            } else {
+                "DBOARD_EIGHT_LEVEL_NONALPHA"
+            };
+            (ty, ascii_to_xkb_keysym(base), ascii_to_xkb_keysym(shifted))
         } else {
-            (default_lower.to_string(), default_upper.to_string())
+            (
+                "DBOARD_EIGHT_LEVEL",
+                default_lower.to_string(),
+                default_upper.to_string(),
+            )
         };
         let mut syms = format!("[ {l1}, {l2}");
         for slot in 0..3 {
@@ -694,6 +725,20 @@ mod tests {
                         ch.to_string(),
                         "ASCII mismatch for {ch:?} on {layout:?}"
                     );
+                }
+
+                if layout == KeyboardLayout::Dvorak {
+                    for (evdev_code, expected) in [(16u32, "'"), (17, ","), (18, "."), (44, ";")] {
+                        st_mask(state, 0, 0, XKB_MOD_LOCK, 0, 0, 0);
+                        let mut buf = [0 as c_char; 16];
+                        let len = st_utf8(state, evdev_code + 8, buf.as_mut_ptr(), buf.len());
+                        assert!(len > 0);
+                        let decoded = CStr::from_ptr(buf.as_ptr()).to_str().unwrap();
+                        assert_eq!(
+                            decoded, expected,
+                            "Dvorak punctuation key {evdev_code} must not shift under CapsLock"
+                        );
+                    }
                 }
 
                 st_unref(state);

@@ -110,11 +110,12 @@ set -e
 case "$1" in
   configure)
     pkill -x dboard-tray 2>/dev/null || true
+    pkill -x dboard-popup 2>/dev/null || true
     pkill -x dboard-daemon 2>/dev/null || true
     pkill -x dboard 2>/dev/null || true
 
-    rm -f /usr/local/bin/dboard-tray /usr/local/bin/dboard /usr/local/bin/dboard-daemon \
-          /usr/local/bin/dboard-cli /etc/udev/rules.d/99-dboard.rules 2>/dev/null || true
+    rm -f /usr/local/bin/dboard-tray /usr/local/bin/dboard-popup /usr/local/bin/dboard \
+          /usr/local/bin/dboard-daemon /usr/local/bin/dboard-cli /etc/udev/rules.d/99-dboard.rules 2>/dev/null || true
 
     if command -v setcap >/dev/null 2>&1; then
       setcap -r /usr/bin/dboard-daemon >/dev/null 2>&1 || true
@@ -150,6 +151,7 @@ set -e
 case "$1" in
   remove|upgrade|deconfigure)
     pkill -TERM -x dboard-tray 2>/dev/null || true
+    pkill -TERM -x dboard-popup 2>/dev/null || true
     pkill -TERM -x dboard-daemon 2>/dev/null || true
     pkill -TERM -x dboard 2>/dev/null || true
     ;;

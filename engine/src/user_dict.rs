@@ -30,6 +30,7 @@ pub(crate) enum AutoRestoreUndo {
         original_pair: String,
         original_w1_entry: crate::ring_buffer::CommittedWordEntry,
         w2_raw_keys: String,
+        w2_was_ascii: bool,
         boundary_char: char,
     },
 }

@@ -254,6 +254,9 @@ fn main() {
         if rc <= 0 {
             continue;
         }
+        if (fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+            break;
+        }
         if (fds[1].revents & libc::POLLIN) != 0 {
             if let Some(bar) = wayland_bar.as_mut() {
                 if bar.dispatch_pending().is_err() {

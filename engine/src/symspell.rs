@@ -298,17 +298,19 @@ fn try_vn_symspell(
         InputMethod::Telex => (&idx.vn_exact, &idx.vn_deletes),
         InputMethod::Vni => (&idx.vni_exact, &idx.vni_deletes),
     };
-    let mut seen: HashSet<&'static str> = HashSet::new();
-    let mut scored: Vec<(&'static str, u8, i32, i32)> = Vec::new(); // (syl, dist, cost, ctx)
+    let mut best_by_syl: HashMap<&'static str, (u8, i32)> = HashMap::new();
 
     let mut consider = |syl: &'static str, canon: &str| {
-        if !seen.insert(syl) {
-            return;
-        }
         if let Some((dist, cost)) = weighted_spatial_edit(raw_lower, canon, layout) {
             if dist >= 1 && cost <= 24 {
-                let ctx = context_support_score(user_dict, prev_words, syl, true);
-                scored.push((syl, dist, cost, ctx));
+                best_by_syl
+                    .entry(syl)
+                    .and_modify(|cur| {
+                        if (cost, dist) < (cur.1, cur.0) {
+                            *cur = (dist, cost);
+                        }
+                    })
+                    .or_insert((dist, cost));
             }
         }
     };
@@ -335,6 +337,14 @@ fn try_vn_symspell(
             }
         }
     }
+
+    let mut scored: Vec<(&'static str, u8, i32, i32)> = best_by_syl
+        .into_iter()
+        .map(|(syl, (dist, cost))| {
+            let ctx = context_support_score(user_dict, prev_words, syl, true);
+            (syl, dist, cost, ctx)
+        })
+        .collect();
 
     if scored.is_empty() {
         return None;
@@ -411,8 +421,16 @@ fn try_vn_missing_space_split(
         let pred_hit = crate::ngram_lm::predict_next_words(&[&w1], 3)
             .iter()
             .any(|p| p == &w2);
-        let both_diacritic =
-            !w1.is_ascii() && !w2.is_ascii() && left.len() >= 3 && right.len() >= 3;
+        let en = crate::engine::english_dict();
+        // Never use the `both_diacritic` fallback bonus if either half is a real English
+        // word (prevents OOV English compounds like `hostlist`, `testlist`, `lastpost`
+        // from splitting into `hót lít`/`tét lít` while preserving `dduowcjrooif -> được rồi`).
+        let neither_english = !en.is_english_word(left) && !en.is_english_word(right);
+        let both_diacritic = neither_english
+            && !w1.is_ascii()
+            && !w2.is_ascii()
+            && left.len() >= 3
+            && right.len() >= 3;
         let score = bi_vn + if pred_hit { 160 } else { 0 } + if both_diacritic { 155 } else { 0 };
         if score < 150 {
             continue;

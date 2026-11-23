@@ -12,6 +12,7 @@ impl Engine {
             if let Some(undo) = self.pending_restore_undo.take() {
                 let (delete_len, restore_text) = crate::engine_helpers::apply_pending_restore_undo(
                     undo,
+                    self.learning_enabled,
                     &mut self.ring_buffer,
                     &mut self.user_dict,
                     &mut self.bamboo,

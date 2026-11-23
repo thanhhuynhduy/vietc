@@ -118,10 +118,12 @@ fi
 pkill -TERM -x dboard 2>/dev/null || true
 pkill -TERM -x dboard-daemon 2>/dev/null || true
 pkill -TERM -x dboard-tray 2>/dev/null || true
+pkill -TERM -x dboard-popup 2>/dev/null || true
 sleep 0.2
 pkill -9 -x dboard 2>/dev/null || true
 pkill -9 -x dboard-daemon 2>/dev/null || true
 pkill -9 -x dboard-tray 2>/dev/null || true
+pkill -9 -x dboard-popup 2>/dev/null || true
 pkill -9 -x dboardctl 2>/dev/null || true
 pkill -9 -x dboard-uinputd 2>/dev/null || true
 pkill -9 -x dboard-cli 2>/dev/null || true
@@ -130,10 +132,10 @@ t removing_files
 
 # Remove system binaries
 rm -f /usr/bin/dboard /usr/bin/dboard-daemon /usr/bin/dboardctl /usr/bin/dboard-tray \
-      /usr/bin/dboard-uinputd /usr/bin/dboard-cli /usr/bin/dboard-xrecord
+      /usr/bin/dboard-popup /usr/bin/dboard-uinputd /usr/bin/dboard-cli /usr/bin/dboard-xrecord
 rm -f /usr/local/bin/dboard /usr/local/bin/dboard-daemon /usr/local/bin/dboardctl \
-      /usr/local/bin/dboard-tray /usr/local/bin/dboard-uinputd /usr/local/bin/dboard-cli \
-      /usr/local/bin/dboard-xrecord
+      /usr/local/bin/dboard-tray /usr/local/bin/dboard-popup /usr/local/bin/dboard-uinputd \
+      /usr/local/bin/dboard-cli /usr/local/bin/dboard-xrecord
 
 # Remove user local binaries if present
 if [ -n "$USER_HOME" ]; then
@@ -146,7 +148,11 @@ if [ -n "$USER_HOME" ]; then
 
     rm -f "$USER_HOME/.local/bin/dboard" "$USER_HOME/.local/bin/dboard-daemon" \
           "$USER_HOME/.local/bin/dboardctl" "$USER_HOME/.local/bin/dboard-tray" \
-          "$USER_HOME/.local/bin/dboard-uinputd" "$USER_HOME/.local/bin/dboard-cli"
+          "$USER_HOME/.local/bin/dboard-popup" "$USER_HOME/.local/bin/dboard-uinputd" \
+          "$USER_HOME/.local/bin/dboard-cli"
+fi
+if [ -n "${U_UID:-}" ]; then
+    rm -f "/run/user/$U_UID/dboard-candidates.sock" "/run/user/$U_UID/dboard-select.sock"
 fi
 
 # Remove systemd service files

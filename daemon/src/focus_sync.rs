@@ -74,8 +74,32 @@ impl FocusSyncState {
         injector: &dyn KeyInjector,
         shared_focus: &SharedFocusSnapshot,
     ) {
+        self.sync_inner(daemon, injector, shared_focus, true);
+    }
+
+    /// Synchronizes focus, `FocusLost` (Polkit/launcher), password protection, and
+    /// injector state during idle `poll` ticks so `last_focus_generation` stays fresh
+    /// for mid-sentence caret re-selection (`C5`) and idle overlays hide the popup.
+    pub fn sync_on_idle(
+        &mut self,
+        daemon: &mut Daemon,
+        injector: &dyn KeyInjector,
+        shared_focus: &SharedFocusSnapshot,
+    ) {
+        self.sync_inner(daemon, injector, shared_focus, false);
+    }
+
+    fn sync_inner(
+        &mut self,
+        daemon: &mut Daemon,
+        injector: &dyn KeyInjector,
+        shared_focus: &SharedFocusSnapshot,
+        update_key_time: bool,
+    ) {
         let gap = self.last_key_time.elapsed();
-        self.last_key_time = Instant::now();
+        if update_key_time {
+            self.last_key_time = Instant::now();
+        }
 
         let focus = shared_focus
             .lock()
@@ -270,5 +294,36 @@ mod tests {
         let _ = daemon.engine.process_key('a');
         let _ = daemon.engine.process_key('s');
         assert_eq!(daemon.engine.buffer(), "á");
+    }
+
+    #[test]
+    fn idle_sync_handles_focus_lost_and_updates_generation() {
+        let mut cfg = crate::config::Config::default();
+        cfg.app_state.enabled = true;
+        cfg.app_state.bypass_apps = vec!["cs2".into()];
+        let enabled = Arc::new(AtomicBool::new(true));
+        let mut daemon = Daemon::new(cfg, std::path::PathBuf::from("test.toml"), enabled);
+        let shared = Arc::new(Mutex::new(FocusSnapshot::default()));
+        let mut sync = FocusSyncState::from_initial(FocusSnapshot::default());
+        let inj = CountingInjector::new();
+
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:game".into()), Some("cs2".into()));
+        sync.sync_on_idle(&mut daemon, &inj, &shared);
+        assert!(inj.bypass.load(Ordering::SeqCst));
+        let gen_after_game = sync.last_focus_generation;
+
+        shared.lock().unwrap().observe_focus_lost();
+        sync.sync_on_idle(&mut daemon, &inj, &shared);
+        assert!(
+            !inj.bypass.load(Ordering::SeqCst),
+            "idle FocusLost must immediately clear game bypass_mode"
+        );
+        assert!(
+            sync.last_focus_generation > gen_after_game,
+            "idle FocusLost must advance last_focus_generation"
+        );
     }
 }

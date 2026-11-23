@@ -20,7 +20,7 @@ fn save_lock() -> &'static Mutex<()> {
 
 struct SaveState {
     pending: std::collections::HashMap<PathBuf, (String, bool)>,
-    in_flight: bool,
+    in_flight_path: Option<PathBuf>,
     shutdown: bool,
 }
 
@@ -37,7 +37,7 @@ fn save_worker() -> &'static std::sync::Arc<SaveQueue> {
         let q = std::sync::Arc::new(SaveQueue {
             state: Mutex::new(SaveState {
                 pending: std::collections::HashMap::new(),
-                in_flight: false,
+                in_flight_path: None,
                 shutdown: false,
             }),
             cv: Condvar::new(),
@@ -52,9 +52,16 @@ fn save_worker() -> &'static std::sync::Arc<SaveQueue> {
                     while guard.pending.is_empty() && !guard.shutdown {
                         guard = worker_q.cv.wait(guard).unwrap_or_else(|p| p.into_inner());
                     }
-                    if let Some(path) = guard.pending.keys().next().cloned() {
+                    // Prioritize fast non-fsync IPC files (status/method) ahead of fsync writes.
+                    let next_path = guard
+                        .pending
+                        .iter()
+                        .find(|(_, (_, fsync))| !*fsync)
+                        .map(|(p, _)| p.clone())
+                        .or_else(|| guard.pending.keys().next().cloned());
+                    if let Some(path) = next_path {
                         let (content, fsync) = guard.pending.remove(&path).unwrap();
-                        guard.in_flight = true;
+                        guard.in_flight_path = Some(path.clone());
                         Some((path, content, fsync))
                     } else {
                         break;
@@ -63,7 +70,7 @@ fn save_worker() -> &'static std::sync::Arc<SaveQueue> {
                 if let Some((path, content, fsync)) = item {
                     let _ = write_atomic_0600(&path, &content, fsync);
                     let mut guard = worker_q.state.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.in_flight = false;
+                    guard.in_flight_path = None;
                     worker_q.cv.notify_all();
                 }
             })
@@ -71,6 +78,17 @@ fn save_worker() -> &'static std::sync::Arc<SaveQueue> {
         *q.handle.lock().unwrap_or_else(|p| p.into_inner()) = join_handle;
         q
     })
+}
+
+/// Returns true if an atomic write for `path` is currently queued or in flight.
+/// Used by the 250ms status poller and `sync_status_file()` so a stale on-disk
+/// file never reverts an in-flight daemon toggle or password-field transition.
+pub fn has_pending_write(path: &Path) -> bool {
+    let Some(q) = QUEUE.get() else {
+        return false;
+    };
+    let guard = q.state.lock().unwrap_or_else(|p| p.into_inner());
+    guard.pending.contains_key(path) || guard.in_flight_path.as_deref() == Some(path)
 }
 
 /// Coalescing single-worker save: always persists the latest snapshot per path
@@ -117,7 +135,7 @@ pub fn flush_pending_for_test() {
         return;
     };
     let mut guard = q.state.lock().unwrap_or_else(|p| p.into_inner());
-    while !guard.pending.is_empty() || guard.in_flight {
+    while !guard.pending.is_empty() || guard.in_flight_path.is_some() {
         guard = q.cv.wait(guard).unwrap_or_else(|p| p.into_inner());
     }
 }
@@ -251,7 +269,18 @@ mod tests {
         dict.record_keep_raw("quux");
         enqueue_user_dict_save(path.clone(), dict.serialize());
         flush_pending_for_test();
+        assert!(!has_pending_write(&path));
         let loaded = load_user_dict_from(&path);
         assert!(loaded.is_keep_raw("quux"));
+    }
+
+    #[test]
+    fn fast_ipc_write_completes_and_clears_pending_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let status_path = dir.path().join("status");
+        enqueue_atomic_file_write(status_path.clone(), "en".into(), false);
+        flush_pending_for_test();
+        assert!(!has_pending_write(&status_path));
+        assert_eq!(fs::read_to_string(&status_path).unwrap(), "en");
     }
 }

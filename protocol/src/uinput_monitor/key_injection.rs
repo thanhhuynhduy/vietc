@@ -294,6 +294,8 @@ impl UinputInjector {
                 || app.contains("xterm")
         };
 
+        let v_keycode = paste_v_keycode(self.layout);
+
         serialize_transaction(&self.transaction_lock, || {
             if !is_terminal {
                 self.send_uinput_event_unlocked(EV_KEY, 42, 0)?;
@@ -307,11 +309,11 @@ impl UinputInjector {
             self.send_uinput_event_unlocked(0, 0, 0)?;
             std::thread::sleep(std::time::Duration::from_millis(3));
 
-            self.send_uinput_event_unlocked(EV_KEY, 47, 1)?;
+            self.send_uinput_event_unlocked(EV_KEY, v_keycode, 1)?;
             self.send_uinput_event_unlocked(0, 0, 0)?;
             std::thread::sleep(std::time::Duration::from_millis(3));
 
-            self.send_uinput_event_unlocked(EV_KEY, 47, 0)?;
+            self.send_uinput_event_unlocked(EV_KEY, v_keycode, 0)?;
             self.send_uinput_event_unlocked(0, 0, 0)?;
             std::thread::sleep(std::time::Duration::from_millis(3));
 
@@ -325,6 +327,12 @@ impl UinputInjector {
             self.clear_modifiers_unlocked()
         })?
     }
+}
+
+pub(super) fn paste_v_keycode(layout: crate::layout::KeyboardLayout) -> u16 {
+    crate::layout::char_to_evdev_and_shift_for_layout(layout, 'v')
+        .and_then(|(code, _)| u16::try_from(code).ok())
+        .unwrap_or(47)
 }
 
 pub(super) fn strip_vn_diacritic(ch: char) -> char {
@@ -481,5 +489,13 @@ mod write_tests {
 
         let output = output.lock().unwrap().clone();
         assert!(output == [1, 2, 3, 4, 5, 6] || output == [4, 5, 6, 1, 2, 3]);
+    }
+
+    #[test]
+    fn paste_v_keycode_matches_keyboard_layout() {
+        use crate::layout::KeyboardLayout;
+        assert_eq!(paste_v_keycode(KeyboardLayout::UsQwerty), 47);
+        assert_eq!(paste_v_keycode(KeyboardLayout::Colemak), 47);
+        assert_eq!(paste_v_keycode(KeyboardLayout::Dvorak), 52);
     }
 }

@@ -127,6 +127,7 @@ struct Tracker {
     next_serial: u64,
     published: Published,
     focus: SharedFocusSnapshot,
+    saw_done: bool,
 }
 
 impl Tracker {
@@ -143,6 +144,7 @@ impl Tracker {
             next_serial: 1,
             published: Published::default(),
             focus,
+            saw_done: false,
         }
     }
 
@@ -296,12 +298,16 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
                     toplevel.title = Some(title).filter(|value| !value.is_empty());
                 }
             }
+            ext_foreign_toplevel_handle_v1::Event::Done => {
+                state.saw_done = true;
+            }
             ext_foreign_toplevel_handle_v1::Event::Closed => {
                 if let Some(index) = state.toplevels.iter().position(|t| &t.foreign == handle) {
                     let closed = state.toplevels.remove(index);
                     closed.cosmic.destroy();
                     closed.foreign.destroy();
                 }
+                state.saw_done = true;
             }
             _ => {}
         }
@@ -310,13 +316,16 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
 
 impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, ()> for Tracker {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
-        _: zcosmic_toplevel_info_v1::Event,
+        event: zcosmic_toplevel_info_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if matches!(event, zcosmic_toplevel_info_v1::Event::Done) {
+            state.saw_done = true;
+        }
     }
 }
 
@@ -329,14 +338,20 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, ()> for Track
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zcosmic_toplevel_handle_v1::Event::State { state: raw } = event {
-            if let Some(toplevel) = state.toplevels.iter_mut().find(|t| &t.cosmic == handle) {
-                toplevel.activated = raw
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .any(|&chunk| u32::from_ne_bytes(chunk) == STATE_ACTIVATED);
+        match event {
+            zcosmic_toplevel_handle_v1::Event::State { state: raw } => {
+                if let Some(toplevel) = state.toplevels.iter_mut().find(|t| &t.cosmic == handle) {
+                    toplevel.activated = raw
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .any(|&chunk| u32::from_ne_bytes(chunk) == STATE_ACTIVATED);
+                }
             }
+            zcosmic_toplevel_handle_v1::Event::Closed => {
+                state.saw_done = true;
+            }
+            _ => {}
         }
     }
 }
@@ -407,11 +422,15 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> 
                         .any(|&chunk| u32::from_ne_bytes(chunk) == STATE_ACTIVATED);
                 }
             }
+            zwlr_foreign_toplevel_handle_v1::Event::Done => {
+                state.saw_done = true;
+            }
             zwlr_foreign_toplevel_handle_v1::Event::Closed => {
                 if let Some(index) = state.wlr_toplevels.iter().position(|t| &t.handle == handle) {
                     let closed = state.wlr_toplevels.remove(index);
                     closed.handle.destroy();
                 }
+                state.saw_done = true;
             }
             _ => {}
         }
@@ -466,6 +485,7 @@ fn run_once(focus: SharedFocusSnapshot) -> Result<(), RunError> {
             .roundtrip(&mut tracker)
             .map_err(|error| RunError::Transient(error.to_string()))?;
     }
+    tracker.saw_done = false;
     tracker.publish();
     log_info(&format!(
         "[dboard] Compositor toplevel focus tracker active ({backend:?})"
@@ -475,7 +495,9 @@ fn run_once(focus: SharedFocusSnapshot) -> Result<(), RunError> {
         queue
             .blocking_dispatch(&mut tracker)
             .map_err(|error| RunError::Transient(error.to_string()))?;
-        tracker.publish();
+        if std::mem::take(&mut tracker.saw_done) {
+            tracker.publish();
+        }
     }
 }
 

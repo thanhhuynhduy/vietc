@@ -208,22 +208,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 drop(focus);
                 app_state::refresh_background_window_security();
 
-                if let Ok(content) = std::fs::read_to_string(&status_path) {
-                    let s = content.trim();
-                    if s == "vn" || s == "en" {
-                        let is_vn = s == "vn";
-                        let current_enabled = engine_enabled.load(Ordering::SeqCst);
-                        if is_vn != current_enabled {
-                            status_changed.store(true, Ordering::SeqCst);
+                if !user_dict_store::has_pending_write(&status_path) {
+                    if let Ok(content) = std::fs::read_to_string(&status_path) {
+                        let s = content.trim();
+                        if s == "vn" || s == "en" {
+                            let is_vn = s == "vn";
+                            let current_enabled = engine_enabled.load(Ordering::SeqCst);
+                            if is_vn != current_enabled {
+                                status_changed.store(true, Ordering::SeqCst);
+                            }
                         }
                     }
                 }
 
-                if let Ok(content) = std::fs::read_to_string(&method_path) {
-                    let m = content.trim();
-                    if !m.is_empty() && m != last_method {
-                        status_changed.store(true, Ordering::SeqCst);
-                        last_method = m.to_string();
+                if !user_dict_store::has_pending_write(&method_path) {
+                    if let Ok(content) = std::fs::read_to_string(&method_path) {
+                        let m = content.trim();
+                        if !m.is_empty() && m != last_method {
+                            status_changed.store(true, Ordering::SeqCst);
+                            last_method = m.to_string();
+                        }
                     }
                 }
 

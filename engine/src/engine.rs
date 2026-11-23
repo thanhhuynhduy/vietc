@@ -588,6 +588,9 @@ impl Engine {
                             );
                             let orig_w1 = prev_entry.clone();
                             let w2_raw = raw.clone();
+                            let w2_was_ascii = should_restore
+                                || (final_word == w2_raw
+                                    && self.compose_candidate(&w2_raw) != final_word);
                             let (total_delete, combined_insert, updated_ctx) =
                                 commit_retroactive_pair(
                                     &mut self.ring_buffer,
@@ -609,6 +612,7 @@ impl Engine {
                                         original_pair: orig_pair,
                                         original_w1_entry: orig_w1,
                                         w2_raw_keys: w2_raw,
+                                        w2_was_ascii,
                                         boundary_char: ch,
                                     });
                             }
@@ -792,6 +796,7 @@ impl Engine {
             {
                 if telex_undo_triggered
                     || (self.method == InputMethod::Vni
+                        && cased != expected
                         && matches!(ch, '1'..='9')
                         && cased.ends_with(ch)
                         && self.active_transform.is_some())
