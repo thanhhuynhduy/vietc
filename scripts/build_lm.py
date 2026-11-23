@@ -570,8 +570,518 @@ def build_lm(repo_root: pathlib.Path, cache_dir: pathlib.Path, output_path: path
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase C / Task C1: Quantized Kneser-Ney 3-gram/4-gram LM + Next-Word Index
+# ---------------------------------------------------------------------------
+
+NG_MAGIC = b"DBNG"
+NG_VERSION = 1
+NG_HEADER_LEN = 44  # <4sIIIIIIIQ
+NG_PRED_SLOT_LEN = 14  # <QHHH
+
+TRIGRAM_CAP = 131072   # 131072 * 10 = 1,310,720 B (~1.25 MB)
+FOURGRAM_CAP = 65536   #  65536 * 10 =   655,360 B (~640 KB)
+PRED_BI_CAP = 16384    #  16384 * 14 =   229,376 B (~224 KB)
+PRED_TRI_CAP = 32768   #  32768 * 14 =   458,752 B (~448 KB)
+
+MAX_VN_TRIGRAMS = 48000
+MAX_EN_TRIGRAMS = 30000
+MAX_CS_TRIGRAMS = 5000
+MAX_VN_FOURGRAMS = 24000
+MAX_EN_FOURGRAMS = 16000
+MAX_PRED_BI_VN = 6500
+MAX_PRED_BI_EN = 4000
+MAX_PRED_TRI_VN = 14000
+MAX_PRED_TRI_EN = 7000
+MAX_VOCAB_VN = 8000
+MAX_VOCAB_EN = 6000
+
+KN_DISCOUNT = 0.75
+
+# Common Vietnamese auxiliaries/pronouns that naturally precede VN verb + EN object
+# code-switching phrases (e.g. "đang chạy test", "đã mở file", "cần sửa bug").
+VN_CS_PREFIXES = (
+    "đang", "đã", "sẽ", "cần", "muốn", "phải", "vừa", "hãy", "nên", "mới",
+    "tôi", "mình", "bạn", "em", "anh", "chị", "nhớ", "thử", "giúp", "xong",
+)
+
+# Everyday conversational / office next-word seeds to complement Wikipedia/News
+# where polite greetings & chat openers are underrepresented.
+PRED_BI_SEEDS: dict[str, list[str]] = {
+    "xin": ["chào", "lỗi", "cảm"],
+    "cảm": ["ơn", "thấy", "giác"],
+    "chào": ["bạn", "anh", "chị"],
+    "hẹn": ["gặp", "lại", "nhau"],
+    "tạm": ["biệt", "thời", "dừng"],
+    "không": ["có", "thể", "phải"],
+    "chúng": ["ta", "tôi", "mình"],
+    "mọi": ["người", "thứ", "việc"],
+    "bây": ["giờ", "lâu", "nhiêu"],
+    "hôm": ["nay", "qua", "kia"],
+    "ngày": ["mai", "nay", "hôm"],
+    "công": ["việc", "ty", "nghệ"],
+    "tiếng": ["việt", "anh", "nói"],
+    "vui": ["lòng", "vẻ", "mừng"],
+    "thank": ["you", "god", "goodness"],
+    "good": ["morning", "luck", "night"],
+    "please": ["let", "check", "note"],
+}
+
+PRED_TRI_SEEDS: dict[tuple[str, str], list[str]] = {
+    ("xin", "chào"): ["bạn", "mọi", "anh"],
+    ("cảm", "ơn"): ["bạn", "anh", "rất"],
+    ("hẹn", "gặp"): ["lại", "bạn", "nhau"],
+    ("chúc", "bạn"): ["một", "ngủ", "may"],
+    ("không", "có"): ["gì", "vấn", "nhiều"],
+    ("không", "thể"): ["nào", "thiếu", "tin"],
+    ("rất", "vui"): ["được", "khi", "vẻ"],
+    ("làm", "việc"): ["với", "tại", "hiệu"],
+    ("báo", "cáo"): ["với", "kết", "tài"],
+    ("thank", "you"): ["for", "very", "so"],
+    ("looking", "forward"): ["to"],
+    ("let", "me"): ["know", "check", "see"],
+}
+
+
+def hash_ngram(tokens: tuple[str, ...]) -> int:
+    h = FNV_OFFSET
+    for idx, tok in enumerate(tokens):
+        if idx > 0:
+            h = ((h ^ 0x1F) * FNV_PRIME) & MASK64
+        h = fnv1a_bytes(tok.lower().encode("utf-8"), h)
+    return 1 if h == 0 else h
+
+
+def count_corpus_ngrams(files: list[pathlib.Path]):
+    uni: collections.Counter[str] = collections.Counter()
+    bi: collections.Counter[tuple[str, str]] = collections.Counter()
+    tri: collections.Counter[tuple[str, str, str]] = collections.Counter()
+    four: collections.Counter[tuple[str, str, str, str]] = collections.Counter()
+    total_tokens = 0
+    for path in files:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                parts = line.split("\t", 1)
+                text = parts[1] if len(parts) == 2 else parts[0]
+                tokens = [m.group(0).lower() for m in WORD_RE.finditer(text)]
+                n = len(tokens)
+                total_tokens += n
+                uni.update(tokens)
+                for i in range(n - 1):
+                    w1, w2 = tokens[i], tokens[i + 1]
+                    if 1 <= len(w1) <= 20 and 1 <= len(w2) <= 20:
+                        bi[(w1, w2)] += 1
+                        if i + 2 < n:
+                            w3 = tokens[i + 2]
+                            if 1 <= len(w3) <= 20:
+                                tri[(w1, w2, w3)] += 1
+                                if i + 3 < n:
+                                    w4 = tokens[i + 3]
+                                    if 1 <= len(w4) <= 20:
+                                        four[(w1, w2, w3, w4)] += 1
+    return uni, bi, tri, four, total_tokens
+
+
+def compute_kn_backoff_counts(
+    bi: collections.Counter[tuple[str, str]],
+    tri: collections.Counter[tuple[str, str, str]],
+    four: collections.Counter[tuple[str, str, str, str]],
+):
+    bi_types: collections.Counter[str] = collections.Counter()
+    for w1, _ in bi:
+        bi_types[w1] += 1
+    tri_types: collections.Counter[tuple[str, str]] = collections.Counter()
+    for w1, w2, _ in tri:
+        tri_types[(w1, w2)] += 1
+    four_types: collections.Counter[tuple[str, str, str]] = collections.Counter()
+    for w1, w2, w3, _ in four:
+        four_types[(w1, w2, w3)] += 1
+    return bi_types, tri_types, four_types
+
+
+def kn_bigram_prob(
+    w1: str,
+    w2: str,
+    uni: collections.Counter[str],
+    bi: collections.Counter[tuple[str, str]],
+    bi_types: collections.Counter[str],
+    total: int,
+) -> float:
+    c1 = uni.get(w1, 0)
+    p_uni = (uni.get(w2, 0) + 1.0) / (total + len(uni) + 1.0)
+    if c1 <= 0:
+        return p_uni
+    c12 = bi.get((w1, w2), 0)
+    lam = (KN_DISCOUNT * bi_types.get(w1, 1)) / c1
+    return max(c12 - KN_DISCOUNT, 0.0) / c1 + lam * p_uni
+
+
+def kn_trigram_prob(
+    w1: str,
+    w2: str,
+    w3: str,
+    uni: collections.Counter[str],
+    bi: collections.Counter[tuple[str, str]],
+    tri: collections.Counter[tuple[str, str, str]],
+    bi_types: collections.Counter[str],
+    tri_types: collections.Counter[tuple[str, str]],
+    total: int,
+) -> float:
+    p_bo = kn_bigram_prob(w2, w3, uni, bi, bi_types, total)
+    c12 = bi.get((w1, w2), 0)
+    if c12 <= 0:
+        return p_bo
+    c123 = tri.get((w1, w2, w3), 0)
+    lam = (KN_DISCOUNT * tri_types.get((w1, w2), 1)) / c12
+    return max(c123 - KN_DISCOUNT, 0.0) / c12 + lam * p_bo
+
+
+def kn_fourgram_prob(
+    w1: str,
+    w2: str,
+    w3: str,
+    w4: str,
+    uni: collections.Counter[str],
+    bi: collections.Counter[tuple[str, str]],
+    tri: collections.Counter[tuple[str, str, str]],
+    four: collections.Counter[tuple[str, str, str, str]],
+    bi_types: collections.Counter[str],
+    tri_types: collections.Counter[tuple[str, str]],
+    four_types: collections.Counter[tuple[str, str, str]],
+    total: int,
+) -> float:
+    p_bo = kn_trigram_prob(w2, w3, w4, uni, bi, tri, bi_types, tri_types, total)
+    c123 = tri.get((w1, w2, w3), 0)
+    if c123 <= 0:
+        return p_bo
+    c1234 = four.get((w1, w2, w3, w4), 0)
+    lam = (KN_DISCOUNT * four_types.get((w1, w2, w3), 1)) / c123
+    return max(c1234 - KN_DISCOUNT, 0.0) / c123 + lam * p_bo
+
+
+def insert_pred_open_addressing(
+    cap: int, items: list[tuple[int, int, int, int]]
+) -> bytearray:
+    table = bytearray(cap * NG_PRED_SLOT_LEN)
+    mask = cap - 1
+    placed = 0
+    collisions = 0
+    for key, c1, c2, c3 in items:
+        idx = key & mask
+        for _ in range(64):
+            off = idx * NG_PRED_SLOT_LEN
+            existing = struct.unpack_from("<Q", table, off)[0]
+            if existing == 0 or existing == key:
+                struct.pack_into("<QHHH", table, off, key, c1, c2, c3)
+                if existing == 0:
+                    placed += 1
+                break
+            idx = (idx + 1) & mask
+        else:
+            collisions += 1
+    if collisions:
+        print(f"[build_lm] WARN: {collisions} pred entries exceeded 64-probe cap (placed={placed}/{cap})")
+    return table
+
+
+def build_ngram_lm(repo_root: pathlib.Path, cache_dir: pathlib.Path, output_path: pathlib.Path) -> None:
+    vi_files, en_files = ensure_corpora(cache_dir)
+    vn_syllables, en_words = load_engine_lexicons(repo_root)
+
+    print("[build_lm] Counting Vietnamese 1..4-grams (60K sentences)...")
+    vi_uni, vi_bi, vi_tri, vi_four, vi_total = count_corpus_ngrams(vi_files)
+    vi_bi_t, vi_tri_t, vi_four_t = compute_kn_backoff_counts(vi_bi, vi_tri, vi_four)
+    print(f"  VI tri={len(vi_tri):,} four={len(vi_four):,}")
+
+    print("[build_lm] Counting English 1..4-grams (60K sentences)...")
+    en_uni, en_bi, en_tri, en_four, en_total = count_corpus_ngrams(en_files)
+    en_bi_t, en_tri_t, en_four_t = compute_kn_backoff_counts(en_bi, en_tri, en_four)
+    print(f"  EN tri={len(en_tri):,} four={len(en_four):,}")
+
+    en_vocab_all = set(en_words) | {
+        w for w, c in en_uni.items() if c >= 5 and w.isascii() and w.isalpha() and len(w) >= 2
+    }
+    colliding_vn, colliding_en = strip_vn_to_telex_ascii_set(vn_syllables, en_vocab_all)
+
+    # 1. Trigram scoring table (Kneser-Ney quantized log-prob)
+    vn_tri_cands: list[tuple[float, tuple[str, str, str], float]] = []
+    for (w1, w2, w3), cnt in vi_tri.items():
+        if w1 not in vn_syllables or w2 not in vn_syllables or w3 not in vn_syllables:
+            continue
+        is_col = w3 in colliding_vn
+        if cnt < (1 if is_col else 2):
+            continue
+        lp = math.log(kn_trigram_prob(w1, w2, w3, vi_uni, vi_bi, vi_tri, vi_bi_t, vi_tri_t, vi_total))
+        boost = 6.0 if is_col else (1.5 if not w3.isascii() else 1.0)
+        vn_tri_cands.append((boost * math.log1p(cnt), (w1, w2, w3), lp))
+    vn_tri_cands.sort(key=lambda x: (-x[0], x[1]))
+    top_vn_tri = vn_tri_cands[:MAX_VN_TRIGRAMS]
+    vn_t_lps = [lp for _, _, lp in top_vn_tri]
+    vn_t_min, vn_t_max = (min(vn_t_lps), max(vn_t_lps)) if vn_t_lps else (-12.0, -0.5)
+
+    en_tri_cands: list[tuple[float, tuple[str, str, str], float]] = []
+    for (w1, w2, w3), cnt in en_tri.items():
+        if w1 not in en_vocab_all or w2 not in en_vocab_all or w3 not in en_vocab_all:
+            continue
+        is_col = w3 in colliding_en
+        if cnt < (1 if is_col else 2):
+            continue
+        lp = math.log(kn_trigram_prob(w1, w2, w3, en_uni, en_bi, en_tri, en_bi_t, en_tri_t, en_total))
+        boost = 6.0 if is_col else (2.0 if has_telex_trigger(w3) else 1.0)
+        en_tri_cands.append((boost * math.log1p(cnt), (w1, w2, w3), lp))
+    en_tri_cands.sort(key=lambda x: (-x[0], x[1]))
+    top_en_tri = en_tri_cands[:MAX_EN_TRIGRAMS]
+    en_t_lps = [lp for _, _, lp in top_en_tri]
+    en_t_min, en_t_max = (min(en_t_lps), max(en_t_lps)) if en_t_lps else (-12.0, -0.5)
+
+    # Code-switching trigrams mined from VN corpus + compositional VN aux + dev seed
+    cs_tri_cands: list[tuple[float, tuple[str, str, str], float]] = []
+    for (w1, w2, w3), cnt in vi_tri.items():
+        if cnt < 1:
+            continue
+        if (
+            w1 in vn_syllables
+            and w2 in vn_syllables
+            and w3 in en_words
+            and w3 not in vn_syllables
+            and len(w3) >= 2
+            and has_telex_trigger(w3)
+        ):
+            lp = math.log(kn_trigram_prob(w1, w2, w3, vi_uni, vi_bi, vi_tri, vi_bi_t, vi_tri_t, vi_total))
+            cs_tri_cands.append((math.log1p(cnt), (w1, w2, w3), lp))
+    cs_tri_cands.sort(key=lambda x: (-x[0], x[1]))
+    top_cs_tri = cs_tri_cands[:MAX_CS_TRIGRAMS]
+    cs_t_lps = [lp for _, _, lp in top_cs_tri]
+    cs_t_min, cs_t_max = (min(cs_t_lps), max(cs_t_lps)) if cs_t_lps else (-12.0, -0.5)
+
+    trigram_map: dict[tuple[str, str, str], list[int]] = {}
+    for _, key, lp in top_vn_tri:
+        q = quantize_log_prob(lp, vn_t_min, vn_t_max, 140, 255)
+        entry = trigram_map.setdefault(key, [0, 0])
+        entry[0] = max(entry[0], q)
+    for _, key, lp in top_en_tri:
+        q = quantize_log_prob(lp, en_t_min, en_t_max, 140, 255)
+        entry = trigram_map.setdefault(key, [0, 0])
+        entry[1] = max(entry[1], q)
+    for _, key, lp in top_cs_tri:
+        q = quantize_log_prob(lp, cs_t_min, cs_t_max, 155, 240)
+        entry = trigram_map.setdefault(key, [0, 0])
+        entry[1] = max(entry[1], q)
+    # Compositional VN aux + VN verb + EN dev object (pure grammatical composition)
+    for w1, w2 in DEV_CODE_SWITCH_SEEDS:
+        if not w1.isascii():
+            for aux in VN_CS_PREFIXES[:10]:
+                entry = trigram_map.setdefault((aux, w1.lower(), w2.lower()), [0, 0])
+                entry[1] = max(entry[1], 225)
+
+    # 2. 4-gram scoring table (Kneser-Ney quantized log-prob)
+    vn_four_cands: list[tuple[float, tuple[str, str, str, str], float]] = []
+    for (w1, w2, w3, w4), cnt in vi_four.items():
+        if w1 not in vn_syllables or w2 not in vn_syllables or w3 not in vn_syllables or w4 not in vn_syllables:
+            continue
+        is_col = w4 in colliding_vn
+        if cnt < (1 if is_col and vi_tri[(w1, w2, w3)] >= 2 else 2):
+            continue
+        lp = math.log(
+            kn_fourgram_prob(
+                w1, w2, w3, w4, vi_uni, vi_bi, vi_tri, vi_four, vi_bi_t, vi_tri_t, vi_four_t, vi_total
+            )
+        )
+        boost = 6.0 if is_col else 1.0
+        vn_four_cands.append((boost * math.log1p(cnt), (w1, w2, w3, w4), lp))
+    vn_four_cands.sort(key=lambda x: (-x[0], x[1]))
+    top_vn_four = vn_four_cands[:MAX_VN_FOURGRAMS]
+    vn_f_lps = [lp for _, _, lp in top_vn_four]
+    vn_f_min, vn_f_max = (min(vn_f_lps), max(vn_f_lps)) if vn_f_lps else (-12.0, -0.5)
+
+    en_four_cands: list[tuple[float, tuple[str, str, str, str], float]] = []
+    for (w1, w2, w3, w4), cnt in en_four.items():
+        if w1 not in en_vocab_all or w2 not in en_vocab_all or w3 not in en_vocab_all or w4 not in en_vocab_all:
+            continue
+        is_col = w4 in colliding_en
+        if cnt < (1 if is_col and en_tri[(w1, w2, w3)] >= 2 else 2):
+            continue
+        lp = math.log(
+            kn_fourgram_prob(
+                w1, w2, w3, w4, en_uni, en_bi, en_tri, en_four, en_bi_t, en_tri_t, en_four_t, en_total
+            )
+        )
+        boost = 6.0 if is_col else (1.5 if has_telex_trigger(w4) else 1.0)
+        en_four_cands.append((boost * math.log1p(cnt), (w1, w2, w3, w4), lp))
+    en_four_cands.sort(key=lambda x: (-x[0], x[1]))
+    top_en_four = en_four_cands[:MAX_EN_FOURGRAMS]
+    en_f_lps = [lp for _, _, lp in top_en_four]
+    en_f_min, en_f_max = (min(en_f_lps), max(en_f_lps)) if en_f_lps else (-12.0, -0.5)
+
+    fourgram_map: dict[tuple[str, str, str, str], list[int]] = {}
+    for _, key, lp in top_vn_four:
+        q = quantize_log_prob(lp, vn_f_min, vn_f_max, 145, 255)
+        entry = fourgram_map.setdefault(key, [0, 0])
+        entry[0] = max(entry[0], q)
+    for _, key, lp in top_en_four:
+        q = quantize_log_prob(lp, en_f_min, en_f_max, 145, 255)
+        entry = fourgram_map.setdefault(key, [0, 0])
+        entry[1] = max(entry[1], q)
+
+    # 3. Vocabulary & Next-Word Prediction tables (pred_bi + pred_tri)
+    vocab_set: set[str] = set()
+    for w, _ in vi_uni.most_common(MAX_VOCAB_VN * 2):
+        if w in vn_syllables and len(w) >= 2:
+            vocab_set.add(w)
+            if len(vocab_set) >= MAX_VOCAB_VN:
+                break
+    en_added = 0
+    for w, _ in en_uni.most_common(MAX_VOCAB_EN * 2):
+        if w in en_vocab_all and len(w) >= 2 and w not in vocab_set:
+            vocab_set.add(w)
+            en_added += 1
+            if en_added >= MAX_VOCAB_EN:
+                break
+    for words in PRED_BI_SEEDS.values():
+        vocab_set.update(words)
+    for words in PRED_TRI_SEEDS.values():
+        vocab_set.update(words)
+
+    vocab_list = sorted(vocab_set)
+    assert len(vocab_list) <= 65535, f"vocab overflow u16: {len(vocab_list)}"
+    vocab_id: dict[str, int] = {w: idx + 1 for idx, w in enumerate(vocab_list)}
+
+    def collect_top_next_bi(
+        bi_counts: collections.Counter[tuple[str, str]],
+        uni_counts: collections.Counter[str],
+        valid_words: set[str],
+        limit_ctx: int,
+    ) -> dict[str, list[str]]:
+        by_prev: dict[str, list[tuple[int, str]]] = collections.defaultdict(list)
+        for (w1, w2), cnt in bi_counts.items():
+            if cnt < 2 or w1 == w2 or w1 not in valid_words or w2 not in vocab_id:
+                continue
+            by_prev[w1].append((cnt, w2))
+        ranked_ctx = sorted(
+            by_prev.keys(),
+            key=lambda w: (-uni_counts.get(w, 0), w),
+        )[:limit_ctx]
+        out: dict[str, list[str]] = {}
+        for w1 in ranked_ctx:
+            cands = sorted(by_prev[w1], key=lambda x: (-x[0], x[1]))
+            out[w1] = [w2 for _, w2 in cands[:3]]
+        return out
+
+    def collect_top_next_tri(
+        tri_counts: collections.Counter[tuple[str, str, str]],
+        bi_counts: collections.Counter[tuple[str, str]],
+        valid_words: set[str],
+        limit_ctx: int,
+    ) -> dict[tuple[str, str], list[str]]:
+        by_prev: dict[tuple[str, str], list[tuple[int, str]]] = collections.defaultdict(list)
+        for (w1, w2, w3), cnt in tri_counts.items():
+            if cnt < 2 or w2 == w3 or w1 not in valid_words or w2 not in valid_words or w3 not in vocab_id:
+                continue
+            by_prev[(w1, w2)].append((cnt, w3))
+        ranked_ctx = sorted(
+            by_prev.keys(),
+            key=lambda pair: (-bi_counts.get(pair, 0), pair),
+        )[:limit_ctx]
+        out: dict[tuple[str, str], list[str]] = {}
+        for pair in ranked_ctx:
+            cands = sorted(by_prev[pair], key=lambda x: (-x[0], x[1]))
+            out[pair] = [w3 for _, w3 in cands[:3]]
+        return out
+
+    pred_bi_map = collect_top_next_bi(en_bi, en_uni, en_vocab_all, MAX_PRED_BI_EN)
+    pred_bi_map.update(collect_top_next_bi(vi_bi, vi_uni, vn_syllables, MAX_PRED_BI_VN))
+    for k, vals in PRED_BI_SEEDS.items():
+        merged = list(vals)
+        for existing in pred_bi_map.get(k, []):
+            if existing not in merged and len(merged) < 3:
+                merged.append(existing)
+        pred_bi_map[k] = merged[:3]
+
+    pred_tri_map = collect_top_next_tri(en_tri, en_bi, en_vocab_all, MAX_PRED_TRI_EN)
+    pred_tri_map.update(collect_top_next_tri(vi_tri, vi_bi, vn_syllables, MAX_PRED_TRI_VN))
+    for k, vals in PRED_TRI_SEEDS.items():
+        merged = list(vals)
+        for existing in pred_tri_map.get(k, []):
+            if existing not in merged and len(merged) < 3:
+                merged.append(existing)
+        pred_tri_map[k] = merged[:3]
+
+    # Pack vocab offsets + UTF-8 blob
+    vocab_blob = bytearray()
+    vocab_offsets = bytearray()
+    for w in vocab_list:
+        vocab_offsets.extend(struct.pack("<I", len(vocab_blob)))
+        vocab_blob.extend(w.encode("utf-8"))
+    vocab_offsets.extend(struct.pack("<I", len(vocab_blob)))
+
+    # Pack hash tables deterministically
+    tri_items = [
+        (hash_ngram(k), v[0], v[1]) for k, v in sorted(trigram_map.items())
+    ]
+    four_items = [
+        (hash_ngram(k), v[0], v[1]) for k, v in sorted(fourgram_map.items())
+    ]
+    pred_bi_items: list[tuple[int, int, int, int]] = []
+    for w1, cands in sorted(pred_bi_map.items()):
+        ids = [vocab_id[c] for c in cands[:3] if c in vocab_id]
+        while len(ids) < 3:
+            ids.append(0)
+        if ids[0] != 0:
+            pred_bi_items.append((hash_unigram(w1), ids[0], ids[1], ids[2]))
+
+    pred_tri_items: list[tuple[int, int, int, int]] = []
+    for (w1, w2), cands in sorted(pred_tri_map.items()):
+        ids = [vocab_id[c] for c in cands[:3] if c in vocab_id]
+        while len(ids) < 3:
+            ids.append(0)
+        if ids[0] != 0:
+            pred_tri_items.append((hash_bigram(w1, w2), ids[0], ids[1], ids[2]))
+
+    tri_table = insert_open_addressing(TRIGRAM_CAP, tri_items)
+    four_table = insert_open_addressing(FOURGRAM_CAP, four_items)
+    pred_bi_table = insert_pred_open_addressing(PRED_BI_CAP, pred_bi_items)
+    pred_tri_table = insert_pred_open_addressing(PRED_TRI_CAP, pred_tri_items)
+
+    payload = (
+        bytes(tri_table)
+        + bytes(four_table)
+        + bytes(pred_bi_table)
+        + bytes(pred_tri_table)
+        + bytes(vocab_offsets)
+        + bytes(vocab_blob)
+    )
+    checksum = fnv1a_bytes(payload)
+    header = struct.pack(
+        "<4sIIIIIIIIQ",
+        NG_MAGIC,
+        NG_VERSION,
+        TRIGRAM_CAP,
+        FOURGRAM_CAP,
+        PRED_BI_CAP,
+        PRED_TRI_CAP,
+        len(vocab_list),
+        len(vocab_offsets),
+        len(vocab_blob),
+        checksum,
+    )
+    assert len(header) == NG_HEADER_LEN
+    blob = header + payload
+    assert len(blob) <= 8 * 1024 * 1024, f"ngram LM binary exceeds 8MB budget: {len(blob)} bytes"
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(blob)
+    print(
+        f"[build_lm] Wrote {output_path} ({len(blob):,} bytes = {len(blob)/(1024*1024):.2f} MB): "
+        f"trigrams={len(tri_items):,}/{TRIGRAM_CAP}, "
+        f"fourgrams={len(four_items):,}/{FOURGRAM_CAP}, "
+        f"pred_bi={len(pred_bi_items):,}/{PRED_BI_CAP}, "
+        f"pred_tri={len(pred_tri_items):,}/{PRED_TRI_CAP}, "
+        f"vocab={len(vocab_list):,}"
+    )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build Dboard quantized bilingual LM binary.")
+    parser = argparse.ArgumentParser(description="Build Dboard quantized bilingual & n-gram LM binaries.")
     parser.add_argument(
         "--cache-dir",
         type=pathlib.Path,
@@ -584,9 +1094,28 @@ def main() -> None:
         default=pathlib.Path(__file__).resolve().parent.parent / "engine" / "src" / "bilingual_lm.bin",
         help="Output path for bilingual_lm.bin.",
     )
+    parser.add_argument(
+        "--ngram-output",
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parent.parent / "engine" / "src" / "ngram_lm.bin",
+        help="Output path for ngram_lm.bin (3-gram/4-gram + next-word prediction).",
+    )
+    parser.add_argument(
+        "--skip-bigram",
+        action="store_true",
+        help="Skip rebuilding bilingual_lm.bin.",
+    )
+    parser.add_argument(
+        "--skip-ngram",
+        action="store_true",
+        help="Skip rebuilding ngram_lm.bin.",
+    )
     args = parser.parse_args()
     repo_root = pathlib.Path(__file__).resolve().parent.parent
-    build_lm(repo_root, args.cache_dir, args.output)
+    if not args.skip_bigram:
+        build_lm(repo_root, args.cache_dir, args.output)
+    if not args.skip_ngram:
+        build_ngram_lm(repo_root, args.cache_dir, args.ngram_output)
 
 
 if __name__ == "__main__":

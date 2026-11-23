@@ -179,6 +179,7 @@ impl Tracker {
             Publish::Nothing => {}
             Publish::NewWindow { serial, app_id } => {
                 crate::password_detector::clear_atspi_password_flag_on_window_switch();
+                crate::candidate_ipc::record_caret_rect(None);
                 log_info(&format!(
                     "[dboard] toplevel activated: serial={serial} app_id={app_id:?}"
                 ));
@@ -194,6 +195,7 @@ impl Tracker {
             }
             Publish::FocusLost => {
                 crate::password_detector::clear_atspi_password_flag_on_window_switch();
+                crate::candidate_ipc::record_caret_rect(None);
                 log_info("[dboard] toplevel focus lost (layer-shell / overlay active)");
                 self.focus
                     .lock()

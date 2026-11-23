@@ -87,6 +87,7 @@ pub struct Daemon {
     pub screen_output: String,
     pub visible_revision: u64,
     pub candidate_ipc: crate::candidate_ipc::CandidateBroadcaster,
+    pub caret_reselection: Option<(String, Vec<String>)>,
 }
 
 impl Daemon {
@@ -145,6 +146,7 @@ impl Daemon {
             screen_output: String::new(),
             visible_revision: 0,
             candidate_ipc,
+            caret_reselection: None,
         }
     }
 
@@ -285,6 +287,17 @@ impl Daemon {
                 self.engine
                     .set_auto_restore(new_config.auto_restore.enabled);
                 self.engine.set_autocorrect(new_config.autocorrect);
+                self.engine
+                    .set_keyboard_layout_name(&new_config.keyboard_layout);
+                if !new_config
+                    .keyboard_layout
+                    .eq_ignore_ascii_case(&self.config.keyboard_layout)
+                {
+                    log_info(&format!(
+                        "[dboard] keyboard_layout changed '{}' -> '{}': autocorrect updated immediately; restart dboard.service to reload Wayland XKB keymap",
+                        self.config.keyboard_layout, new_config.keyboard_layout
+                    ));
+                }
                 self.engine.set_auto_capitalize(
                     new_config.auto_capitalize && !self.app_state.is_terminal_app(),
                 );
@@ -351,14 +364,66 @@ impl Daemon {
             return;
         }
         let visible = self.engine.buffer();
+        if visible.is_empty() {
+            let preds = self.engine.predict_next_words(3);
+            if preds.is_empty() {
+                self.candidate_ipc.hide();
+            } else {
+                let refs: Vec<&str> = preds.iter().map(String::as_str).collect();
+                self.candidate_ipc.publish_state(false, &refs);
+            }
+            return;
+        }
         let raw = self.engine.raw_buffer().to_string();
         let suggestion = self.engine.candidate_suggestion();
         self.candidate_ipc
             .sync_from_engine(false, &visible, &raw, suggestion.as_deref());
     }
 
-    /// Applies quick candidate selection (`Alt+1`/`Alt+2`/`Alt+3`) matching the
-    /// visible candidate strip slots when `candidate_bar = true`.
+    /// Synchronize mid-sentence re-selection candidates when the user clicks or
+    /// navigates the caret to the end of an already-committed word (`tét <-> test`).
+    pub fn sync_caret_reselection(&mut self, word_at_caret: Option<&str>, prev_word: Option<&str>) {
+        if !self.candidate_ipc.is_enabled() {
+            self.caret_reselection = None;
+            return;
+        }
+        let sensitive_or_bypass = !self.engine.is_enabled()
+            || self.is_current_app_bypassed()
+            || self.app_state.is_terminal_app()
+            || self.app_state.is_password_active();
+        if sensitive_or_bypass {
+            self.caret_reselection = None;
+            self.candidate_ipc.hide();
+            return;
+        }
+        let Some(word) = word_at_caret else {
+            if self.caret_reselection.take().is_some() {
+                self.candidate_ipc.hide();
+            }
+            return;
+        };
+        if self
+            .caret_reselection
+            .as_ref()
+            .is_some_and(|(cur, _)| cur == word)
+        {
+            return;
+        }
+        let alts = self.engine.alternatives_for_word(word, prev_word);
+        if alts.is_empty() {
+            if self.caret_reselection.take().is_some() {
+                self.candidate_ipc.hide();
+            }
+            return;
+        }
+        let refs: Vec<&str> = alts.iter().map(String::as_str).collect();
+        self.candidate_ipc.publish_state(false, &refs);
+        self.caret_reselection = Some((word.to_string(), alts));
+    }
+
+    /// Applies quick candidate selection (`Alt+1`/`Alt+2`/`Alt+3` or mouse click)
+    /// matching active composing candidates, mid-sentence caret re-selection
+    /// (`tét <-> test`), or next-word predictions after Space.
     pub fn select_candidate(&mut self, index: usize) -> Vec<OutputCommand> {
         if !self.config.candidate_bar || !self.engine.is_enabled() {
             return Vec::new();
@@ -366,7 +431,28 @@ impl Daemon {
         let visible = self.engine.buffer();
         let raw = self.engine.raw_buffer().to_string();
         if visible.is_empty() || raw.is_empty() {
-            return Vec::new();
+            if let Some((word, alts)) = self.caret_reselection.take() {
+                let Some(chosen) = alts.get(index).cloned() else {
+                    self.candidate_ipc.hide();
+                    return Vec::new();
+                };
+                self.reset_composition_state();
+                self.candidate_ipc.hide();
+                if chosen == word {
+                    return Vec::new();
+                }
+                return vec![
+                    OutputCommand::Backspace(word.chars().count()),
+                    OutputCommand::Type(chosen),
+                ];
+            }
+            let preds = self.engine.predict_next_words(3);
+            let Some(chosen) = preds.get(index).cloned() else {
+                return Vec::new();
+            };
+            self.reset_composition_state();
+            self.candidate_ipc.hide();
+            return vec![OutputCommand::Type(format!("{chosen} "))];
         }
         let mut slots = vec![visible.clone()];
         if raw != visible {
@@ -392,6 +478,11 @@ impl Daemon {
 
     pub fn process_key(&mut self, ch: char) -> Vec<OutputCommand> {
         let mut commands = Vec::new();
+        self.caret_reselection = None;
+        let allow_learning = !self.is_current_app_bypassed()
+            && !self.app_state.is_terminal_app()
+            && !self.app_state.is_password_active();
+        self.engine.set_learning_enabled(allow_learning);
 
         if let Some(event) = self.engine.process_key(ch) {
             match event {
@@ -423,9 +514,9 @@ impl Daemon {
             }
         }
 
-        // Persist newly learned personal dictionary entries off the typing thread
-        // (only when an explicit One-Tap Undo occurs outside bypassed/terminal apps).
-        if !self.is_current_app_bypassed() && !self.app_state.is_terminal_app() {
+        // Persist newly learned personal dictionary/bigram entries off the typing thread
+        // (never in password fields, bypassed apps, or terminal emulators).
+        if allow_learning {
             if let Some(serialized) = self.engine.take_user_dict_for_save() {
                 if let Some(path) = crate::user_dict_store::user_dict_path() {
                     crate::user_dict_store::enqueue_user_dict_save(path, serialized);
@@ -493,6 +584,7 @@ impl Daemon {
         self.engine.reset();
         self.engine.reset_visible_revision();
         self.replay_reset();
+        self.caret_reselection = None;
         self.candidate_ipc.hide();
     }
 

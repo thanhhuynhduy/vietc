@@ -3,10 +3,15 @@
 //!
 //! Architectural invariants:
 //! - Completely separate process from `dboard-daemon` (never linked into daemon).
-//! - Receives one-way non-blocking datagrams on `$XDG_RUNTIME_DIR/dboard-candidates.sock`
+//! - Receives non-blocking datagrams on `$XDG_RUNTIME_DIR/dboard-candidates.sock`
 //!   bound with strict `0600` permissions.
 //! - Uses Wayland `zwlr_layer_shell_v1` overlay (`KeyboardInteractivity::None`)
 //!   so it NEVER steals keyboard focus.
+//! - Anchors directly beneath the AT-SPI2 text caret when coordinates are
+//!   provided (clamped within output bounds, flipping above the caret near the
+//!   bottom edge), falling back cleanly to bottom-center otherwise.
+//! - Supports mouse hover & click selection (`wl_pointer`), sending 1-byte
+//!   non-blocking slot indices (`0`/`1`/`2`) to `$XDG_RUNTIME_DIR/dboard-select.sock`.
 //! - Immediately clears & hides all candidates upon receiving a `Hide` packet
 //!   (password fields, bypass apps, focus loss, or word commit).
 
@@ -28,15 +33,24 @@ extern "C" fn handle_signal(_sig: libc::c_int) {
     RUNNING.store(false, Ordering::SeqCst);
 }
 
+/// Optional screen-space caret rectangle reported by AT-SPI2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaretRect {
+    pub x: i32,
+    pub y: i32,
+    pub h: i32,
+}
+
 /// Decoded candidate strip state from `dboard-daemon`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CandidatePacket {
     pub visible: bool,
     pub candidates: Vec<String>,
+    pub caret: Option<CaretRect>,
 }
 
-/// Returns `$XDG_RUNTIME_DIR/dboard-candidates.sock` or `None` if unavailable.
-pub fn socket_path() -> Option<PathBuf> {
+/// Returns `$XDG_RUNTIME_DIR/<name>` or `None` if unavailable.
+fn runtime_socket_path(name: &str) -> Option<PathBuf> {
     let rt = std::env::var("XDG_RUNTIME_DIR").ok()?;
     if rt.is_empty() {
         return None;
@@ -45,7 +59,15 @@ pub fn socket_path() -> Option<PathBuf> {
     if !dir.is_dir() {
         return None;
     }
-    Some(dir.join("dboard-candidates.sock"))
+    Some(dir.join(name))
+}
+
+pub fn socket_path() -> Option<PathBuf> {
+    runtime_socket_path("dboard-candidates.sock")
+}
+
+pub fn select_socket_path() -> Option<PathBuf> {
+    runtime_socket_path("dboard-select.sock")
 }
 
 /// Bind the Unix datagram socket with strict `0o600` permissions and `O_NONBLOCK`.
@@ -59,7 +81,29 @@ pub fn bind_secure_socket(path: &Path) -> std::io::Result<UnixDatagram> {
     Ok(sock)
 }
 
-/// Parse a compact `{"v":1,"visible":bool,"candidates":[...]}` JSON packet.
+fn parse_i32_field(json: &str, key: &str) -> Option<i32> {
+    let idx = json.find(key)? + key.len();
+    let rest = &json[idx..];
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+        .unwrap_or(rest.len());
+    rest[..end].parse::<i32>().ok()
+}
+
+fn parse_caret(json: &str) -> Option<CaretRect> {
+    let start = json.find(r#""caret":{"#)?;
+    let sub = &json[start..];
+    let x = parse_i32_field(sub, r#""x":"#)?;
+    let y = parse_i32_field(sub, r#""y":"#)?;
+    let h = parse_i32_field(sub, r#""h":"#)?;
+    if x >= 0 && y >= 0 && h > 0 && h <= 240 {
+        Some(CaretRect { x, y, h })
+    } else {
+        None
+    }
+}
+
+/// Parse a compact `{"v":1,"visible":bool,"candidates":[...],"caret":{...}}` JSON packet.
 pub fn parse_packet(raw: &str) -> Option<CandidatePacket> {
     let trimmed = raw.trim();
     if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
@@ -76,6 +120,7 @@ pub fn parse_packet(raw: &str) -> Option<CandidatePacket> {
         return Some(CandidatePacket {
             visible: false,
             candidates: Vec::new(),
+            caret: None,
         });
     }
     let marker = r#""candidates":["#;
@@ -111,9 +156,11 @@ pub fn parse_packet(raw: &str) -> Option<CandidatePacket> {
             _ => {}
         }
     }
+    let caret = parse_caret(trimmed);
     Some(CandidatePacket {
         visible: !candidates.is_empty(),
         candidates,
+        caret,
     })
 }
 
@@ -130,6 +177,16 @@ pub fn format_strip(packet: &CandidatePacket) -> Option<String> {
         .map(|(i, c)| format!("[{}] {}", i + 1, c))
         .collect();
     Some(parts.join(" | "))
+}
+
+fn send_click_selection(sock: &UnixDatagram, select_path: Option<&Path>, idx: usize) {
+    let Some(path) = select_path else {
+        return;
+    };
+    if idx < 3 {
+        let payload = [b'0' + (idx as u8)];
+        let _ = sock.send_to(&payload, path);
+    }
 }
 
 fn main() {
@@ -155,11 +212,12 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let sel_path = select_socket_path();
 
     let mut wayland_bar = match wayland_layer::WaylandLayerBar::connect() {
         Ok(bar) => {
             eprintln!(
-                "[dboard-popup] Wayland zwlr_layer_shell_v1 active on {} (0600, keyboard_interactivity=None)",
+                "[dboard-popup] Wayland zwlr_layer_shell_v1 active on {} (0600, caret-tracking, pointer-click, keyboard_interactivity=None)",
                 path.display()
             );
             Some(bar)
@@ -199,6 +257,8 @@ fn main() {
             if let Some(bar) = wayland_bar.as_mut() {
                 if bar.dispatch_pending().is_err() {
                     wayland_bar = None;
+                } else if let Some(clicked_idx) = bar.take_clicked_slot() {
+                    send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
                 }
             }
         }
@@ -206,10 +266,10 @@ fn main() {
             while let Ok(len) = sock.recv(&mut buf) {
                 if let Ok(text) = std::str::from_utf8(&buf[..len]) {
                     if let Some(pkt) = parse_packet(text) {
-                        if let Some(line) = format_strip(&pkt) {
+                        if pkt.visible && !pkt.candidates.is_empty() {
                             if let Some(bar) = wayland_bar.as_mut() {
-                                let _ = bar.show(&line);
-                            } else {
+                                let _ = bar.show(&pkt.candidates, pkt.caret);
+                            } else if let Some(line) = format_strip(&pkt) {
                                 println!("{line}");
                             }
                         } else if let Some(bar) = wayland_bar.as_mut() {
@@ -228,31 +288,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_update_and_hide_packets_and_formats_top_three() {
-        let update = r#"{"v":1,"visible":true,"candidates":["tiếng","tieengs","tiến"]}"#;
+    fn parses_update_caret_and_hide_packets_and_formats_top_three() {
+        let update = r#"{"v":1,"visible":true,"candidates":["tiếng","tieengs","tiến"],"caret":{"x":420,"y":310,"h":20}}"#;
         let pkt = parse_packet(update).unwrap();
         assert!(pkt.visible);
         assert_eq!(pkt.candidates, vec!["tiếng", "tieengs", "tiến"]);
+        assert_eq!(
+            pkt.caret,
+            Some(CaretRect {
+                x: 420,
+                y: 310,
+                h: 20
+            })
+        );
         assert_eq!(
             format_strip(&pkt).as_deref(),
             Some("[1] tiếng | [2] tieengs | [3] tiến")
         );
 
+        let no_caret = r#"{"v":1,"visible":true,"candidates":["chào"]}"#;
+        let pkt2 = parse_packet(no_caret).unwrap();
+        assert_eq!(pkt2.caret, None);
+
         let hide = r#"{"v":1,"visible":false,"candidates":[]}"#;
         let hpkt = parse_packet(hide).unwrap();
         assert!(!hpkt.visible);
         assert!(hpkt.candidates.is_empty());
+        assert_eq!(hpkt.caret, None);
         assert_eq!(format_strip(&hpkt), None);
     }
 
     #[test]
     fn bind_secure_socket_enforces_0600_permissions() {
-        let path =
-            std::env::temp_dir().join(format!("dboard-popup-test-{}.sock", std::process::id()));
-        let sock = bind_secure_socket(&path).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "dboard-popup-perm-test-{}.sock",
+            std::process::id()
+        ));
+        let _sock = bind_secure_socket(&path).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        drop(sock);
         let _ = fs::remove_file(&path);
     }
 }

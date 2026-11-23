@@ -65,6 +65,18 @@ pub struct Config {
     #[serde(default = "default_start_enabled")]
     pub start_enabled: bool,
 
+    #[serde(default = "default_false")]
+    pub autocorrect: bool,
+
+    #[serde(default = "default_false")]
+    pub auto_capitalize: bool,
+
+    #[serde(default = "default_keyboard_layout")]
+    pub keyboard_layout: String,
+
+    #[serde(default = "default_false")]
+    pub candidate_bar: bool,
+
     #[serde(default)]
     pub auto_restore: AutoRestoreConfig,
 
@@ -96,6 +108,9 @@ fn default_toggle_modes() -> Vec<String> {
 fn default_start_enabled() -> bool {
     true
 }
+fn default_keyboard_layout() -> String {
+    "us".into()
+}
 fn default_grab() -> bool {
     true
 }
@@ -116,6 +131,10 @@ impl Default for Config {
             toggle_key: default_toggle_key(),
             toggle_modes: default_toggle_modes(),
             start_enabled: default_start_enabled(),
+            autocorrect: default_false(),
+            auto_capitalize: default_false(),
+            keyboard_layout: default_keyboard_layout(),
+            candidate_bar: default_false(),
             auto_restore: AutoRestoreConfig::default(),
             app_state: AppStateConfig::default(),
             macros: std::collections::HashMap::new(),

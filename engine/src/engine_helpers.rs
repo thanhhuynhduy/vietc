@@ -791,3 +791,91 @@ pub(crate) fn apply_pending_restore_undo(
         }
     }
 }
+
+/// Find a genuine English word that produces the Vietnamese accented `word`
+/// under Telex (e.g. `tét -> test`, `lát -> last`, `hót -> host`, `bên -> been`, `tô -> too`)
+/// using phonological/structural key-order permutations (zero hardcoded word lists).
+fn find_english_telex_twin(word: &str, dict: &EnglishDict) -> Option<String> {
+    let canon = crate::ring_buffer::visible_to_canonical_raw(word, crate::InputMethod::Telex)?;
+    let lower = canon.to_ascii_lowercase();
+    if dict.is_english_word(&lower) {
+        return Some(match_casing(word, &lower));
+    }
+    let bytes = lower.as_bytes();
+    if bytes.len() >= 3 {
+        let last = *bytes.last()?;
+        if matches!(last, b's' | b'f' | b'r' | b'x' | b'j') {
+            // Try placing the Telex tone key earlier (free-order: `tets -> test`, `lats -> last`)
+            let stem = &lower[..bytes.len() - 1];
+            for pos in (1..stem.len()).rev() {
+                let mut cand = String::with_capacity(bytes.len());
+                cand.push_str(&stem[..pos]);
+                cand.push(last as char);
+                cand.push_str(&stem[pos..]);
+                if dict.is_english_word(&cand) {
+                    return Some(match_casing(word, &cand));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Compute up to 3 alternative candidates for a committed word currently under
+/// the caret (Task C5: Mid-Sentence Re-Selection).
+/// Returns an empty `Vec` unless at least one genuinely distinct alternative exists.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_word_alternatives(
+    word: &str,
+    prev_word: Option<&str>,
+    dict: &EnglishDict,
+    user_dict: &crate::user_dict::UserDict,
+    method: crate::InputMethod,
+    layout: crate::autocorrect::AutocorrectLayout,
+    compose: impl Fn(&str) -> String,
+) -> Vec<String> {
+    let char_len = word.chars().count();
+    if !(2..=24).contains(&char_len) || !word.chars().all(char::is_alphabetic) {
+        return Vec::new();
+    }
+    let mut alts: Vec<String> = Vec::with_capacity(3);
+    let mut push_unique = |cand: String| {
+        if !cand.is_empty() && cand != word && alts.len() < 2 && !alts.iter().any(|c| c == &cand) {
+            alts.push(cand);
+        }
+    };
+
+    if word.is_ascii() {
+        let composed = compose(word);
+        if composed != word
+            && crate::spelling::is_valid_vietnamese_syllable(&composed)
+            && crate::spelling::is_in_vietnamese_dictionary(&composed)
+        {
+            push_unique(composed);
+        }
+        let prev_slice: &[&str] = prev_word.as_slice();
+        if let Some(fixed) = crate::autocorrect::suggest_correction_with_context(
+            dict,
+            user_dict,
+            word,
+            word,
+            method,
+            layout,
+            LanguageContext::None,
+            prev_slice,
+            &compose,
+        ) {
+            push_unique(fixed);
+        }
+    } else if let Some(en_twin) = find_english_telex_twin(word, dict) {
+        push_unique(en_twin);
+    }
+
+    if alts.is_empty() {
+        return Vec::new();
+    }
+    // Place the primary alternative first (`[1]`) for 1-tap swap, and keep the
+    // original word as the fallback slot (`[2]`/`[3]`).
+    alts.push(word.to_string());
+    alts
+}

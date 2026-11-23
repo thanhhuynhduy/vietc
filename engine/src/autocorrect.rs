@@ -392,6 +392,31 @@ pub(crate) fn suggest_correction_for_layout(
     prev_ctx: LanguageContext,
     compose: impl Fn(&str) -> String,
 ) -> Option<String> {
+    suggest_correction_with_context(
+        dict,
+        user_dict,
+        composed,
+        raw,
+        method,
+        layout,
+        prev_ctx,
+        &[],
+        compose,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn suggest_correction_with_context(
+    dict: &EnglishDict,
+    user_dict: &UserDict,
+    composed: &str,
+    raw: &str,
+    method: InputMethod,
+    layout: AutocorrectLayout,
+    prev_ctx: LanguageContext,
+    prev_words: &[&str],
+    compose: impl Fn(&str) -> String,
+) -> Option<String> {
     if raw.len() < 3 || raw.len() > 24 || !raw.is_ascii() {
         return None;
     }
@@ -435,7 +460,13 @@ pub(crate) fn suggest_correction_for_layout(
 
     // When already in English context, never corrupt OOV English/dev tokens into Vietnamese.
     if prev_ctx == LanguageContext::English {
-        return try_core_english_transposition(&chars, dict).map(|en| match_casing(raw, &en));
+        if let Some(en) = try_core_english_transposition(&chars, dict) {
+            return Some(match_casing(raw, &en));
+        }
+        return crate::symspell::suggest_multi_error(
+            user_dict, &raw_lower, method, layout, prev_ctx, prev_words, &compose,
+        )
+        .map(|en| match_casing(raw, &en));
     }
 
     // Vietnamese syllables never exceed 10 raw keys; skip expensive VN passes on long tokens.
@@ -461,7 +492,12 @@ pub(crate) fn suggest_correction_for_layout(
         return Some(match_casing(raw, &en));
     }
 
-    None
+    // 6. Weighted Spatial SymSpell (missing/extra/multi-key + n-gram & Personal Bigram
+    //    context ranking + missing-space Vietnamese compound splitting).
+    crate::symspell::suggest_multi_error(
+        user_dict, &raw_lower, method, layout, prev_ctx, prev_words, &compose,
+    )
+    .map(|fixed| match_casing(raw, &fixed))
 }
 
 #[cfg(test)]

@@ -210,6 +210,27 @@ pub fn take_surrounding_context(
     }
 }
 
+pub fn peek_surrounding_context(
+    shared: &SharedFocusSnapshot,
+    expected_generation: u64,
+) -> Option<SurroundingContextData> {
+    let focus = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = focus.surrounding_context.as_ref()?;
+    let after_last_click = focus
+        .last_pointer_click_at
+        .is_none_or(|click_at| entry.captured_at >= click_at);
+    if entry.generation == expected_generation
+        && after_last_click
+        && entry.captured_at.elapsed() <= SURROUNDING_CONTEXT_TTL
+    {
+        Some(entry.data.clone())
+    } else {
+        None
+    }
+}
+
 pub fn clear_omnibox_inline_selection(shared: &SharedFocusSnapshot) {
     let mut focus = shared
         .lock()

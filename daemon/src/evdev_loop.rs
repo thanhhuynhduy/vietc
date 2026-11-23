@@ -326,7 +326,7 @@ pub fn run_with_evdev(
             return Ok(());
         }
 
-        // Poll ALL devices simultaneously
+        // Poll ALL keyboard devices (+ optional non-blocking popup click-select socket)
         let mut pfds: Vec<libc::pollfd> = devices
             .iter()
             .map(|(d, _)| libc::pollfd {
@@ -335,6 +335,14 @@ pub fn run_with_evdev(
                 revents: 0,
             })
             .collect();
+        let dev_fd_count = pfds.len();
+        if let Some(sel_fd) = daemon.candidate_ipc.select_rx_fd() {
+            pfds.push(libc::pollfd {
+                fd: sel_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
 
         let pfds_ptr = if pfds.is_empty() {
             std::ptr::null_mut()
@@ -416,12 +424,46 @@ pub fn run_with_evdev(
                 &shared_focus,
                 &mut focus_sync.last_window_class,
             );
+            if daemon.config.candidate_bar
+                && daemon.engine.is_enabled()
+                && daemon.engine.buffer().is_empty()
+            {
+                let surrounding = crate::focus::peek_surrounding_context(
+                    &shared_focus,
+                    focus_sync.last_focus_generation,
+                );
+                let word = surrounding
+                    .as_ref()
+                    .and_then(|s| s.word_at_caret.as_deref());
+                let prev = surrounding.as_ref().and_then(|s| s.prev_word.as_deref());
+                daemon.sync_caret_reselection(word, prev);
+            }
             continue;
+        }
+
+        // Handle non-blocking mouse-click candidate selection from `dboard-popup`
+        if pfds
+            .get(dev_fd_count)
+            .is_some_and(|p| (p.revents & libc::POLLIN) != 0)
+        {
+            if let Some(idx) = daemon.candidate_ipc.poll_clicked_index() {
+                let commands = daemon.select_candidate(idx);
+                crate::focus::clear_surrounding_word(&shared_focus);
+                if !commands.is_empty() {
+                    let outcome = execute_commands(
+                        &*injector,
+                        &commands,
+                        &mut daemon.visible_revision,
+                        focus_sync.last_focus_generation,
+                    );
+                    let _ = daemon.handle_transaction_outcome(outcome);
+                }
+            }
         }
 
         // Process events from whichever device(s) have data ready
         let mut dead: Vec<usize> = Vec::new();
-        for (i, pfd) in pfds.iter().enumerate() {
+        for (i, pfd) in pfds[..dev_fd_count].iter().enumerate() {
             if (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
                 log_info(&format!(
                     "[dboard] evdev device {} disconnected (poll revents={:#x}) — removing device",
@@ -671,7 +713,9 @@ pub fn run_with_evdev(
                         if value == 1
                             && daemon.config.candidate_bar
                             && daemon.engine.is_enabled()
-                            && !daemon.engine.buffer().is_empty()
+                            && (!daemon.engine.buffer().is_empty()
+                                || daemon.caret_reselection.is_some()
+                                || !daemon.engine.predict_next_words(1).is_empty())
                             && (key_state.contains(evdev::KeyCode::KEY_LEFTALT)
                                 || key_state.contains(evdev::KeyCode::KEY_RIGHTALT))
                             && !key_state.contains(evdev::KeyCode::KEY_LEFTCTRL)
@@ -691,6 +735,7 @@ pub fn run_with_evdev(
                                 _ => 2,
                             };
                             let commands = daemon.select_candidate(idx);
+                            crate::focus::clear_surrounding_word(&shared_focus);
                             consumed_keys.insert(keycode);
                             if !commands.is_empty() {
                                 // Release physically held Alt before injecting Backspace+Type so

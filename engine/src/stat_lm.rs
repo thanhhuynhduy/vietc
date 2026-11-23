@@ -158,6 +158,11 @@ fn lookup_bigram(w1: &str, w2: &str) -> Option<(u8, u8)> {
     lookup_table(table, hdr.bigram_cap, hash_bigram(w1, w2))
 }
 
+#[inline]
+pub(crate) fn lookup_bigram_scores(w1: &str, w2: &str) -> Option<(u8, u8)> {
+    lookup_bigram(w1, w2)
+}
+
 /// Returns the embedded LM binary size in bytes.
 pub fn binary_size_bytes() -> usize {
     LM_BYTES.len()

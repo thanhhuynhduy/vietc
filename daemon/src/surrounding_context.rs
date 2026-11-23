@@ -200,6 +200,38 @@ pub fn query_surrounding_context(
     extract_surrounding_context(&before, &after)
 }
 
+/// Query AT-SPI2 `org.a11y.atspi.Text::GetCharacterExtents` for the caret's
+/// screen-space `(x, y, height)` rectangle so `dboard-popup` can anchor right
+/// underneath the active text cursor. Runs strictly on the background AT-SPI2
+/// thread (never on `evdev_loop`).
+pub fn query_caret_extents(
+    conn: &Connection,
+    sender: &str,
+    path: &str,
+    caret_offset: i32,
+) -> Option<(i32, i32, i32)> {
+    const ATSPI_COORD_TYPE_SCREEN: u32 = 0;
+    let proxy = conn.with_proxy(sender, path, SURROUNDING_QUERY_TIMEOUT);
+
+    let offsets = if caret_offset > 0 {
+        [caret_offset, caret_offset - 1]
+    } else {
+        [0, 0]
+    };
+    for &off in &offsets {
+        if let Ok((x, y, _w, h)) = proxy.method_call::<(i32, i32, i32, i32), _, _, _>(
+            "org.a11y.atspi.Text",
+            "GetCharacterExtents",
+            (off, ATSPI_COORD_TYPE_SCREEN),
+        ) {
+            if x >= 0 && y >= 0 && h > 0 && h <= 240 && x < 16_384 && y < 16_384 {
+                return Some((x, y, h));
+            }
+        }
+    }
+    None
+}
+
 pub fn maybe_seed_surrounding_word(
     daemon: &mut crate::daemon::Daemon,
     shared_focus: &crate::focus::SharedFocusSnapshot,

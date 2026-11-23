@@ -20,6 +20,7 @@ echo "=== Building Dboard release tarball v${VERSION} (${TAR_ARCH}) ==="
 echo "[1/4] Compiling components in release mode..."
 cargo build --release --locked --manifest-path "$PROJECT_ROOT/Cargo.toml"
 (cd "$PROJECT_ROOT/ui" && cargo build --release --locked)
+(cd "$PROJECT_ROOT/ui-popup" && cargo build --release --locked)
 
 echo "[2/4] Assembling package structure..."
 rm -rf "$DIST_DIR"
@@ -33,6 +34,7 @@ mkdir -p "$STAGING/systemd"
 install -m 755 "$PROJECT_ROOT/target/release/dboard" "$STAGING/bin/dboard-daemon"
 install -m 755 "$PROJECT_ROOT/target/release/dboard-cli" "$STAGING/bin/dboard-cli"
 install -m 755 "$PROJECT_ROOT/ui/target/release/dboard-tray" "$STAGING/bin/dboard-tray"
+install -m 755 "$PROJECT_ROOT/ui-popup/target/release/dboard-popup" "$STAGING/bin/dboard-popup"
 
 cp "$PROJECT_ROOT/packaging/70-dboard.rules" "$STAGING/udev/"
 cp "$PROJECT_ROOT/packaging/deb/dboard.desktop" "$STAGING/desktop/"

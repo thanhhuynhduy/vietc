@@ -22,6 +22,7 @@ echo "=== Building Dboard .deb package v${VERSION} (${DEB_ARCH}) ==="
 echo "[1/5] Building binaries..."
 cargo build --release --locked --manifest-path "$PROJECT_ROOT/Cargo.toml"
 (cd "$PROJECT_ROOT/ui" && cargo build --release --locked)
+(cd "$PROJECT_ROOT/ui-popup" && cargo build --release --locked)
 echo "  Done."
 
 echo "[2/5] Creating staging directory..."
@@ -40,6 +41,7 @@ echo "[3/5] Installing binaries and assets..."
 install -m 755 "$PROJECT_ROOT/target/release/dboard" "$STAGING/usr/bin/dboard-daemon"
 install -m 755 "$PROJECT_ROOT/target/release/dboard-cli" "$STAGING/usr/bin/dboard-cli"
 install -m 755 "$PROJECT_ROOT/ui/target/release/dboard-tray" "$STAGING/usr/bin/dboard-tray"
+install -m 755 "$PROJECT_ROOT/ui-popup/target/release/dboard-popup" "$STAGING/usr/bin/dboard-popup"
 
 for size in scalable 256x256 128x128 64x64 48x48 32x32; do
     mkdir -p "$STAGING/usr/share/icons/hicolor/$size/apps"

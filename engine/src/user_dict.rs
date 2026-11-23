@@ -12,7 +12,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub const MAX_USER_DICT_ENTRIES: usize = 2000;
+pub const MAX_PERSONAL_BIGRAMS: usize = 1000;
 const PERSONAL_WORD_PROMOTE_COUNT: u16 = 2;
+const PERSONAL_BIGRAM_PROMOTE_COUNT: u16 = 2;
 
 #[derive(Debug, Clone)]
 pub(crate) enum AutoRestoreUndo {
@@ -40,12 +42,21 @@ pub struct UserDict {
     /// FIFO queue of single-observation (`count == 1`) candidates so one-off typos
     /// are evicted in O(1) instead of permanently saturating `learned_words`.
     pending_once: VecDeque<String>,
+    /// Personal 2-word collocations `(w1, w2) -> count` (Vietnamese or bilingual
+    /// alphabetic pairs only — never digits, symbols, or passwords).
+    personal_bigrams: BTreeMap<(String, String), u16>,
+    pending_bigram_once: VecDeque<(String, String)>,
     dirty: bool,
 }
 
 fn is_learnable_token(raw: &str) -> bool {
     let len = raw.chars().count();
     (2..=32).contains(&len) && raw.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+fn is_learnable_bigram_word(word: &str) -> bool {
+    let len = word.chars().count();
+    (2..=24).contains(&len) && word.chars().all(char::is_alphabetic)
 }
 
 impl UserDict {
@@ -81,6 +92,22 @@ impl UserDict {
                         dict.learned_words.insert(lower, count);
                     }
                 }
+            } else if let Some(rest) = trimmed.strip_prefix("bigram:") {
+                if let Some((pair, cnt_str)) = rest.split_once(':') {
+                    if let Some((w1, w2)) = pair.split_once('|') {
+                        let l1 = w1.trim().to_lowercase();
+                        let l2 = w2.trim().to_lowercase();
+                        let count = cnt_str.trim().parse::<u16>().unwrap_or(0);
+                        if is_learnable_bigram_word(&l1)
+                            && is_learnable_bigram_word(&l2)
+                            && l1 != l2
+                            && count >= PERSONAL_BIGRAM_PROMOTE_COUNT
+                            && dict.promoted_bigram_count() < MAX_PERSONAL_BIGRAMS
+                        {
+                            dict.personal_bigrams.insert((l1, l2), count);
+                        }
+                    }
+                }
             }
         }
         dict.dirty = false;
@@ -108,6 +135,17 @@ impl UserDict {
                 out.push('\n');
             }
         }
+        for ((w1, w2), &count) in &self.personal_bigrams {
+            if count >= PERSONAL_BIGRAM_PROMOTE_COUNT {
+                out.push_str("bigram:");
+                out.push_str(w1);
+                out.push('|');
+                out.push_str(w2);
+                out.push(':');
+                out.push_str(&count.to_string());
+                out.push('\n');
+            }
+        }
         out
     }
 
@@ -121,8 +159,15 @@ impl UserDict {
                 .count()
     }
 
+    pub fn promoted_bigram_count(&self) -> usize {
+        self.personal_bigrams
+            .values()
+            .filter(|&&c| c >= PERSONAL_BIGRAM_PROMOTE_COUNT)
+            .count()
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.len() == 0 && self.promoted_bigram_count() == 0
     }
 
     /// Observe a committed alphabetic token; once seen `>= 2` times it becomes
@@ -152,6 +197,73 @@ impl UserDict {
         if prev < PERSONAL_WORD_PROMOTE_COUNT && *entry >= PERSONAL_WORD_PROMOTE_COUNT {
             self.dirty = true;
         }
+    }
+
+    /// Observe a committed 2-word alphabetic pair (Vietnamese or bilingual).
+    /// Once seen `>= 2` times it is promoted for personal next-word prediction
+    /// and adaptive autocorrect ranking.
+    pub fn record_bigram_usage(&mut self, prev_word: &str, next_word: &str) {
+        let l1 = prev_word.to_lowercase();
+        let l2 = next_word.to_lowercase();
+        if l1 == l2 || !is_learnable_bigram_word(&l1) || !is_learnable_bigram_word(&l2) {
+            return;
+        }
+        let key = (l1, l2);
+        if !self.personal_bigrams.contains_key(&key) {
+            if self.promoted_bigram_count() >= MAX_PERSONAL_BIGRAMS {
+                return;
+            }
+            while self.personal_bigrams.len() >= MAX_PERSONAL_BIGRAMS * 2 {
+                let Some(oldest) = self.pending_bigram_once.pop_front() else {
+                    return;
+                };
+                if self.personal_bigrams.get(&oldest).copied() == Some(1) {
+                    self.personal_bigrams.remove(&oldest);
+                }
+            }
+            self.pending_bigram_once.push_back(key.clone());
+        }
+        let entry = self.personal_bigrams.entry(key).or_insert(0);
+        let prev_cnt = *entry;
+        *entry = entry.saturating_add(1);
+        if (prev_cnt < PERSONAL_BIGRAM_PROMOTE_COUNT && *entry >= PERSONAL_BIGRAM_PROMOTE_COUNT)
+            || (*entry > PERSONAL_BIGRAM_PROMOTE_COUNT && (*entry).is_multiple_of(4))
+        {
+            self.dirty = true;
+        }
+    }
+
+    /// Adaptive ranking bonus for SymSpell / contextual autocorrect when
+    /// `(prev_word, candidate)` is a promoted personal bigram.
+    pub fn personal_bigram_bonus(&self, prev_word: &str, candidate: &str) -> i32 {
+        let key = (prev_word.to_lowercase(), candidate.to_lowercase());
+        match self.personal_bigrams.get(&key).copied() {
+            Some(cnt) if cnt >= PERSONAL_BIGRAM_PROMOTE_COUNT => 220 + i32::from(cnt.min(20)) * 2,
+            _ => 0,
+        }
+    }
+
+    /// Return up to `limit` promoted personal next-word predictions following `prev_word`,
+    /// ordered by observed usage count descending.
+    pub fn predict_next_words(&self, prev_word: &str, limit: usize) -> Vec<String> {
+        if limit == 0 || self.personal_bigrams.is_empty() {
+            return Vec::new();
+        }
+        let p1 = prev_word.to_lowercase();
+        let mut matches: Vec<(u16, &str)> = self
+            .personal_bigrams
+            .range((p1.clone(), String::new())..)
+            .take_while(|((w1, _), _)| w1 == &p1)
+            .filter_map(|((_, w2), &cnt)| {
+                (cnt >= PERSONAL_BIGRAM_PROMOTE_COUNT).then_some((cnt, w2.as_str()))
+            })
+            .collect();
+        matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+        matches
+            .into_iter()
+            .take(limit)
+            .map(|(_, w)| w.to_string())
+            .collect()
     }
 
     /// Learn an untouched out-of-vocabulary ASCII word (e.g. a username, handle,

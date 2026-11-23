@@ -13,11 +13,47 @@
 //!   `publish_state` immediately sends a `Hide` packet and NEVER reads or
 //!   transmits buffer contents.
 
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_CANDIDATES: usize = 3;
 const MAX_CANDIDATE_BYTES: usize = 64;
+
+/// Lock-free packed caret screen rectangle:
+/// bit 63 = valid flag, bits 42..63 = x (21-bit), bits 21..42 = y (21-bit), bits 0..21 = h (21-bit).
+static CARET_RECT_PACKED: AtomicU64 = AtomicU64::new(0);
+
+/// Record the active caret's screen-space `(x, y, height)` from the background
+/// AT-SPI2 thread with zero locking on `evdev_loop`.
+pub fn record_caret_rect(rect: Option<(i32, i32, i32)>) {
+    let packed = match rect {
+        Some((x, y, h))
+            if (0..0x20_0000).contains(&x)
+                && (0..0x20_0000).contains(&y)
+                && (1..0x20_0000).contains(&h) =>
+        {
+            (1u64 << 63) | ((x as u64) << 42) | ((y as u64) << 21) | (h as u64)
+        }
+        _ => 0,
+    };
+    CARET_RECT_PACKED.store(packed, Ordering::Release);
+}
+
+/// Read the most recent valid caret screen-space `(x, y, height)`.
+pub fn current_caret_rect() -> Option<(i32, i32, i32)> {
+    let packed = CARET_RECT_PACKED.load(Ordering::Acquire);
+    if (packed & (1u64 << 63)) == 0 {
+        return None;
+    }
+    let mask = 0x1F_FFFFu64;
+    let x = ((packed >> 42) & mask) as i32;
+    let y = ((packed >> 21) & mask) as i32;
+    let h = (packed & mask) as i32;
+    Some((x, y, h))
+}
 
 /// Default socket path in `$XDG_RUNTIME_DIR/dboard-candidates.sock`.
 /// Returns `None` if `XDG_RUNTIME_DIR` is unset or not a directory (refuses
@@ -32,6 +68,19 @@ pub fn default_socket_path() -> Option<PathBuf> {
         return None;
     }
     Some(dir.join("dboard-candidates.sock"))
+}
+
+/// Non-blocking click-selection feedback socket `$XDG_RUNTIME_DIR/dboard-select.sock`.
+pub fn default_select_socket_path() -> Option<PathBuf> {
+    let rt = std::env::var("XDG_RUNTIME_DIR").ok()?;
+    if rt.is_empty() {
+        return None;
+    }
+    let dir = PathBuf::from(rt);
+    if !dir.is_dir() {
+        return None;
+    }
+    Some(dir.join("dboard-select.sock"))
 }
 
 fn escape_json_str(s: &str, out: &mut String) {
@@ -62,8 +111,17 @@ pub fn encode_hide_packet() -> &'static [u8] {
 }
 
 /// Encode up to 3 candidate strings into a compact UTF-8 JSON datagram.
+#[allow(dead_code)]
 pub fn encode_candidates_packet(candidates: &[&str]) -> String {
-    let mut out = String::with_capacity(192);
+    encode_candidates_packet_with_caret(candidates, None)
+}
+
+/// Encode up to 3 candidate strings plus optional AT-SPI2 caret coordinates.
+pub fn encode_candidates_packet_with_caret(
+    candidates: &[&str],
+    caret: Option<(i32, i32, i32)>,
+) -> String {
+    let mut out = String::with_capacity(224);
     out.push_str(r#"{"v":1,"visible":true,"candidates":["#);
     for (written, cand) in candidates
         .iter()
@@ -77,15 +135,39 @@ pub fn encode_candidates_packet(candidates: &[&str]) -> String {
         }
         escape_json_str(cand, &mut out);
     }
-    out.push_str("]}");
+    out.push(']');
+    if let Some((x, y, h)) = caret {
+        out.push_str(&format!(r#","caret":{{"x":{x},"y":{y},"h":{h}}}"#));
+    }
+    out.push('}');
     out
 }
 
-/// Non-blocking one-way candidate broadcaster owned by `evdev_loop`.
+fn bind_select_receiver(path: &Path) -> Option<UnixDatagram> {
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+    let sock = UnixDatagram::bind(path).ok()?;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    sock.set_nonblocking(true).ok()?;
+    Some(sock)
+}
+
+/// Non-blocking candidate broadcaster + click-selection receiver owned by `evdev_loop`.
 pub struct CandidateBroadcaster {
     socket: Option<UnixDatagram>,
     target_path: Option<PathBuf>,
+    select_rx: Option<UnixDatagram>,
+    select_path: Option<PathBuf>,
     last_visible: bool,
+}
+
+impl Drop for CandidateBroadcaster {
+    fn drop(&mut self) {
+        if let Some(path) = self.select_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 impl CandidateBroadcaster {
@@ -96,7 +178,16 @@ impl CandidateBroadcaster {
             return Self::disabled();
         }
         match default_socket_path() {
-            Some(path) => Self::with_path(true, path),
+            Some(path) => {
+                let mut bc = Self::with_path(true, path);
+                if let Some(sel_path) = default_select_socket_path() {
+                    if let Some(rx) = bind_select_receiver(&sel_path) {
+                        bc.select_rx = Some(rx);
+                        bc.select_path = Some(sel_path);
+                    }
+                }
+                bc
+            }
             None => Self::disabled(),
         }
     }
@@ -105,6 +196,8 @@ impl CandidateBroadcaster {
         Self {
             socket: None,
             target_path: None,
+            select_rx: None,
+            select_path: None,
             last_visible: false,
         }
     }
@@ -121,12 +214,37 @@ impl CandidateBroadcaster {
         Self {
             socket,
             target_path: Some(path),
+            select_rx: None,
+            select_path: None,
             last_visible: false,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
         self.socket.is_some() && self.target_path.is_some()
+    }
+
+    pub fn select_rx_fd(&self) -> Option<RawFd> {
+        self.select_rx.as_ref().map(AsRawFd::as_raw_fd)
+    }
+
+    /// Drain pending click-selection datagrams from `dboard-popup` (non-blocking)
+    /// and return the latest clicked candidate slot index (`0..=2`).
+    pub fn poll_clicked_index(&self) -> Option<usize> {
+        let rx = self.select_rx.as_ref()?;
+        let mut latest = None;
+        let mut buf = [0u8; 8];
+        while let Ok(len) = rx.recv(&mut buf) {
+            if len >= 1 {
+                match buf[0] {
+                    b'0' => latest = Some(0),
+                    b'1' => latest = Some(1),
+                    b'2' => latest = Some(2),
+                    _ => {}
+                }
+            }
+        }
+        latest
     }
 
     fn send_bytes(&self, bytes: &[u8]) {
@@ -163,7 +281,7 @@ impl CandidateBroadcaster {
             self.hide();
             return;
         }
-        let payload = encode_candidates_packet(candidates);
+        let payload = encode_candidates_packet_with_caret(candidates, current_caret_rect());
         self.send_bytes(payload.as_bytes());
         self.last_visible = true;
     }

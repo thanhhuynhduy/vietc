@@ -4,6 +4,10 @@ use std::sync::OnceLock;
 
 const VIETNAMESE_DICT_RAW: &str = include_str!("vietnamese.cm.dict");
 
+pub(crate) fn vietnamese_dict_raw() -> &'static str {
+    VIETNAMESE_DICT_RAW
+}
+
 const VOWELS: &str = "aàáảãạăằắẳẵặâầấẩẫậeèéẻẽẹêềếểễệiìíỉĩịoòóỏõọôồốổỗộơờớởỡợuùúủũụưừứửữựyỳýỷỹỵ";
 
 fn vowel_position(c: char) -> Option<usize> {

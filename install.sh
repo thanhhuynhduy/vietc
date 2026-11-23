@@ -304,9 +304,11 @@ if [ "$FROM_SOURCE" = true ]; then
     if [ "$REAL_USER" != "root" ] && [ "$(id -u)" = "0" ]; then
         [ -d target ] && chown -R "$REAL_USER:$REAL_GROUP" target 2>/dev/null || true
         [ -d ui/target ] && chown -R "$REAL_USER:$REAL_GROUP" ui/target 2>/dev/null || true
+        [ -d ui-popup/target ] && chown -R "$REAL_USER:$REAL_GROUP" ui-popup/target 2>/dev/null || true
     fi
     run_as_build_user cargo build --release --locked
     (cd ui && run_as_build_user cargo build --release --locked)
+    [ -d ui-popup ] && (cd ui-popup && run_as_build_user cargo build --release --locked) || true
 elif [ -f "./bin/dboard-daemon" ]; then
     INSTALL_DIR="$(pwd)"
     BIN_DIR="$INSTALL_DIR/bin"
@@ -398,6 +400,7 @@ fi
 
 # Stop running processes before replacing binaries
 pkill -x dboard-tray 2>/dev/null || true
+pkill -x dboard-popup 2>/dev/null || true
 pkill -x dboard-daemon 2>/dev/null || true
 pkill -x dboard 2>/dev/null || true
 pkill -x dboard-cli 2>/dev/null || true
@@ -410,10 +413,12 @@ if [ "$FROM_SOURCE" = true ]; then
     install -m 755 target/release/dboard /usr/bin/dboard-daemon
     install -m 755 target/release/dboard-cli /usr/bin/dboard-cli
     [ -f ui/target/release/dboard-tray ] && install -m 755 ui/target/release/dboard-tray /usr/bin/dboard-tray || true
+    [ -f ui-popup/target/release/dboard-popup ] && install -m 755 ui-popup/target/release/dboard-popup /usr/bin/dboard-popup || true
 else
     install -m 755 "$BIN_DIR/dboard-daemon" /usr/bin/dboard-daemon
     install -m 755 "$BIN_DIR/dboard-cli" /usr/bin/dboard-cli
     [ -f "$BIN_DIR/dboard-tray" ] && install -m 755 "$BIN_DIR/dboard-tray" /usr/bin/dboard-tray || true
+    [ -f "$BIN_DIR/dboard-popup" ] && install -m 755 "$BIN_DIR/dboard-popup" /usr/bin/dboard-popup || true
 fi
 
 # The daemon must remain unprivileged. Device access is granted exclusively to

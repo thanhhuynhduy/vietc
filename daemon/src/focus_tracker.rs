@@ -308,19 +308,32 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                         crate::focus::clear_omnibox_inline_selection(&shared_focus);
                     }
                     if info.is_editable_text {
-                        let ctx = crate::surrounding_context::query_caret_offset(
+                        let caret = crate::surrounding_context::query_caret_offset(
                             &connection,
                             &sender,
                             &path,
-                        )
-                        .and_then(|caret| {
+                        );
+                        let ctx = caret.and_then(|c| {
                             crate::surrounding_context::query_surrounding_context(
                                 &connection,
                                 &sender,
                                 &path,
-                                caret,
+                                c,
                             )
                         });
+                        let rect = if info.is_password {
+                            None
+                        } else {
+                            caret.and_then(|c| {
+                                crate::surrounding_context::query_caret_extents(
+                                    &connection,
+                                    &sender,
+                                    &path,
+                                    c,
+                                )
+                            })
+                        };
+                        crate::candidate_ipc::record_caret_rect(rect);
                         shared_focus
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
@@ -328,6 +341,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                         active_text_node = Some((sender, path));
                     } else {
                         active_text_node = None;
+                        crate::candidate_ipc::record_caret_rect(None);
                         crate::focus::clear_surrounding_word(&shared_focus);
                     }
                 }
@@ -366,6 +380,9 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                 &path,
                 caret,
             );
+            let rect =
+                crate::surrounding_context::query_caret_extents(&connection, &sender, &path, caret);
+            crate::candidate_ipc::record_caret_rect(rect);
             shared_focus
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())

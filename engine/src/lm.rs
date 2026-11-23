@@ -65,13 +65,17 @@ pub(crate) fn decide_should_restore(
     composed: &str,
     raw: &str,
     prior_context: LanguageContext,
-    last_two: (Option<&CommittedWordEntry>, Option<&CommittedWordEntry>),
+    last_three: (
+        Option<&CommittedWordEntry>,
+        Option<&CommittedWordEntry>,
+        Option<&CommittedWordEntry>,
+    ),
     boundary_context: Option<(Option<char>, char)>,
 ) -> bool {
     if composed == raw {
         return false;
     }
-    let (prev2, prev1) = last_two;
+    let (prev3, prev2, prev1) = last_three;
     if let Some(decision) = evaluate_trigram(
         prev2.map(|e| e.visible_word.as_str()),
         prev1.map(|e| e.visible_word.as_str()),
@@ -107,6 +111,30 @@ pub(crate) fn decide_should_restore(
             }
         }
         if !is_technical_boundary {
+            if let (Some(p2), Some(p1)) = (prev2, prev1) {
+                let ngram_score = match prev3 {
+                    Some(p3) => crate::ngram_lm::score_context(
+                        &[
+                            p3.visible_word.as_str(),
+                            p2.visible_word.as_str(),
+                            p1.visible_word.as_str(),
+                        ],
+                        composed,
+                        raw,
+                    ),
+                    None => crate::ngram_lm::score_context(
+                        &[p2.visible_word.as_str(), p1.visible_word.as_str()],
+                        composed,
+                        raw,
+                    ),
+                };
+                if ngram_score >= 250 {
+                    return true;
+                }
+                if ngram_score <= -250 {
+                    return false;
+                }
+            }
             let stat_score = crate::stat_lm::score_bilingual(
                 prev2.map(|e| e.visible_word.as_str()),
                 prev1.map(|e| e.visible_word.as_str()),

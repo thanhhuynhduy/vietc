@@ -9,10 +9,12 @@ pub mod event;
 mod filename_restore;
 mod input_method;
 mod lm;
+pub mod ngram_lm;
 mod ring_buffer;
 pub mod spelling;
 pub mod stat_lm;
 mod state;
+mod symspell;
 pub mod telex;
 mod user_dict;
 

@@ -151,9 +151,44 @@ struct VietTray {
     mode: String,
     im: String,
     autostart: bool,
+    autocorrect: bool,
+    auto_capitalize: bool,
+    candidate_bar: bool,
+    keyboard_layout: String,
+}
+
+fn spawn_popup_if_available() {
+    let uid = unsafe { libc::getuid() }.to_string();
+    let running = std::process::Command::new("pgrep")
+        .args(["-u", &uid, "-x", "dboard-popup"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if running {
+        return;
+    }
+    for candidate in [
+        "/usr/bin/dboard-popup",
+        "/usr/local/bin/dboard-popup",
+        "dboard-popup",
+    ] {
+        if candidate == "dboard-popup" || std::path::Path::new(candidate).exists() {
+            if let Ok(mut child) = std::process::Command::new(candidate).spawn() {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            return;
+        }
+    }
 }
 
 impl VietTray {
+    fn save_config_update(update: impl FnOnce(&mut config::Config)) {
+        let mut cfg = config::Config::load();
+        update(&mut cfg);
+        let _ = cfg.save();
+    }
+
     fn cycle_mode(&mut self) {
         let cfg = config::Config::load();
         let modes: Vec<String> = cfg
@@ -279,6 +314,11 @@ impl Tray for VietTray {
         } else {
             2_usize
         };
+        let selected_layout = match self.keyboard_layout.trim().to_ascii_lowercase().as_str() {
+            "dvorak" | "us-dvorak" | "us_dvorak" => 1_usize,
+            "colemak" | "us-colemak" | "us_colemak" => 2_usize,
+            _ => 0_usize,
+        };
 
         vec![
             CheckmarkItem {
@@ -339,6 +379,81 @@ impl Tray for VietTray {
                 ..Default::default()
             }
             .into(),
+            SubMenu {
+                label: "Gboard Features".into(),
+                submenu: vec![
+                    CheckmarkItem {
+                        label: "Autocorrect (SymSpell + Spatial)".into(),
+                        checked: self.autocorrect,
+                        activate: Box::new(|this: &mut VietTray| {
+                            let next = !this.autocorrect;
+                            this.autocorrect = next;
+                            Self::save_config_update(|cfg| cfg.autocorrect = next);
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    CheckmarkItem {
+                        label: "Auto-Capitalize Sentences".into(),
+                        checked: self.auto_capitalize,
+                        activate: Box::new(|this: &mut VietTray| {
+                            let next = !this.auto_capitalize;
+                            this.auto_capitalize = next;
+                            Self::save_config_update(|cfg| cfg.auto_capitalize = next);
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                    CheckmarkItem {
+                        label: "Floating Candidate Bar".into(),
+                        checked: self.candidate_bar,
+                        activate: Box::new(|this: &mut VietTray| {
+                            let next = !this.candidate_bar;
+                            this.candidate_bar = next;
+                            Self::save_config_update(|cfg| cfg.candidate_bar = next);
+                            if next {
+                                spawn_popup_if_available();
+                            }
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "Keyboard Layout".into(),
+                submenu: vec![RadioGroup {
+                    selected: selected_layout,
+                    select: Box::new(|this: &mut VietTray, idx: usize| {
+                        let layout = match idx {
+                            1 => "dvorak",
+                            2 => "colemak",
+                            _ => "us",
+                        };
+                        this.keyboard_layout = layout.into();
+                        Self::save_config_update(|cfg| cfg.keyboard_layout = layout.into());
+                    }),
+                    options: vec![
+                        RadioItem {
+                            label: "US QWERTY".into(),
+                            ..Default::default()
+                        },
+                        RadioItem {
+                            label: "US Dvorak".into(),
+                            ..Default::default()
+                        },
+                        RadioItem {
+                            label: "US Colemak".into(),
+                            ..Default::default()
+                        },
+                    ],
+                }
+                .into()],
+                ..Default::default()
+            }
+            .into(),
             MenuItem::Separator,
             StandardItem {
                 label: "About: Dboard".into(),
@@ -371,14 +486,22 @@ impl Tray for VietTray {
 pub fn run() {
     ensure_icons();
 
+    let cfg = config::Config::load();
     let initial_mode = read_status("");
     let initial_im = read_method("");
     let initial_autostart = config::is_autostart_installed();
+    if cfg.candidate_bar {
+        spawn_popup_if_available();
+    }
 
     let tray = VietTray {
         mode: initial_mode.clone(),
         im: initial_im.clone(),
         autostart: initial_autostart,
+        autocorrect: cfg.autocorrect,
+        auto_capitalize: cfg.auto_capitalize,
+        candidate_bar: cfg.candidate_bar,
+        keyboard_layout: cfg.keyboard_layout,
     };
 
     let service = ksni::TrayService::new(tray);

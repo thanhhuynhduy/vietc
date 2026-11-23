@@ -57,6 +57,7 @@ pub struct Engine {
     keyboard_layout: crate::autocorrect::AutocorrectLayout,
     auto_cap: AutoCapState,
     user_dict: UserDict,
+    learning_enabled: bool,
     prev_context: LanguageContext,
     ring_buffer: CommittedRingBuffer,
     last_dot_stem: Option<DotStemEntry>,
@@ -100,6 +101,7 @@ impl Engine {
             keyboard_layout: crate::autocorrect::AutocorrectLayout::UsQwerty,
             auto_cap: AutoCapState::default(),
             user_dict: UserDict::new(),
+            learning_enabled: true,
             prev_context: LanguageContext::None,
             ring_buffer: CommittedRingBuffer::new(),
             last_dot_stem: None,
@@ -139,6 +141,10 @@ impl Engine {
 
     pub fn set_user_dict(&mut self, dict: UserDict) {
         self.user_dict = dict;
+    }
+
+    pub fn set_learning_enabled(&mut self, enabled: bool) {
+        self.learning_enabled = enabled;
     }
 
     pub fn take_user_dict_for_save(&mut self) -> Option<String> {
@@ -444,7 +450,7 @@ impl Engine {
                         &previous,
                         &raw,
                         prior_context,
-                        self.ring_buffer.last_two(),
+                        self.ring_buffer.last_three(),
                         Some((prev_boundary, ch)),
                     );
 
@@ -455,7 +461,14 @@ impl Engine {
                     && !self.user_dict.is_keep_raw(&raw)
                     && !matches!(prev_boundary, Some('_' | '/' | '\\' | '.'))
                 {
-                    crate::autocorrect::suggest_correction_for_layout(
+                    let (p3, p2, p1) = self.ring_buffer.last_three();
+                    let mut prev_buf = [""; 3];
+                    let mut prev_len_ctx = 0;
+                    for entry in [p3, p2, p1].into_iter().flatten() {
+                        prev_buf[prev_len_ctx] = entry.visible_word.as_str();
+                        prev_len_ctx += 1;
+                    }
+                    crate::autocorrect::suggest_correction_with_context(
                         english_dict(),
                         &self.user_dict,
                         &previous,
@@ -463,6 +476,7 @@ impl Engine {
                         self.method,
                         self.keyboard_layout,
                         prior_context,
+                        &prev_buf[..prev_len_ctx],
                         |r| self.compose_candidate(r),
                     )
                 } else {
@@ -570,8 +584,14 @@ impl Engine {
 
                 self.prev_context = committed_context;
                 if ch == ' ' && !had_pasted_prefix {
-                    self.user_dict
-                        .maybe_learn_committed(&final_word, &raw, english_dict());
+                    if self.learning_enabled {
+                        self.user_dict
+                            .maybe_learn_committed(&final_word, &raw, english_dict());
+                        if let Some(prev_entry) = self.ring_buffer.last() {
+                            self.user_dict
+                                .record_bigram_usage(&prev_entry.visible_word, &final_word);
+                        }
+                    }
                     self.ring_buffer.push(CommittedWordEntry {
                         raw_keys: raw.clone(),
                         visible_word: final_word,
@@ -829,6 +849,59 @@ impl Engine {
             |r| self.compose_candidate(r),
         )?;
         (cand != visible && cand != self.raw_buffer).then_some(cand)
+    }
+
+    /// Predict up to `limit` (capped at 3) next words immediately after a Space
+    /// boundary, prioritizing the user's promoted Personal Bigrams ahead of the
+    /// quantized Kneser-Ney trigram/bigram corpus index.
+    pub fn predict_next_words(&self, limit: usize) -> Vec<String> {
+        let cap = limit.min(3);
+        if cap == 0
+            || !self.bamboo.is_enabled()
+            || !self.raw_buffer.is_empty()
+            || !self.pasted_prefix.is_empty()
+            || self.last_boundary_char != Some(' ')
+        {
+            return Vec::new();
+        }
+        let (p2, p1) = self.ring_buffer.last_two();
+        let Some(p1) = p1 else {
+            return Vec::new();
+        };
+        let mut out = self.user_dict.predict_next_words(&p1.visible_word, cap);
+        if out.len() < cap {
+            let corpus = match p2 {
+                Some(prev2) => crate::ngram_lm::predict_next_words(
+                    &[prev2.visible_word.as_str(), p1.visible_word.as_str()],
+                    cap,
+                ),
+                None => crate::ngram_lm::predict_next_words(&[p1.visible_word.as_str()], cap),
+            };
+            for w in corpus {
+                if out.len() >= cap {
+                    break;
+                }
+                if !out.iter().any(|existing| existing == &w) {
+                    out.push(w);
+                }
+            }
+        }
+        out
+    }
+
+    /// Compute up to 3 alternative candidates for an already-committed word
+    /// sitting immediately before the caret (e.g. `tét <-> test`, `lát <-> last`,
+    /// or SymSpell typo fixes) for mid-sentence quick re-selection.
+    pub fn alternatives_for_word(&self, word: &str, prev_word: Option<&str>) -> Vec<String> {
+        crate::engine_helpers::compute_word_alternatives(
+            word,
+            prev_word,
+            english_dict(),
+            &self.user_dict,
+            self.method,
+            self.keyboard_layout,
+            |r| self.compose_candidate(r),
+        )
     }
 
     pub fn state(&self) -> CompositionState {

@@ -84,6 +84,26 @@ impl CommittedRingBuffer {
         }
     }
 
+    pub(crate) fn last_three(
+        &self,
+    ) -> (
+        Option<&CommittedWordEntry>,
+        Option<&CommittedWordEntry>,
+        Option<&CommittedWordEntry>,
+    ) {
+        let len = self.entries.len();
+        match len {
+            0 => (None, None, None),
+            1 => (None, None, self.entries.back()),
+            2 => (None, self.entries.front(), self.entries.get(1)),
+            _ => (
+                self.entries.get(len - 3),
+                self.entries.get(len - 2),
+                self.entries.back(),
+            ),
+        }
+    }
+
     pub(crate) fn pop_last(&mut self) -> Option<CommittedWordEntry> {
         self.entries.pop_back()
     }
