@@ -526,13 +526,18 @@ pub fn run() {
         spawn_popup_if_available();
     }
 
+    let initial_autocorrect = cfg.autocorrect;
+    let initial_auto_cap = cfg.auto_capitalize;
+    let initial_candidate_bar = cfg.candidate_bar;
+    let initial_layout = cfg.keyboard_layout.clone();
+
     let tray = VietTray {
         mode: initial_mode.clone(),
         im: initial_im.clone(),
         autostart: initial_autostart,
-        autocorrect: cfg.autocorrect,
-        auto_capitalize: cfg.auto_capitalize,
-        candidate_bar: cfg.candidate_bar,
+        autocorrect: initial_autocorrect,
+        auto_capitalize: initial_auto_cap,
+        candidate_bar: initial_candidate_bar,
         keyboard_layout: cfg.keyboard_layout,
     };
 
@@ -566,6 +571,10 @@ pub fn run() {
         let mut last_mode = initial_mode;
         let mut last_im = initial_im;
         let mut last_autostart = initial_autostart;
+        let mut last_autocorrect = initial_autocorrect;
+        let mut last_auto_cap = initial_auto_cap;
+        let mut last_candidate_bar = initial_candidate_bar;
+        let mut last_layout = initial_layout;
         let mut buffer = [0u8; 4096];
 
         while !crate::should_exit() {
@@ -626,14 +635,31 @@ pub fn run() {
             let mode = read_status(&last_mode);
             let im = read_method(&last_im);
             let autostart = config::is_autostart_installed();
-            if mode != last_mode || im != last_im || autostart != last_autostart {
+            let cfg_now = config::Config::load();
+            if mode != last_mode
+                || im != last_im
+                || autostart != last_autostart
+                || cfg_now.autocorrect != last_autocorrect
+                || cfg_now.auto_capitalize != last_auto_cap
+                || cfg_now.candidate_bar != last_candidate_bar
+                || cfg_now.keyboard_layout != last_layout
+            {
                 last_mode = mode.clone();
                 last_im = im.clone();
                 last_autostart = autostart;
+                last_autocorrect = cfg_now.autocorrect;
+                last_auto_cap = cfg_now.auto_capitalize;
+                last_candidate_bar = cfg_now.candidate_bar;
+                last_layout = cfg_now.keyboard_layout.clone();
+                let new_layout = cfg_now.keyboard_layout;
                 handle.update(move |t| {
                     t.mode = mode;
                     t.im = im;
                     t.autostart = autostart;
+                    t.autocorrect = cfg_now.autocorrect;
+                    t.auto_capitalize = cfg_now.auto_capitalize;
+                    t.candidate_bar = cfg_now.candidate_bar;
+                    t.keyboard_layout = new_layout;
                 });
             }
         }

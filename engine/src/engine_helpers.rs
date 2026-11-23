@@ -751,7 +751,14 @@ pub(crate) fn apply_pending_restore_undo(
             boundary_char,
             is_autocorrect,
         } => {
-            let _ = ring_buffer.pop_last();
+            let pop_count = restored_ascii
+                .split(' ')
+                .filter(|p| !p.is_empty())
+                .count()
+                .max(1);
+            for _ in 0..pop_count {
+                let _ = ring_buffer.pop_last();
+            }
             if learning_enabled {
                 if is_autocorrect {
                     user_dict.record_keep_raw(&raw_keys);
@@ -877,8 +884,31 @@ pub(crate) fn compute_word_alternatives(
         ) {
             push_unique(fixed);
         }
-    } else if let Some(en_twin) = find_english_telex_twin(word, dict) {
-        push_unique(en_twin);
+    } else {
+        if let Some(en_twin) = find_english_telex_twin(word, dict) {
+            push_unique(en_twin);
+        }
+        let lower = word.to_lowercase();
+        let is_valid_dict_vn = crate::spelling::is_valid_vietnamese_syllable(&lower)
+            && crate::spelling::is_in_vietnamese_dictionary(&lower);
+        if !is_valid_dict_vn {
+            if let Some(raw_canon) = crate::ring_buffer::visible_to_canonical_raw(word, method) {
+                let prev_slice: &[&str] = prev_word.as_slice();
+                if let Some(fixed) = crate::autocorrect::suggest_correction_with_context(
+                    dict,
+                    user_dict,
+                    word,
+                    &raw_canon,
+                    method,
+                    layout,
+                    LanguageContext::Vietnamese,
+                    prev_slice,
+                    &compose,
+                ) {
+                    push_unique(fixed);
+                }
+            }
+        }
     }
 
     if alts.is_empty() {

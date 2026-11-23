@@ -629,23 +629,45 @@ impl Engine {
 
                 self.prev_context = committed_context;
                 if ch == ' ' && !had_pasted_prefix {
-                    if self.learning_enabled {
-                        self.user_dict
-                            .maybe_learn_committed(&final_word, &raw, english_dict());
-                        if let Some(prev_entry) = self.ring_buffer.last() {
-                            self.user_dict
-                                .record_bigram_usage(&prev_entry.visible_word, &final_word);
+                    if final_word.contains(' ') {
+                        let mut prev_vis = self.ring_buffer.last().map(|e| e.visible_word.clone());
+                        for part in final_word.split(' ').filter(|p| !p.is_empty()) {
+                            let part_str = part.to_string();
+                            if self.learning_enabled {
+                                if let Some(ref prev_word) = prev_vis {
+                                    self.user_dict.record_bigram_usage(prev_word, &part_str);
+                                }
+                            }
+                            self.ring_buffer.push(CommittedWordEntry {
+                                raw_keys: part_str.clone(),
+                                visible_word: part_str.clone(),
+                                trailing_delimiters: " ".to_string(),
+                                prior_context,
+                                committed_context,
+                                was_auto_restored: should_restore,
+                                user_override_vn: user_override,
+                            });
+                            prev_vis = Some(part_str);
                         }
+                    } else {
+                        if self.learning_enabled {
+                            self.user_dict
+                                .maybe_learn_committed(&final_word, &raw, english_dict());
+                            if let Some(prev_entry) = self.ring_buffer.last() {
+                                self.user_dict
+                                    .record_bigram_usage(&prev_entry.visible_word, &final_word);
+                            }
+                        }
+                        self.ring_buffer.push(CommittedWordEntry {
+                            raw_keys: raw.clone(),
+                            visible_word: final_word,
+                            trailing_delimiters: " ".to_string(),
+                            prior_context,
+                            committed_context,
+                            was_auto_restored: should_restore,
+                            user_override_vn: user_override,
+                        });
                     }
-                    self.ring_buffer.push(CommittedWordEntry {
-                        raw_keys: raw.clone(),
-                        visible_word: final_word,
-                        trailing_delimiters: " ".to_string(),
-                        prior_context,
-                        committed_context,
-                        was_auto_restored: should_restore,
-                        user_override_vn: user_override,
-                    });
                 } else {
                     self.ring_buffer.clear();
                 }

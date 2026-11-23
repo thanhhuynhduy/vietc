@@ -30,8 +30,10 @@ fn can_apply_dd_at(raw: &[char], d_first_idx: usize) -> bool {
 }
 
 /// Allow free-order Telex circumflex across a valid Vietnamese coda (`khongo` -> `không`,
-/// `vietej` -> `việt`, `tienges` -> `tiếng`, `tana` -> `tân`) only when:
-/// - characters strictly between `j` and `i` form a valid Vietnamese coda (`c,ch,m,n,ng,nh,p,t`)
+/// `khongso` -> `khống`, `vietej` -> `việt`, `vietje` -> `việt`, `tienges` -> `tiếng`,
+/// `tiengse` -> `tiếng`, `tana` -> `tân`) only when:
+/// - characters strictly between `j` and `i` form a valid Vietnamese coda (`c,ch,m,n,ng,nh,p,t`),
+///   optionally followed by a single trailing tone key right before `i`
 /// - nothing after `i` is a non-tone letter (blocking `banana`, `canada`, `benefit`, `manage`, `tenet`)
 /// - the raw word is not a known English word (blocking `mono`, `mama`, `meme`, `papa`, `toto`, etc.)
 fn can_circumflex_across_coda(raw: &[char], consumed: &[bool], j: usize, i: usize) -> bool {
@@ -44,19 +46,44 @@ fn can_circumflex_across_coda(raw: &[char], consumed: &[bool], j: usize, i: usiz
     {
         return false;
     }
-    let coda: String = (j + 1..i)
-        .filter(|&k| !consumed[k])
-        .map(|k| lower(raw[k]))
-        .collect();
+    let mut coda_buf = [0u8; 3];
+    let mut coda_len = 0usize;
+    for k in (j + 1)..i {
+        if consumed[k] {
+            continue;
+        }
+        let ch = lower(raw[k]);
+        if !ch.is_ascii() || coda_len >= coda_buf.len() {
+            return false;
+        }
+        coda_buf[coda_len] = ch as u8;
+        coda_len += 1;
+    }
+    // Allow a single trailing tone key immediately before the circumflex trigger
+    // (e.g. `khongso` -> `khống`, `tiengse` -> `tiếng`, `vietje` -> `việt`),
+    // while never stripping an internal `s` like `pasta`.
+    if coda_len >= 2 && is_tone_key(coda_buf[coda_len - 1] as char) {
+        coda_len -= 1;
+    }
+    let coda = &coda_buf[..coda_len];
     if !matches!(
-        coda.as_str(),
-        "c" | "ch" | "m" | "n" | "ng" | "nh" | "p" | "t"
+        coda,
+        b"c" | b"ch" | b"m" | b"n" | b"ng" | b"nh" | b"p" | b"t"
     ) {
         return false;
     }
     // Check that the raw ASCII word is not in the English dictionary (prevents
     // transforming English words like `mono`, `mama`, `meme`, `papa` while
     // keeping `khongo`, `viete`, `vietej`, `tienges`, `tana` free-order).
+    if raw.len() <= 32 && raw.iter().all(|c| c.is_ascii()) {
+        let mut raw_buf = [0u8; 32];
+        for (idx, &ch) in raw.iter().enumerate() {
+            raw_buf[idx] = lower(ch) as u8;
+        }
+        if let Ok(raw_lower) = std::str::from_utf8(&raw_buf[..raw.len()]) {
+            return !crate::engine::english_dict().is_english_word(raw_lower);
+        }
+    }
     let raw_lower: String = raw.iter().map(|&ch| lower(ch)).collect();
     !crate::engine::english_dict().is_english_word(&raw_lower)
 }

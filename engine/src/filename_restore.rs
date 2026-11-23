@@ -68,6 +68,21 @@ pub(crate) fn is_known_file_extension(ext_lower: &str) -> bool {
             | "kt"
             | "rb"
             | "php"
+            | "docx"
+            | "doc"
+            | "xlsx"
+            | "xls"
+            | "pptx"
+            | "ppt"
+            | "odt"
+            | "ods"
+            | "lua"
+            | "zig"
+            | "nix"
+            | "vue"
+            | "svelte"
+            | "7z"
+            | "rar"
     )
 }
 

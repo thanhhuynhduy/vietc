@@ -158,11 +158,13 @@ impl FocusSnapshot {
     /// never leak into the overlay, while keeping a `toplevel:` identity so
     /// the 250ms background poller does not overwrite it.
     pub fn observe_focus_lost(&mut self) {
+        let seat = std::env::var("XDG_SEAT").unwrap_or_else(|_| "seat0".to_string());
+        let lost_id = "toplevel:focus-lost".to_string();
         self.generation = self.generation.wrapping_add(1);
         self.generation_signal
             .store(self.generation, Ordering::Release);
-        self.target = None;
-        self.identity = Some("toplevel:focus-lost".to_string());
+        self.target = TargetIdentity::new(seat, None, Some(lost_id.clone()), Some(lost_id.clone()));
+        self.identity = Some(lost_id);
         self.class = None;
         self.class_from_compositor = true;
         self.omnibox_inline_selection = false;
@@ -450,5 +452,26 @@ mod tests {
             take_surrounding_context(&shared, gen).expect("post-click context must survive");
         assert_eq!(taken.word_at_caret.as_deref(), Some("chao"));
         assert_eq!(taken.prev_word.as_deref(), Some("xin"));
+    }
+
+    #[test]
+    fn focus_lost_does_not_spuriously_bump_generation_on_background_poll() {
+        let mut snapshot = FocusSnapshot::default();
+        snapshot.observe(Some("toplevel:firefox".into()), Some("firefox".into()));
+        let gen_before = snapshot.generation;
+
+        snapshot.observe_focus_lost();
+        let gen_after_lost = snapshot.generation;
+        assert_eq!(gen_after_lost, gen_before.wrapping_add(1));
+        assert_eq!(snapshot.identity.as_deref(), Some("toplevel:focus-lost"));
+        assert_eq!(snapshot.class, None);
+        assert!(snapshot.class_from_compositor);
+
+        // Simulate the 250ms background poller re-observing the authoritative identity
+        snapshot.observe(snapshot.identity.clone(), snapshot.class.clone());
+        assert_eq!(
+            snapshot.generation, gen_after_lost,
+            "background poll must not spuriously bump generation and wipe launcher composition"
+        );
     }
 }

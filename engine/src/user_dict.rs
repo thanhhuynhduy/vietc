@@ -389,8 +389,18 @@ impl AutoCapState {
                 self.pending_sentence_end = true;
                 self.expect_cap = false;
             }
-            '"' | '\'' | ')' | ']' | '»' | '”' | '’' => {
+            '"' | '\'' => {
+                if !self.pending_sentence_end && !self.expect_cap {
+                    self.reset();
+                }
+            }
+            ')' | ']' | '»' | '”' | '’' => {
                 if !self.pending_sentence_end {
+                    self.reset();
+                }
+            }
+            '(' | '[' | '«' | '“' | '‘' => {
+                if !self.expect_cap {
                     self.reset();
                 }
             }

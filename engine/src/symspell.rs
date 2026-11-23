@@ -175,17 +175,6 @@ fn weighted_spatial_edit(src: &str, dst: &str, layout: AutocorrectLayout) -> Opt
                 if j == i + 1 && a[i] == b[j] && a[j] == b[i] {
                     return Some((1, 10));
                 }
-                // Two substitutions: require both spatially adjacent and same char class
-                if a[i].is_ascii_digit() != b[i].is_ascii_digit()
-                    || a[j].is_ascii_digit() != b[j].is_ascii_digit()
-                {
-                    return None;
-                }
-                let d1 = key_distance_for_layout(layout, a[i], b[i]);
-                let d2 = key_distance_for_layout(layout, a[j], b[j]);
-                if d1 <= MAX_SPATIAL_DIST && d2 <= MAX_SPATIAL_DIST {
-                    return Some((2, 22));
-                }
                 return None;
             }
             _ => return None,
@@ -361,9 +350,8 @@ fn try_vn_symspell(
 
     let best = scored[0];
     if scored.len() == 1 {
-        // Sole unambiguous candidate: accept edit-1 with tight spatial cost (<= 16),
-        // or edit-2 spatial slip only if backed by real context.
-        if (best.1 == 1 && best.2 <= 16) || (best.1 == 2 && best.2 <= 22 && best.3 >= 140) {
+        // Sole unambiguous candidate: accept edit-1 with tight spatial cost (<= 16).
+        if best.1 == 1 && best.2 <= 16 {
             return Some(best.0.to_string());
         }
         return None;

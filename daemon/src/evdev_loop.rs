@@ -506,12 +506,28 @@ pub fn run_with_evdev(
                     }
                 }
 
-                if matches!(
-                    key,
-                    evdev::KeyCode::KEY_CAPSLOCK
-                        | evdev::KeyCode::KEY_LEFTSHIFT
-                        | evdev::KeyCode::KEY_RIGHTSHIFT
-                ) {
+                // Only the primary ungrabbed keyboard is composed; the others
+                // already deliver native input. A grabbed device always needs
+                // forwarding, regardless of the grab results of other devices.
+                if !grabbed && i != 0 {
+                    continue;
+                }
+
+                // Observe focus changes, per-app state, FocusLost resets, and
+                // password field transitions ONCE per keystroke (single lock on
+                // `shared_focus`) BEFORE bypass, toggle, engine, or Backspace logic.
+                if value == 1 {
+                    focus_sync.sync_on_key_press(daemon, &*injector, &shared_focus);
+                }
+
+                if !daemon.app_state.is_password_active()
+                    && matches!(
+                        key,
+                        evdev::KeyCode::KEY_CAPSLOCK
+                            | evdev::KeyCode::KEY_LEFTSHIFT
+                            | evdev::KeyCode::KEY_RIGHTSHIFT
+                    )
+                {
                     let trace_index = CAPS_SHIFT_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
                     if trace_index < CAPS_SHIFT_TRACE_LIMIT {
                         let action = match value {
@@ -527,20 +543,6 @@ pub fn run_with_evdev(
                             key_state.contains(evdev::KeyCode::KEY_RIGHTSHIFT),
                         ));
                     }
-                }
-
-                // Only the primary ungrabbed keyboard is composed; the others
-                // already deliver native input. A grabbed device always needs
-                // forwarding, regardless of the grab results of other devices.
-                if !grabbed && i != 0 {
-                    continue;
-                }
-
-                // Observe focus changes, per-app state, FocusLost resets, and
-                // password field transitions ONCE per keystroke (single lock on
-                // `shared_focus`) BEFORE bypass, toggle, engine, or Backspace logic.
-                if value == 1 {
-                    focus_sync.sync_on_key_press(daemon, &*injector, &shared_focus);
                 }
 
                 // Completely bypass all IME processing for remote desktops, VM viewers and games
@@ -580,7 +582,7 @@ pub fn run_with_evdev(
                         daemon.config.deduplicate_window_ms,
                         std::time::Instant::now(),
                     ) {
-                        if debug_logging {
+                        if debug_logging && !daemon.app_state.is_password_active() {
                             log_debug(&format!(
                                 "[dboard] dedup dropped keycode {} (window {}ms)",
                                 keycode, daemon.config.deduplicate_window_ms
@@ -675,6 +677,7 @@ pub fn run_with_evdev(
                             && daemon.engine.is_enabled()
                             && (!daemon.engine.buffer().is_empty()
                                 || daemon.caret_reselection.is_some())
+                            && !is_modifier_held_shift(&key_state)
                             && (key_state.contains(evdev::KeyCode::KEY_LEFTALT)
                                 || key_state.contains(evdev::KeyCode::KEY_RIGHTALT))
                             && !key_state.contains(evdev::KeyCode::KEY_LEFTCTRL)

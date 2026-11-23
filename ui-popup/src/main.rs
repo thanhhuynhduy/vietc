@@ -97,7 +97,7 @@ fn parse_caret(json: &str) -> Option<CaretRect> {
     let x = parse_i32_field(sub, r#""x":"#)?;
     let y = parse_i32_field(sub, r#""y":"#)?;
     let h = parse_i32_field(sub, r#""h":"#)?;
-    if x >= 0 && y >= 0 && h > 0 && h <= 240 {
+    if (-32768..=32768).contains(&x) && (-32768..=32768).contains(&y) && h > 0 && h <= 240 {
         Some(CaretRect { x, y, h })
     } else {
         None
@@ -308,6 +308,18 @@ mod tests {
         assert_eq!(
             format_strip(&pkt).as_deref(),
             Some("[1] tiếng | [2] tieengs | [3] tiến")
+        );
+
+        let neg_caret =
+            r#"{"v":1,"visible":true,"candidates":["chào"],"caret":{"x":-1200,"y":-300,"h":20}}"#;
+        let pkt_neg = parse_packet(neg_caret).unwrap();
+        assert_eq!(
+            pkt_neg.caret,
+            Some(CaretRect {
+                x: -1200,
+                y: -300,
+                h: 20
+            })
         );
 
         let no_caret = r#"{"v":1,"visible":true,"candidates":["chào"]}"#;

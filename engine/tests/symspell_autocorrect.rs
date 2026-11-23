@@ -167,8 +167,112 @@ fn mid_sentence_caret_reselection_alternatives_swap_cleanly() {
     // Unambiguous normal words & punctuation-glued tokens -> empty (no popup spam)
     assert!(engine.alternatives_for_word("hôm", None).is_empty());
     assert!(engine.alternatives_for_word("hello", None).is_empty());
+    // Non-ASCII Vietnamese typo sitting on screen (e.g. "khôg" from `khoog` when
+    // autocorrect was off or undone) must also yield SymSpell re-selection candidates.
+    let alts_non_ascii = engine.alternatives_for_word("khôg", None);
+    assert_eq!(
+        alts_non_ascii.first().map(String::as_str),
+        Some("không"),
+        "non-ASCII Vietnamese typo 'khôg' should suggest 'không', got {:?}",
+        alts_non_ascii
+    );
+    assert!(alts_non_ascii.iter().any(|c| c == "khôg"));
+
     assert!(engine.alternatives_for_word("a", None).is_empty());
     assert!(engine.alternatives_for_word("foo_bar", None).is_empty());
+}
+
+#[test]
+fn audit_regression_fixes_split_ring_buffer_circumflex_filename_and_autocap() {
+    // 1. Missing-space split pushes individual words into ring_buffer so
+    //    next-word prediction works and One-Tap Undo pops both entries cleanly.
+    let mut engine = Engine::new(InputMethod::Telex);
+    engine.set_auto_restore(true);
+    engine.set_autocorrect(true);
+    for ch in "khoongbieets ".chars() {
+        let _ = engine.process_key(ch);
+    }
+    let preds = engine.predict_next_words(3);
+    assert!(
+        !preds.is_empty(),
+        "split 'không biết ' must push separate ring_buffer words for next-word prediction"
+    );
+    // One-Tap Undo immediately after split must restore raw keys cleanly
+    let undo_ev = engine.process_key('\x08');
+    assert!(matches!(undo_ev, Some(EngineEvent::Replace(_))));
+    assert!(
+        engine.predict_next_words(3).is_empty(),
+        "One-Tap Undo of split pair must pop both ring_buffer entries"
+    );
+
+    // 2. Tone-before-circumflex across Vietnamese coda (`khongso`, `tiengse`, `vietje`)
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Telex, "khongso tiengse vietje pasta "),
+        "khống tiếng việt pasta "
+    );
+
+    // 3. Office & modern dev filename extensions
+    assert_eq!(
+        simulate_autocorrect_with_method(
+            InputMethod::Telex,
+            "mowr test.docx xem list.xlsx suwar main.lua "
+        ),
+        "mở test.docx xem list.xlsx sửa main.lua "
+    );
+
+    // 4. Smart AutoCap across opening quotes & brackets after sentence boundary
+    let mut cap_engine = Engine::new(InputMethod::Telex);
+    cap_engine.set_auto_restore(true);
+    cap_engine.set_auto_capitalize(true);
+    let type_cap = |eng: &mut Engine, s: &str| -> String {
+        let mut out = String::new();
+        for ch in s.chars() {
+            match eng.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    for _ in 0..rep.delete_before_cursor {
+                        out.pop();
+                    }
+                    out.push_str(&rep.insert);
+                    if dboard_engine::is_flush_char(ch) {
+                        out.push(ch);
+                    }
+                }
+                Some(EngineEvent::AutoRestore(w)) => {
+                    out.push_str(&w);
+                    if dboard_engine::is_flush_char(ch) {
+                        out.push(ch);
+                    }
+                }
+                Some(EngineEvent::Insert(t)) | Some(EngineEvent::Flush(t)) => out.push_str(&t),
+                Some(EngineEvent::UndoTones {
+                    backspaces,
+                    restored,
+                }) => {
+                    for _ in 0..backspaces {
+                        out.pop();
+                    }
+                    out.push_str(&restored);
+                }
+                Some(EngineEvent::Paste(t)) => out.push_str(&t),
+                None => out.push(ch),
+            }
+        }
+        out
+    };
+    assert_eq!(
+        type_cap(&mut cap_engine, "Chaof. \"hoom nay\" "),
+        "Chào. \"Hôm nay\" "
+    );
+    cap_engine.reset();
+    assert_eq!(
+        type_cap(&mut cap_engine, "Chaof. \u{201C}hoom nay\u{201D} "),
+        "Chào. \u{201C}Hôm nay\u{201D} "
+    );
+    cap_engine.reset();
+    assert_eq!(
+        type_cap(&mut cap_engine, "Chaof (hoom nay) "),
+        "Chào (hôm nay) "
+    );
 }
 
 fn simulate_autocorrect_with_method(method: InputMethod, raw: &str) -> String {

@@ -23,19 +23,24 @@ const MAX_CANDIDATES: usize = 3;
 const MAX_CANDIDATE_BYTES: usize = 64;
 
 /// Lock-free packed caret screen rectangle:
-/// bit 63 = valid flag, bits 42..63 = x (21-bit), bits 21..42 = y (21-bit), bits 0..21 = h (21-bit).
+/// bit 63 = valid flag, bits 42..63 = biased x (signed 21-bit),
+/// bits 21..42 = biased y (signed 21-bit), bits 0..21 = h (21-bit).
 static CARET_RECT_PACKED: AtomicU64 = AtomicU64::new(0);
+const CARET_COORD_BIAS: i32 = 0x10_0000;
 
 /// Record the active caret's screen-space `(x, y, height)` from the background
 /// AT-SPI2 thread with zero locking on `evdev_loop`.
 pub fn record_caret_rect(rect: Option<(i32, i32, i32)>) {
     let packed = match rect {
         Some((x, y, h))
-            if (0..0x20_0000).contains(&x)
-                && (0..0x20_0000).contains(&y)
+            if (-CARET_COORD_BIAS..CARET_COORD_BIAS).contains(&x)
+                && (-CARET_COORD_BIAS..CARET_COORD_BIAS).contains(&y)
                 && (1..0x20_0000).contains(&h) =>
         {
-            (1u64 << 63) | ((x as u64) << 42) | ((y as u64) << 21) | (h as u64)
+            (1u64 << 63)
+                | (((x + CARET_COORD_BIAS) as u64) << 42)
+                | (((y + CARET_COORD_BIAS) as u64) << 21)
+                | (h as u64)
         }
         _ => 0,
     };
@@ -49,8 +54,8 @@ pub fn current_caret_rect() -> Option<(i32, i32, i32)> {
         return None;
     }
     let mask = 0x1F_FFFFu64;
-    let x = ((packed >> 42) & mask) as i32;
-    let y = ((packed >> 21) & mask) as i32;
+    let x = (((packed >> 42) & mask) as i32) - CARET_COORD_BIAS;
+    let y = (((packed >> 21) & mask) as i32) - CARET_COORD_BIAS;
     let h = (packed & mask) as i32;
     Some((x, y, h))
 }
@@ -415,5 +420,15 @@ mod tests {
 
         drop(receiver);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn caret_rect_supports_negative_multi_monitor_coordinates() {
+        record_caret_rect(Some((-1200, -450, 22)));
+        assert_eq!(current_caret_rect(), Some((-1200, -450, 22)));
+        record_caret_rect(Some((0, 0, 18)));
+        assert_eq!(current_caret_rect(), Some((0, 0, 18)));
+        record_caret_rect(None);
+        assert_eq!(current_caret_rect(), None);
     }
 }

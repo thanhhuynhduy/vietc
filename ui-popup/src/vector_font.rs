@@ -61,7 +61,8 @@ pub fn draw_candidate_label(
         );
     } else {
         draw_bitmap_label(
-            buf, width, height, logical_w, logical_h, scale, slot_x, label, badge_fg, fg,
+            buf, width, height, logical_w, logical_h, scale, slot_x, slot_end_x, label, badge_fg,
+            fg,
         );
     }
 }
@@ -146,14 +147,18 @@ fn draw_bitmap_label(
     logical_h: u32,
     scale: u32,
     slot_x: i32,
+    slot_end_x: i32,
     label: &str,
     badge_fg: [u8; 4],
     fg: [u8; 4],
 ) {
     let base_y = (logical_h.saturating_sub(crate::font::CELL_H)) / 2;
+    let slot_clip = (slot_end_x.max(slot_x + 8) as u32)
+        .saturating_sub(4)
+        .min(logical_w.saturating_sub(8));
     let mut pen_x = (slot_x + 8).max(8) as u32;
     for (ci, ch) in label.chars().enumerate() {
-        if pen_x + crate::font::CELL_W >= logical_w.saturating_sub(8) {
+        if pen_x + crate::font::CELL_W > slot_clip {
             break;
         }
         let color = if ci < 3 { badge_fg } else { fg };
