@@ -249,33 +249,10 @@ fn other(e: impl std::fmt::Display) -> io::Error {
     io::Error::other(e.to_string())
 }
 
-// Nonblocking AF_UNIX connect fails fast if the compositor backlog is full.
-// Unlike connect_to_env(), this cannot wait indefinitely or mutate environment/FDs.
+// Nonblocking AF_UNIX connect fails fast if the compositor backlog is full
+// and probes `wayland-0..10` if `$WAYLAND_DISPLAY` is stale after restart.
 fn connect() -> io::Result<Connection> {
-    if std::env::var_os("WAYLAND_SOCKET").is_some() {
-        return Err(err(
-            io::ErrorKind::Unsupported,
-            "inherited WAYLAND_SOCKET is unsupported",
-        ));
-    }
-    let display = std::env::var_os("WAYLAND_DISPLAY").filter(|v| !v.is_empty());
-    let display = std::path::PathBuf::from(display.unwrap_or_else(|| "wayland-0".into()));
-    let path = if display.is_absolute() {
-        display
-    } else {
-        let runtime = std::path::PathBuf::from(
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .ok_or_else(|| err(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR missing"))?,
-        );
-        if !runtime.is_absolute() {
-            return Err(err(
-                io::ErrorKind::InvalidInput,
-                "runtime directory must be absolute",
-            ));
-        }
-        runtime.join(display)
-    };
-    let stream = crate::wayland_vk_connect::connect_unix_nonblocking(&path)?;
+    let stream = crate::wayland_vk_connect::connect_wayland_socket()?;
     Connection::from_socket(stream).map_err(other)
 }
 

@@ -491,3 +491,35 @@ fn disconnect_cleanup_releases_all_unconsumed_held_and_forwarded_keys() {
         ]
     );
 }
+
+#[test]
+fn repeated_spaces_keep_ring_buffer_synced_on_backspace() {
+    let config = crate::config::Config {
+        start_enabled: true,
+        input_method: "telex".into(),
+        ..Default::default()
+    };
+    let mut daemon = Daemon::new(
+        config,
+        std::path::PathBuf::from("/tmp/dboard-space-repeat-test.toml"),
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    );
+    for ch in "chao".chars() {
+        let _ = daemon.process_key(ch);
+    }
+    // Initial Space press + 3 Space repeats (as dispatched by evdev_loop value==2)
+    for _ in 0..4 {
+        assert!(daemon.process_key(' ').is_empty());
+    }
+    // Deleting 3 of the 4 spaces must NOT rehydrate "chao" prematurely
+    for _ in 0..3 {
+        assert!(daemon.process_key('\x08').is_empty());
+        assert!(daemon.engine.buffer().is_empty());
+    }
+    // Deleting the final space rehydrates "chao", allowing tone addition -> "chào"
+    assert!(daemon.process_key('\x08').is_empty());
+    assert_eq!(daemon.engine.buffer(), "chao");
+    let cmds = daemon.process_key('f');
+    assert_eq!(daemon.engine.buffer(), "chào");
+    assert!(!cmds.is_empty());
+}

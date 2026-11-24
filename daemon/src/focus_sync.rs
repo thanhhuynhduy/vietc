@@ -269,6 +269,9 @@ mod tests {
 
     #[test]
     fn focus_lost_restores_global_method_and_enabled_from_terminal_or_english_app() {
+        let _lock = crate::password_detector::atspi_test_lock();
+        crate::password_detector::reset_atspi_focus_state();
+
         let mut cfg = crate::config::Config {
             input_method: "telex".into(),
             ..Default::default()

@@ -304,13 +304,17 @@ impl UinputInjector {
             .store(now_us, Ordering::Release);
     }
 
-    fn is_in_mod_release_cooldown(&self) -> bool {
+    fn mod_release_cooldown_remaining_us(&self) -> u64 {
         let last = self.last_uinput_mod_release_us.load(Ordering::Acquire);
         if last == 0 {
-            return false;
+            return 0;
         }
         let now_us = (self.started.elapsed().as_micros() as u64).saturating_add(1);
-        now_us.saturating_sub(last) < MOD_RELEASE_VK_COOLDOWN_US
+        MOD_RELEASE_VK_COOLDOWN_US.saturating_sub(now_us.saturating_sub(last))
+    }
+
+    fn is_in_mod_release_cooldown(&self) -> bool {
+        self.mod_release_cooldown_remaining_us() > 0
     }
 
     #[cfg(feature = "wayland-protocol")]
@@ -415,14 +419,20 @@ impl KeyInjector for UinputInjector {
                         return InjectResult::Success;
                     }
                 } else {
-                    if !mods_active && self.uinput_shift_mask.load(Ordering::Acquire) != 0 {
-                        self.transfer_uinput_shift_to_vk();
-                    }
-                    if self
-                        .with_wayland_vk(|vk| vk.send_key_event(keycode, value, mods_active))
-                        .unwrap_or(false)
-                    {
-                        return InjectResult::Success;
+                    let releasing_uinput_shift = value == 0
+                        && shift_bit(keycode).is_some_and(|sbit| {
+                            (self.uinput_shift_mask.load(Ordering::Acquire) & sbit) != 0
+                        });
+                    if !releasing_uinput_shift {
+                        if !mods_active && self.uinput_shift_mask.load(Ordering::Acquire) != 0 {
+                            self.transfer_uinput_shift_to_vk();
+                        }
+                        if self
+                            .with_wayland_vk(|vk| vk.send_key_event(keycode, value, mods_active))
+                            .unwrap_or(false)
+                        {
+                            return InjectResult::Success;
+                        }
                     }
                 }
             }
@@ -622,7 +632,13 @@ impl KeyInjector for UinputInjector {
         self.caps_lock.store(enabled, Ordering::Relaxed);
         #[cfg(feature = "wayland-protocol")]
         {
-            let _ = self.with_wayland_vk(|vk| vk.set_caps_lock(enabled));
+            let slot = self
+                .wayland_vk
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(vk) = slot.vk.as_ref().filter(|vk| vk.is_healthy()) {
+                vk.set_caps_lock(enabled);
+            }
         }
         InjectResult::Success
     }
@@ -631,7 +647,13 @@ impl KeyInjector for UinputInjector {
         self.num_lock.store(enabled, Ordering::Relaxed);
         #[cfg(feature = "wayland-protocol")]
         {
-            let _ = self.with_wayland_vk(|vk| vk.set_num_lock(enabled));
+            let slot = self
+                .wayland_vk
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(vk) = slot.vk.as_ref().filter(|vk| vk.is_healthy()) {
+                vk.set_num_lock(enabled);
+            }
         }
         InjectResult::Success
     }
@@ -684,12 +706,26 @@ impl UinputInjector {
     ) -> InjectResult {
         let extra_deletes =
             usize::from(self.omnibox_inline_selection.swap(false, Ordering::AcqRel));
+        let is_layout_direct = !text.is_empty()
+            && text.chars().all(|c| {
+                crate::layout::char_to_evdev_and_shift_for_layout(self.layout, c).is_some()
+                    || c == '\n'
+            });
 
         #[cfg(feature = "wayland-protocol")]
         {
-            let vk_fifo_safe = self.uinput_mod_mask.load(Ordering::Acquire) == 0
-                && !self.is_in_mod_release_cooldown();
-            if vk_fifo_safe {
+            let no_sys_mods = self.uinput_mod_mask.load(Ordering::Acquire) == 0;
+            let mut rem_us = self.mod_release_cooldown_remaining_us();
+            if no_sys_mods
+                && rem_us > 0
+                && !is_layout_direct
+                && !text.is_empty()
+                && crate::wayland_vk::WaylandVirtualKeyboard::can_encode_str(text)
+            {
+                std::thread::sleep(Duration::from_micros(rem_us));
+                rem_us = 0;
+            }
+            if no_sys_mods && rem_us == 0 {
                 if self.uinput_shift_mask.load(Ordering::Acquire) != 0 {
                     self.transfer_uinput_shift_to_vk();
                 }

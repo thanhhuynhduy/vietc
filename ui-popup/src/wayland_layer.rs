@@ -6,11 +6,10 @@
 //! - Anchors directly beneath the AT-SPI2 caret (`Anchor::Top | Anchor::Left`)
 //!   with smart output-bounds clamping and above-caret flip near the bottom edge,
 //!   falling back cleanly to bottom-center when caret coordinates are unavailable.
-//! - Supports HiDPI (`wl_output` scale via `set_buffer_scale`), dynamic pill
-//!   width, anti-aliased rounded corners, hover highlight, and left-click
-//!   candidate selection (`wl_pointer`).
-//! - Attaches `None` buffer on `hide()` so the surface unmaps immediately on
-//!   password fields, bypass apps, focus loss, or word commit.
+//! - Supports multi-monitor, rotated outputs (90°/270°), HiDPI (`1..=4` via
+//!   `set_buffer_scale`), hover highlight, and left-click selection (`wl_pointer`).
+//! - Respects `wl_buffer::Event::Release` so buffers are never destroyed while
+//!   the compositor is still scanning them out (bounded to 4 in-flight buffers).
 
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -22,84 +21,14 @@ use wayland_client::protocol::{
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
+use crate::pill_render::{
+    compute_pill_placement, compute_slot_layout, hit_test_slot, render_gboard_pill_argb8888,
+    PillPlacement, BAR_HEIGHT, MIN_BAR_WIDTH,
+};
 use crate::CaretRect;
 
-pub const MIN_BAR_WIDTH: u32 = 220;
-pub const MAX_BAR_WIDTH: u32 = 560;
-pub const BAR_HEIGHT: u32 = 44;
 const BTN_LEFT: u32 = 0x110;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PillPlacement {
-    pub anchored_to_caret: bool,
-    pub margin_top: i32,
-    pub margin_bottom: i32,
-    pub margin_left: i32,
-}
-
-/// Compute screen-clamped placement for a pill of size `(bar_w, bar_h)` inside
-/// an output of `(out_w, out_h)`. Flips above the caret if below-caret would
-/// overflow the bottom edge; falls back to bottom-center when `caret` is `None`.
-pub fn compute_pill_placement(
-    caret: Option<CaretRect>,
-    bar_w: u32,
-    bar_h: u32,
-    out_w: i32,
-    out_h: i32,
-) -> PillPlacement {
-    let Some(c) = caret else {
-        return PillPlacement {
-            anchored_to_caret: false,
-            margin_top: 0,
-            margin_bottom: 28,
-            margin_left: 0,
-        };
-    };
-    let bw = bar_w as i32;
-    let bh = bar_h as i32;
-    let max_left = (out_w - bw - 8).max(8);
-    let left = c.x.clamp(8, max_left);
-    let below = c.y.saturating_add(c.h).saturating_add(8);
-    let top = if below + bh <= out_h - 8 {
-        below
-    } else {
-        c.y.saturating_sub(bh + 8).max(8)
-    };
-    PillPlacement {
-        anchored_to_caret: true,
-        margin_top: top,
-        margin_bottom: 0,
-        margin_left: left,
-    }
-}
-
-/// Compute dynamic pill width and per-slot logical `(x_start, x_end)` hit-boxes.
-pub fn compute_slot_layout(candidates: &[String]) -> (u32, Vec<(i32, i32)>) {
-    let mut x = 14i32;
-    let mut bounds = Vec::with_capacity(candidates.len().min(3));
-    for (idx, cand) in candidates.iter().take(3).enumerate() {
-        let chars = cand.chars().count().min(18) as i32;
-        // `[1] ` (4 chars * 8px) + candidate (chars * 8px) + horizontal pill padding
-        let slot_w = (4 + chars) * 8 + 20;
-        let x_end = x + slot_w;
-        bounds.push((x, x_end));
-        x = x_end
-            + if idx + 1 < candidates.len().min(3) {
-                10
-            } else {
-                0
-            };
-    }
-    let total_w = ((x + 14) as u32).clamp(MIN_BAR_WIDTH, MAX_BAR_WIDTH);
-    (total_w, bounds)
-}
-
-pub fn hit_test_slot(slot_bounds: &[(i32, i32)], pointer_x: f64) -> Option<usize> {
-    let px = pointer_x.round() as i32;
-    slot_bounds
-        .iter()
-        .position(|&(start, end)| px >= start && px <= end)
-}
+const MAX_IN_FLIGHT_BUFFERS: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
@@ -110,21 +39,19 @@ pub struct OutputInfo {
     pub width: i32,
     pub height: i32,
     pub scale: i32,
+    pub rotated_90: bool,
 }
 
 impl OutputInfo {
     fn logical_size(&self) -> (i32, i32, i32) {
         let scale = self.scale.clamp(1, 4);
-        let lw = if self.width > 0 {
-            self.width / scale
+        let (raw_w, raw_h) = if self.rotated_90 {
+            (self.height, self.width)
         } else {
-            1920
+            (self.width, self.height)
         };
-        let lh = if self.height > 0 {
-            self.height / scale
-        } else {
-            1080
-        };
+        let lw = if raw_w > 0 { raw_w / scale } else { 1920 };
+        let lh = if raw_h > 0 { raw_h / scale } else { 1080 };
         (lw, lh, scale)
     }
 }
@@ -158,6 +85,20 @@ pub fn select_output_and_local_caret(
     (Some(matched.global_name), lw, lh, scale, Some(local_caret))
 }
 
+struct InFlightBuffer {
+    id: u64,
+    buffer: wl_buffer::WlBuffer,
+    pool: wl_shm_pool::WlShmPool,
+    _fd: OwnedFd,
+}
+
+impl InFlightBuffer {
+    fn destroy(self) {
+        self.buffer.destroy();
+        self.pool.destroy();
+    }
+}
+
 #[derive(Default)]
 struct LayerState {
     compositor: Option<wl_compositor::WlCompositor>,
@@ -166,6 +107,7 @@ struct LayerState {
     seat: Option<wl_seat::WlSeat>,
     pointer: Option<wl_pointer::WlPointer>,
     outputs: Vec<OutputInfo>,
+    in_flight_buffers: Vec<InFlightBuffer>,
     pointer_x: f64,
     hovered_slot: Option<usize>,
     clicked_slot: Option<usize>,
@@ -173,6 +115,20 @@ struct LayerState {
     slot_bounds: Vec<(i32, i32)>,
     configured: bool,
     closed: bool,
+}
+
+impl LayerState {
+    fn release_buffer(&mut self, id: u64) {
+        if let Some(pos) = self.in_flight_buffers.iter().position(|b| b.id == id) {
+            self.in_flight_buffers.remove(pos).destroy();
+        }
+    }
+
+    fn destroy_all_buffers(&mut self) {
+        for buf in self.in_flight_buffers.drain(..) {
+            buf.destroy();
+        }
+    }
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerState {
@@ -209,6 +165,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LayerState {
                         width: 0,
                         height: 0,
                         scale: 1,
+                        rotated_90: false,
                     });
                 }
                 "wl_seat" if state.seat.is_none() => {
@@ -250,21 +207,34 @@ impl Dispatch<wl_output::WlOutput, u32> for LayerState {
             return;
         };
         match event {
-            wl_output::Event::Geometry { x, y, .. } => {
+            wl_output::Event::Geometry {
+                x, y, transform, ..
+            } => {
                 out.x = x;
                 out.y = y;
+                out.rotated_90 = matches!(
+                    transform,
+                    WEnum::Value(
+                        wl_output::Transform::_90
+                            | wl_output::Transform::_270
+                            | wl_output::Transform::Flipped90
+                            | wl_output::Transform::Flipped270
+                    )
+                );
             }
             wl_output::Event::Mode {
                 flags: WEnum::Value(f),
                 width,
                 height,
                 ..
-            } if f.contains(wl_output::Mode::Current) && width > 0 && height > 0 => {
-                out.width = width;
-                out.height = height;
+            } if f.contains(wl_output::Mode::Current) => {
+                if width > 0 && height > 0 {
+                    out.width = width;
+                    out.height = height;
+                }
             }
-            wl_output::Event::Scale { factor } if factor >= 1 => {
-                out.scale = factor.min(4);
+            wl_output::Event::Scale { factor } if factor > 0 => {
+                out.scale = factor.clamp(1, 4);
             }
             _ => {}
         }
@@ -284,8 +254,15 @@ impl Dispatch<wl_seat::WlSeat, ()> for LayerState {
             capabilities: WEnum::Value(caps),
         } = event
         {
-            if caps.contains(wl_seat::Capability::Pointer) && state.pointer.is_none() {
+            let has_pointer = caps.contains(wl_seat::Capability::Pointer);
+            if has_pointer && state.pointer.is_none() {
                 state.pointer = Some(seat.get_pointer(qh, ()));
+            } else if !has_pointer {
+                if let Some(ptr) = state.pointer.take() {
+                    ptr.release();
+                }
+                state.hovered_slot = None;
+                state.clicked_slot = None;
             }
         }
     }
@@ -304,16 +281,15 @@ impl Dispatch<wl_pointer::WlPointer, ()> for LayerState {
             wl_pointer::Event::Enter { surface_x, .. }
             | wl_pointer::Event::Motion { surface_x, .. } => {
                 state.pointer_x = surface_x;
-                let next_hover = hit_test_slot(&state.slot_bounds, surface_x);
-                if next_hover != state.hovered_slot {
-                    state.hovered_slot = next_hover;
+                let next = hit_test_slot(&state.slot_bounds, surface_x);
+                if next != state.hovered_slot {
+                    state.hovered_slot = next;
                     state.hover_dirty = true;
                 }
             }
             wl_pointer::Event::Leave { .. } => {
                 state.pointer_x = -1.0;
-                if state.hovered_slot.is_some() {
-                    state.hovered_slot = None;
+                if state.hovered_slot.take().is_some() {
                     state.hover_dirty = true;
                 }
             }
@@ -331,6 +307,21 @@ impl Dispatch<wl_pointer::WlPointer, ()> for LayerState {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, u64> for LayerState {
+    fn event(
+        state: &mut Self,
+        _: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        id: &u64,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_buffer::Event::Release) {
+            state.release_buffer(*id);
         }
     }
 }
@@ -361,7 +352,6 @@ wayland_client::delegate_noop!(LayerState: ignore wl_compositor::WlCompositor);
 wayland_client::delegate_noop!(LayerState: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(LayerState: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(LayerState: ignore wl_shm_pool::WlShmPool);
-wayland_client::delegate_noop!(LayerState: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(LayerState: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 
 pub struct WaylandLayerBar {
@@ -371,7 +361,7 @@ pub struct WaylandLayerBar {
     surface: wl_surface::WlSurface,
     layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     shm: wl_shm::WlShm,
-    active_buffer: Option<(wl_buffer::WlBuffer, wl_shm_pool::WlShmPool, OwnedFd)>,
+    next_buffer_id: u64,
     last_candidates: Vec<String>,
     last_caret: Option<CaretRect>,
     last_placement: Option<PillPlacement>,
@@ -430,7 +420,7 @@ impl WaylandLayerBar {
             surface,
             layer_surface,
             shm,
-            active_buffer: None,
+            next_buffer_id: 1,
             last_candidates: Vec::new(),
             last_caret: None,
             last_placement: None,
@@ -453,9 +443,17 @@ impl WaylandLayerBar {
 
     pub fn dispatch_pending(&mut self) -> io::Result<()> {
         let was_configured = self.state.configured;
-        let _ = self.queue.flush();
+        self.queue.flush().map_err(io::Error::other)?;
         if let Some(guard) = self.queue.prepare_read() {
-            let _ = guard.read();
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(err) => return Err(io::Error::other(err)),
+            }
         }
         self.queue
             .dispatch_pending(&mut self.state)
@@ -465,7 +463,7 @@ impl WaylandLayerBar {
             self.state.hover_dirty = false;
             let cands = self.last_candidates.clone();
             let caret = self.last_caret;
-            let _ = self.show(&cands, caret);
+            self.show(&cands, caret)?;
         }
         Ok(())
     }
@@ -496,16 +494,11 @@ impl WaylandLayerBar {
                 .and_then(|o| o.output.clone())
         });
         let qh = self.queue.handle();
-        // Per Wayland core protocol (`wl_surface` role lifecycle), a surface that
-        // was assigned a role must NOT be reused for a new `zwlr_layer_surface_v1`.
-        // Destroy the old role + surface + active SHM buffer and allocate a fresh
-        // `wl_surface` before binding to the target output.
+        // Per Wayland core protocol (`wl_surface` role lifecycle), destroy the old
+        // role + surface + buffers and allocate a fresh `wl_surface` before rebinding.
         self.layer_surface.destroy();
         self.surface.destroy();
-        if let Some((old_buf, old_pool, _old_fd)) = self.active_buffer.take() {
-            old_buf.destroy();
-            old_pool.destroy();
-        }
+        self.state.destroy_all_buffers();
         self.state.hovered_slot = None;
         self.state.clicked_slot = None;
 
@@ -548,6 +541,9 @@ impl WaylandLayerBar {
         self.queue
             .roundtrip(&mut self.state)
             .map_err(io::Error::other)?;
+        // Any `Closed` event dispatched during this roundtrip belonged to the
+        // just-destroyed previous layer_surface; keep the new surface alive.
+        self.state.closed = false;
         Ok(())
     }
 
@@ -592,9 +588,6 @@ impl WaylandLayerBar {
             self.last_placement = Some(placement);
         }
 
-        // Never attach a buffer before the compositor acknowledges the initial
-        // `zwlr_layer_surface_v1::Event::Configure`; `dispatch_pending` will
-        // re-render automatically using `self.last_candidates` once configured.
         if !self.state.configured {
             self.surface.commit();
             self.connection.flush().map_err(io::Error::other)?;
@@ -613,6 +606,8 @@ impl WaylandLayerBar {
         );
         let fd = create_shm_memfd(&pixels)?;
         let qh = self.queue.handle();
+        let buf_id = self.next_buffer_id;
+        self.next_buffer_id = self.next_buffer_id.wrapping_add(1);
         let pool = self
             .shm
             .create_pool(fd.as_fd(), pixels.len() as i32, &qh, ());
@@ -624,19 +619,26 @@ impl WaylandLayerBar {
             stride,
             wl_shm::Format::Argb8888,
             &qh,
-            (),
+            buf_id,
         );
         self.surface.set_buffer_scale(scale);
         self.surface.attach(Some(&buffer), 0, 0);
         self.surface
             .damage_buffer(0, 0, phys_w as i32, phys_h as i32);
         self.surface.commit();
-        self.connection.flush().map_err(io::Error::other)?;
 
-        if let Some((old_buf, old_pool, _old_fd)) = self.active_buffer.replace((buffer, pool, fd)) {
-            old_buf.destroy();
-            old_pool.destroy();
+        // Keep buffer alive until compositor sends `wl_buffer::Event::Release`,
+        // capping in-flight buffers to prevent unbounded FD growth on buggy compositors.
+        while self.state.in_flight_buffers.len() >= MAX_IN_FLIGHT_BUFFERS {
+            self.state.in_flight_buffers.remove(0).destroy();
         }
+        self.state.in_flight_buffers.push(InFlightBuffer {
+            id: buf_id,
+            buffer,
+            pool,
+            _fd: fd,
+        });
+        self.connection.flush().map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -648,20 +650,13 @@ impl WaylandLayerBar {
         self.surface.attach(None, 0, 0);
         self.surface.commit();
         self.connection.flush().map_err(io::Error::other)?;
-        if let Some((old_buf, old_pool, _old_fd)) = self.active_buffer.take() {
-            old_buf.destroy();
-            old_pool.destroy();
-        }
         Ok(())
     }
 }
 
 impl Drop for WaylandLayerBar {
     fn drop(&mut self) {
-        if let Some((buf, pool, _)) = self.active_buffer.take() {
-            buf.destroy();
-            pool.destroy();
-        }
+        self.state.destroy_all_buffers();
         if let Some(pointer) = self.state.pointer.take() {
             pointer.release();
         }
@@ -682,214 +677,9 @@ fn create_shm_memfd(bytes: &[u8]) -> io::Result<OwnedFd> {
     Ok(OwnedFd::from(file))
 }
 
-#[inline]
-fn blend_premul(dst: &mut [u8], bgra: [u8; 4], alpha_f: f32) {
-    let a = (f32::from(bgra[3]) * alpha_f.clamp(0.0, 1.0)).round() as u8;
-    if a == 0 {
-        return;
-    }
-    let af = f32::from(a) / 255.0;
-    let inv = 1.0 - af;
-    let sr = (f32::from(bgra[2]) * af).round();
-    let sg = (f32::from(bgra[1]) * af).round();
-    let sb = (f32::from(bgra[0]) * af).round();
-    dst[0] = (sb + f32::from(dst[0]) * inv).min(255.0) as u8;
-    dst[1] = (sg + f32::from(dst[1]) * inv).min(255.0) as u8;
-    dst[2] = (sr + f32::from(dst[2]) * inv).min(255.0) as u8;
-    dst[3] = (f32::from(a) + f32::from(dst[3]) * inv).min(255.0) as u8;
-}
-
-/// Signed distance to a rounded rectangle centered at `(cx, cy)` with half-size `(hx, hy)` and radius `r`.
-#[inline]
-fn rounded_rect_sdf(px: f32, py: f32, cx: f32, cy: f32, hx: f32, hy: f32, r: f32) -> f32 {
-    let qx = (px - cx).abs() - (hx - r);
-    let qy = (py - cy).abs() - (hy - r);
-    let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
-    let inside = qx.max(qy).min(0.0);
-    outside + inside - r
-}
-
-/// Renders a polished Gboard-style floating pill (`ARGB8888`, premultiplied)
-/// with anti-aliased rounded corners, HiDPI `scale` (`1` or `2`), active/hover
-/// slot highlight pills, and crisp 134-char Vietnamese Unicode glyphs.
-pub fn render_gboard_pill_argb8888(
-    candidates: &[String],
-    slot_bounds: &[(i32, i32)],
-    hovered_slot: Option<usize>,
-    logical_w: u32,
-    logical_h: u32,
-    scale: u32,
-) -> Vec<u8> {
-    let scale = scale.clamp(1, 2);
-    let width = logical_w * scale;
-    let height = logical_h * scale;
-    let mut buf = vec![0u8; (width * height * 4) as usize];
-
-    let bg: [u8; 4] = [0x2A, 0x1E, 0x1E, 0xF0]; // Dark slate #1E1E2A @ 94%
-    let border: [u8; 4] = [0xFA, 0xB4, 0x89, 0xCC]; // Soft accent border #89B4FA
-    let hover_bg: [u8; 4] = [0x58, 0x44, 0x3B, 0xE8]; // Highlighted slot pill
-    let primary_bg: [u8; 4] = [0x45, 0x33, 0x2E, 0xB0]; // Subtle slot #1 pill
-    let fg: [u8; 4] = [0xF4, 0xD6, 0xCD, 0xFF]; // #CDD6F4 crisp text
-    let badge_fg: [u8; 4] = [0xFA, 0xB4, 0x89, 0xFF]; // #89B4FA badge
-
-    let cx = (width as f32) * 0.5;
-    let cy = (height as f32) * 0.5;
-    let hx = cx - 1.5;
-    let hy = cy - 1.5;
-    let radius = (14.0 * scale as f32).min(hy);
-
-    for py in 0..height {
-        for px in 0..width {
-            let d = rounded_rect_sdf(px as f32 + 0.5, py as f32 + 0.5, cx, cy, hx, hy, radius);
-            if d > 1.0 {
-                continue;
-            }
-            let off = ((py * width + px) * 4) as usize;
-            let cov = (0.5 - d).clamp(0.0, 1.0);
-            blend_premul(&mut buf[off..off + 4], bg, cov);
-            // Crisp 1.25px anti-aliased border ring
-            let border_alpha = (1.0 - (d + 0.75).abs()).clamp(0.0, 1.0) * cov;
-            if border_alpha > 0.01 {
-                blend_premul(&mut buf[off..off + 4], border, border_alpha);
-            }
-        }
-    }
-
-    // Draw slot highlight pills (hovered slot or primary slot #1)
-    for (idx, &(sx, ex)) in slot_bounds.iter().enumerate() {
-        let pill_color = if hovered_slot == Some(idx) {
-            Some(hover_bg)
-        } else if idx == 0 {
-            Some(primary_bg)
-        } else {
-            None
-        };
-        if let Some(color) = pill_color {
-            let s_cx = ((sx + ex) as f32) * 0.5 * (scale as f32);
-            let s_hx = ((ex - sx) as f32) * 0.5 * (scale as f32);
-            let s_hy = (logical_h as f32 * 0.5 - 6.0) * (scale as f32);
-            let s_r = 8.0 * (scale as f32);
-            let x0 = ((sx.max(0) as u32) * scale).min(width);
-            let x1 = ((ex.max(0) as u32) * scale).min(width);
-            for py in (4 * scale)..(height.saturating_sub(4 * scale)) {
-                for px in x0..x1 {
-                    let d = rounded_rect_sdf(
-                        px as f32 + 0.5,
-                        py as f32 + 0.5,
-                        s_cx,
-                        cy,
-                        s_hx,
-                        s_hy,
-                        s_r,
-                    );
-                    if d < 1.0 {
-                        let off = ((py * width + px) * 4) as usize;
-                        blend_premul(&mut buf[off..off + 4], color, (0.5 - d).clamp(0.0, 1.0));
-                    }
-                }
-            }
-        }
-    }
-
-    // Draw candidate badges & Vietnamese glyphs via anti-aliased TrueType (or 8x16 bitmap fallback)
-    for (idx, (cand, &(sx, ex))) in candidates
-        .iter()
-        .take(3)
-        .zip(slot_bounds.iter())
-        .enumerate()
-    {
-        let label = format!("[{}] {}", idx + 1, cand);
-        crate::vector_font::draw_candidate_label(
-            &mut buf,
-            width,
-            height,
-            logical_w,
-            logical_h,
-            scale,
-            sx,
-            ex,
-            &label,
-            badge_fg,
-            fg,
-            blend_premul,
-        );
-    }
-
-    buf
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn computes_caret_placement_with_clamping_and_bottom_flip() {
-        // Normal caret mid-screen -> placed right below caret
-        let p = compute_pill_placement(
-            Some(CaretRect {
-                x: 400,
-                y: 300,
-                h: 20,
-            }),
-            320,
-            BAR_HEIGHT,
-            1920,
-            1080,
-        );
-        assert!(p.anchored_to_caret);
-        assert_eq!(p.margin_left, 400);
-        assert_eq!(p.margin_top, 328);
-
-        // Near bottom edge -> flips ABOVE caret
-        let p_bot = compute_pill_placement(
-            Some(CaretRect {
-                x: 1850,
-                y: 1040,
-                h: 20,
-            }),
-            320,
-            BAR_HEIGHT,
-            1920,
-            1080,
-        );
-        assert!(p_bot.anchored_to_caret);
-        assert_eq!(p_bot.margin_left, 1920 - 320 - 8);
-        assert_eq!(p_bot.margin_top, 1040 - (BAR_HEIGHT as i32) - 8);
-
-        // No caret -> falls back cleanly to bottom-center
-        let p_none = compute_pill_placement(None, 320, BAR_HEIGHT, 1920, 1080);
-        assert!(!p_none.anchored_to_caret);
-        assert_eq!(p_none.margin_bottom, 28);
-    }
-
-    #[test]
-    fn renders_non_empty_hidpi_gboard_pill_and_hit_tests_slots() {
-        let cands = vec![
-            "tiếng".to_string(),
-            "tieengs".to_string(),
-            "tiến".to_string(),
-        ];
-        let (w, bounds) = compute_slot_layout(&cands);
-        assert!((MIN_BAR_WIDTH..=MAX_BAR_WIDTH).contains(&w));
-        assert_eq!(bounds.len(), 3);
-        assert_eq!(hit_test_slot(&bounds, f64::from(bounds[0].0 + 4)), Some(0));
-        assert_eq!(hit_test_slot(&bounds, f64::from(bounds[1].0 + 4)), Some(1));
-        assert_eq!(hit_test_slot(&bounds, f64::from(bounds[2].0 + 4)), Some(2));
-        assert_eq!(hit_test_slot(&bounds, 2.0), None);
-
-        let pixels = render_gboard_pill_argb8888(&cands, &bounds, Some(1), w, BAR_HEIGHT, 2);
-        assert_eq!(pixels.len(), ((w * 2) * (BAR_HEIGHT * 2) * 4) as usize);
-        let fg_pixels = pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|px| px[0] == 0xF4 && px[1] == 0xD6 && px[2] == 0xCD && px[3] == 0xFF)
-            .count();
-        assert!(
-            fg_pixels > 200,
-            "expected crisp HiDPI glyphs, got {fg_pixels}"
-        );
-    }
 
     #[test]
     fn selects_matching_monitor_and_translates_global_caret_coordinates() {
@@ -902,6 +692,7 @@ mod tests {
                 width: 1920,
                 height: 1080,
                 scale: 1,
+                rotated_90: false,
             },
             OutputInfo {
                 global_name: 20,
@@ -911,6 +702,17 @@ mod tests {
                 width: 3840,
                 height: 2160,
                 scale: 2,
+                rotated_90: false,
+            },
+            OutputInfo {
+                global_name: 30,
+                output: None,
+                x: -1080,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1,
+                rotated_90: true,
             },
         ];
 
@@ -930,6 +732,26 @@ mod tests {
                 x: 180,
                 y: 300,
                 h: 22
+            })
+        );
+
+        // Rotated 90-degree left monitor (negative x, swapped 1080x1920 logical bounds)
+        let (rot_name, rlw, rlh, rscale, rlocal) = select_output_and_local_caret(
+            &outputs,
+            Some(CaretRect {
+                x: -500,
+                y: 1600,
+                h: 20,
+            }),
+        );
+        assert_eq!(rot_name, Some(30));
+        assert_eq!((rlw, rlh, rscale), (1080, 1920, 1));
+        assert_eq!(
+            rlocal,
+            Some(CaretRect {
+                x: 580,
+                y: 1600,
+                h: 20
             })
         );
     }

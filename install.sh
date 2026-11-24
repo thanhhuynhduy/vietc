@@ -430,14 +430,15 @@ t capability_removed
 
 # Remove stale binaries and duplicate autostart entries from older versions
 rm -f /usr/local/bin/dboard /usr/local/bin/dboard-daemon /usr/local/bin/dboard-cli \
-      /usr/local/bin/dboard-tray /etc/xdg/autostart/dboard-tray.desktop \
+      /usr/local/bin/dboard-tray /usr/local/bin/dboard-popup \
+      /etc/xdg/autostart/dboard-tray.desktop \
       /etc/default/dboard 2>/dev/null || true
 
 USER_HOME="$(getent passwd "$INSTALLING_USER" 2>/dev/null | cut -d: -f6 || true)"
 if [ -n "$INSTALLING_USER" ] && [ "$INSTALLING_USER" != "root" ] && [ -n "$USER_HOME" ]; then
     rm -f "$USER_HOME/.local/bin/dboard" "$USER_HOME/.local/bin/dboard-daemon" \
           "$USER_HOME/.local/bin/dboard-cli" "$USER_HOME/.local/bin/dboard-tray" \
-          "$USER_HOME/.local/bin/dboard-start" \
+          "$USER_HOME/.local/bin/dboard-popup" "$USER_HOME/.local/bin/dboard-start" \
           "$USER_HOME/.config/autostart/dboard.desktop" 2>/dev/null || true
 fi
 
@@ -501,7 +502,6 @@ Restart=on-failure
 RestartSec=3
 KillMode=process
 NoNewPrivileges=yes
-PrivateTmp=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 RestrictRealtime=yes

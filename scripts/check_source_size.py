@@ -10,7 +10,7 @@ EXISTING_LIMITS = {
     "protocol/src/uinput_monitor/clipboard.rs": 1_229,
     "protocol/src/wayland_clipboard.rs": 1_791,
 }
-SOURCE_ROOTS = ("cli", "daemon", "engine", "protocol", "ui")
+SOURCE_ROOTS = ("cli", "daemon", "engine", "protocol", "ui", "ui-popup")
 
 
 def line_count(path: Path) -> int:

@@ -16,6 +16,7 @@
 //!   (password fields, bypass apps, focus loss, or word commit).
 
 mod font;
+mod pill_render;
 mod vector_font;
 mod wayland_layer;
 
@@ -69,6 +70,30 @@ pub fn socket_path() -> Option<PathBuf> {
 
 pub fn select_socket_path() -> Option<PathBuf> {
     runtime_socket_path("dboard-select.sock")
+}
+
+fn lock_file_path() -> Option<PathBuf> {
+    runtime_socket_path("dboard-popup.lock")
+}
+
+/// Acquire a non-blocking exclusive single-instance `flock` before unlinking
+/// or binding `dboard-candidates.sock`, preventing duplicate/orphaned popups.
+fn acquire_single_instance_lock(path: &Path) -> Option<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        Some(file)
+    } else {
+        None
+    }
 }
 
 /// Bind the Unix datagram socket with strict `0o600` permissions and `O_NONBLOCK`.
@@ -206,6 +231,13 @@ fn main() {
         eprintln!("[dboard-popup] XDG_RUNTIME_DIR not available; exiting");
         std::process::exit(1);
     };
+    let _instance_lock = match lock_file_path().and_then(|lp| acquire_single_instance_lock(&lp)) {
+        Some(lock) => lock,
+        None => {
+            eprintln!("[dboard-popup] Another instance is already running; exiting");
+            return;
+        }
+    };
     let sock = match bind_secure_socket(&path) {
         Ok(s) => s,
         Err(err) => {
@@ -233,9 +265,23 @@ fn main() {
     };
 
     let mut buf = [0u8; MAX_PACKET_BYTES];
+    let mut last_visible_at: Option<std::time::Instant> = None;
+    let mut last_reconnect_attempt = std::time::Instant::now();
+    const STALE_OVERLAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+    const WAYLAND_RECONNECT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
     while RUNNING.load(Ordering::Relaxed) {
         if wayland_bar.as_ref().is_some_and(|b| b.is_closed()) {
-            break;
+            eprintln!("[dboard-popup] Layer surface closed; scheduling Wayland reconnect");
+            wayland_bar = None;
+            last_visible_at = None;
+            last_reconnect_attempt = std::time::Instant::now();
+        }
+        if wayland_bar.is_none() && last_reconnect_attempt.elapsed() >= WAYLAND_RECONNECT_INTERVAL {
+            last_reconnect_attempt = std::time::Instant::now();
+            if let Ok(bar) = wayland_layer::WaylandLayerBar::connect() {
+                eprintln!("[dboard-popup] Reconnected to Wayland zwlr_layer_shell_v1");
+                wayland_bar = Some(bar);
+            }
         }
         let mut fds = [
             libc::pollfd {
@@ -258,48 +304,68 @@ fn main() {
             continue;
         }
         if rc == 0 {
+            if last_visible_at.is_some_and(|at| at.elapsed() >= STALE_OVERLAY_TIMEOUT) {
+                last_visible_at = None;
+                if let Some(bar) = wayland_bar.as_mut() {
+                    if bar.hide().is_err() {
+                        wayland_bar = None;
+                        last_reconnect_attempt = std::time::Instant::now();
+                    }
+                }
+            }
             continue;
         }
-        if (fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0
-            || (fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0
-        {
+        if (fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
             break;
         }
-        // Drain daemon updates before dispatching Wayland pointer clicks so a
-        // queued Hide/Update is applied before any stale click fires.
+        if nfds == 2 && (fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+            eprintln!("[dboard-popup] Wayland socket hangup; scheduling reconnect");
+            wayland_bar = None;
+            last_visible_at = None;
+            last_reconnect_attempt = std::time::Instant::now();
+        }
+        // Drain and coalesce daemon updates before rendering so rapid bursts
+        // (100+ keystrokes/sec) never trigger redundant SHM/SDF frames, and any
+        // queued Hide/Update is applied before stale Wayland pointer clicks.
         if (fds[0].revents & libc::POLLIN) != 0 {
-            let mut wayland_dead = false;
+            let mut latest_pkt: Option<CandidatePacket> = None;
             while let Ok(len) = sock.recv(&mut buf) {
                 if let Ok(text) = std::str::from_utf8(&buf[..len]) {
                     if let Some(pkt) = parse_packet(text) {
-                        if pkt.visible && !pkt.candidates.is_empty() {
-                            if let Some(bar) = wayland_bar.as_mut() {
-                                if bar.show(&pkt.candidates, pkt.caret).is_err() {
-                                    wayland_dead = true;
-                                    break;
-                                }
-                            } else if let Some(line) = format_strip(&pkt) {
-                                println!("{line}");
-                            }
-                        } else if let Some(bar) = wayland_bar.as_mut() {
-                            if bar.hide().is_err() {
-                                wayland_dead = true;
-                                break;
-                            }
+                        latest_pkt = Some(pkt);
+                    }
+                }
+            }
+            if let Some(pkt) = latest_pkt {
+                if pkt.visible && !pkt.candidates.is_empty() {
+                    last_visible_at = Some(std::time::Instant::now());
+                    if let Some(bar) = wayland_bar.as_mut() {
+                        if bar.show(&pkt.candidates, pkt.caret).is_err() {
+                            wayland_bar = None;
+                            last_visible_at = None;
+                            last_reconnect_attempt = std::time::Instant::now();
+                        }
+                    } else if let Some(line) = format_strip(&pkt) {
+                        println!("{line}");
+                    }
+                } else {
+                    last_visible_at = None;
+                    if let Some(bar) = wayland_bar.as_mut() {
+                        if bar.hide().is_err() {
+                            wayland_bar = None;
+                            last_reconnect_attempt = std::time::Instant::now();
                         }
                     }
                 }
             }
-            if wayland_dead {
-                break;
-            }
         }
-        if (fds[1].revents & libc::POLLIN) != 0 {
+        if nfds == 2 && (fds[1].revents & libc::POLLIN) != 0 {
             if let Some(bar) = wayland_bar.as_mut() {
                 if bar.dispatch_pending().is_err() {
-                    break;
-                }
-                if let Some(clicked_idx) = bar.take_clicked_slot() {
+                    wayland_bar = None;
+                    last_visible_at = None;
+                    last_reconnect_attempt = std::time::Instant::now();
+                } else if let Some(clicked_idx) = bar.take_clicked_slot() {
                     send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
                 }
             }
@@ -364,6 +430,22 @@ mod tests {
         let _sock = bind_secure_socket(&path).unwrap();
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn single_instance_lock_prevents_concurrent_duplicate_popups() {
+        let path = std::env::temp_dir().join(format!(
+            "dboard-popup-lock-test-{}.lock",
+            std::process::id()
+        ));
+        let first = acquire_single_instance_lock(&path);
+        assert!(first.is_some());
+        assert!(acquire_single_instance_lock(&path).is_none());
+        drop(first);
+        let second = acquire_single_instance_lock(&path);
+        assert!(second.is_some());
+        drop(second);
         let _ = fs::remove_file(&path);
     }
 }

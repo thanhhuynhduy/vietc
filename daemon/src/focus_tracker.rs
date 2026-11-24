@@ -123,6 +123,7 @@ fn is_inline_autocomplete_selection(caret: i32, start: i32, end: i32, char_count
 }
 
 struct FocusedNodeInspection {
+    role_known: bool,
     is_password: bool,
     is_omnibox: bool,
     is_editable_text: bool,
@@ -131,10 +132,23 @@ struct FocusedNodeInspection {
 
 fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedNodeInspection {
     let proxy = conn.with_proxy(sender, path, QUERY_TIMEOUT);
-    let role = proxy
+    let role_res = proxy
         .method_call::<(i32,), _, _, _>("org.a11y.atspi.Accessible", "GetRole", ())
-        .map(|(r,)| r)
-        .unwrap_or(0);
+        .or_else(|_| {
+            conn.with_proxy(sender, path, Duration::from_millis(80))
+                .method_call::<(i32,), _, _, _>("org.a11y.atspi.Accessible", "GetRole", ())
+        });
+    let Ok((role,)) = role_res else {
+        // Fail-safe on timeout/frozen peer: do NOT falsely clear active password
+        // protection and skip further RPCs on the unresponsive peer.
+        return FocusedNodeInspection {
+            role_known: false,
+            is_password: false,
+            is_omnibox: false,
+            is_editable_text: false,
+            app_name: None,
+        };
+    };
     let is_password = role == crate::password_detector::ROLE_PASSWORD_TEXT;
     let is_editable_text = !is_password
         && matches!(
@@ -178,6 +192,7 @@ fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedN
                 .and_then(|(v,)| v.0.as_str().map(|s| s.to_lowercase()))
         });
     FocusedNodeInspection {
+        role_known: true,
         is_password,
         is_omnibox,
         is_editable_text,
@@ -328,10 +343,12 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                     // evdev_loop sees the updated password flag on the very next keystroke!
                     let info = inspect_focused_node(&connection, &sender, &path);
                     let atspi_app = info.app_name.clone();
-                    crate::password_detector::record_atspi_focus_state(
-                        info.is_password,
-                        info.app_name,
-                    );
+                    if info.role_known {
+                        crate::password_detector::record_atspi_focus_state(
+                            info.is_password,
+                            info.app_name,
+                        );
+                    }
                     observe_atspi_focus_with_path(
                         &shared_focus,
                         Some(&sender),

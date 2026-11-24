@@ -166,20 +166,35 @@ fn spawn_popup_if_available() {
     if running {
         return;
     }
-    for candidate in [
-        "/usr/bin/dboard-popup",
-        "/usr/local/bin/dboard-popup",
-        "dboard-popup",
-    ] {
-        if candidate == "dboard-popup" || std::path::Path::new(candidate).exists() {
-            if let Ok(mut child) = std::process::Command::new(candidate).spawn() {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("dboard-popup"));
+        }
+    }
+    candidates.push(std::path::PathBuf::from("/app/bin/dboard-popup"));
+    candidates.push(std::path::PathBuf::from("/usr/bin/dboard-popup"));
+    candidates.push(std::path::PathBuf::from("/usr/local/bin/dboard-popup"));
+    candidates.push(std::path::PathBuf::from("dboard-popup"));
+
+    for candidate in candidates {
+        let is_bare = candidate == std::path::Path::new("dboard-popup");
+        if is_bare || candidate.exists() {
+            if let Ok(mut child) = std::process::Command::new(&candidate).spawn() {
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
+                return;
             }
-            return;
         }
     }
+}
+
+fn stop_popup_if_running() {
+    let uid = unsafe { libc::getuid() }.to_string();
+    let _ = std::process::Command::new("pkill")
+        .args(["-u", &uid, "-TERM", "-x", "dboard-popup"])
+        .status();
 }
 
 impl VietTray {
@@ -239,6 +254,16 @@ impl VietTray {
     fn toggle_shortcut_label() -> String {
         let key = config::Config::load().toggle_key;
         let trimmed = key.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if trimmed.is_empty() || lower == "space" {
+            return "Ctrl + Space".into();
+        }
+        if lower == "z" {
+            return "Alt + Z".into();
+        }
+        if lower == "capslock" || lower == "caps_lock" {
+            return "CapsLock".into();
+        }
         if trimmed.contains('+') {
             trimmed
                 .split('+')
@@ -421,6 +446,7 @@ impl Tray for VietTray {
                                 this.autocorrect = false;
                                 this.auto_capitalize = false;
                                 this.candidate_bar = false;
+                                stop_popup_if_running();
                             }
                         }),
                         ..Default::default()
@@ -460,6 +486,8 @@ impl Tray for VietTray {
                                 this.candidate_bar = next;
                                 if next {
                                     spawn_popup_if_available();
+                                } else {
+                                    stop_popup_if_running();
                                 }
                             }
                         }),
@@ -698,6 +726,13 @@ pub fn run() {
                 last_autostart = autostart;
                 last_autocorrect = cfg_now.autocorrect;
                 last_auto_cap = cfg_now.auto_capitalize;
+                if cfg_now.candidate_bar != last_candidate_bar {
+                    if cfg_now.candidate_bar {
+                        spawn_popup_if_available();
+                    } else {
+                        stop_popup_if_running();
+                    }
+                }
                 last_candidate_bar = cfg_now.candidate_bar;
                 last_layout = cfg_now.keyboard_layout.clone();
                 let new_layout = cfg_now.keyboard_layout;
@@ -722,5 +757,6 @@ pub fn run() {
     while !crate::should_exit() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    stop_popup_if_running();
     shutdown_handle.shutdown();
 }

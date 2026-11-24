@@ -200,6 +200,10 @@ pub fn query_surrounding_context(
     extract_surrounding_context(&before, &after)
 }
 
+fn is_valid_caret_extents(x: i32, y: i32, h: i32) -> bool {
+    (-16_384..16_384).contains(&x) && (-16_384..16_384).contains(&y) && h > 0 && h <= 240
+}
+
 /// Query AT-SPI2 `org.a11y.atspi.Text::GetCharacterExtents` for the caret's
 /// screen-space `(x, y, height)` rectangle so `dboard-popup` can anchor right
 /// underneath the active text cursor. Runs strictly on the background AT-SPI2
@@ -224,7 +228,7 @@ pub fn query_caret_extents(
             "GetCharacterExtents",
             (off, ATSPI_COORD_TYPE_SCREEN),
         ) {
-            if x >= 0 && y >= 0 && h > 0 && h <= 240 && x < 16_384 && y < 16_384 {
+            if is_valid_caret_extents(x, y, h) {
                 return Some((x, y, h));
             }
         }
@@ -307,5 +311,14 @@ mod tests {
         assert_eq!(extract_word_before_caret("foo", "123"), None);
         // Empty input
         assert_eq!(extract_surrounding_context("", ""), None);
+    }
+
+    #[test]
+    fn caret_extents_accepts_negative_multi_monitor_coordinates() {
+        assert!(super::is_valid_caret_extents(-1920, -240, 22));
+        assert!(super::is_valid_caret_extents(0, 0, 18));
+        assert!(!super::is_valid_caret_extents(-20_000, 100, 20));
+        assert!(!super::is_valid_caret_extents(100, 100, 0));
+        assert!(!super::is_valid_caret_extents(100, 100, 300));
     }
 }

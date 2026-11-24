@@ -907,6 +907,10 @@ impl Engine {
         &self.raw_buffer
     }
 
+    pub fn has_pasted_prefix(&self) -> bool {
+        !self.pasted_prefix.is_empty()
+    }
+
     /// Optional read-only autocorrect suggestion for the active composing word,
     /// used exclusively when the opt-in floating candidate strip is enabled.
     pub fn candidate_suggestion(&self) -> Option<String> {

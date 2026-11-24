@@ -492,6 +492,9 @@ fn run_once(focus: SharedFocusSnapshot) -> Result<(), RunError> {
     ));
 
     loop {
+        if crate::signal::SIGNAL_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
         queue
             .blocking_dispatch(&mut tracker)
             .map_err(|error| RunError::Transient(error.to_string()))?;
@@ -508,6 +511,9 @@ pub fn spawn_toplevel_focus_tracker(focus: SharedFocusSnapshot) {
         return;
     }
     std::thread::spawn(move || loop {
+        if crate::signal::SIGNAL_EXIT.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         match run_once(focus.clone()) {
             Ok(()) => return,
             Err(RunError::Unsupported) => {

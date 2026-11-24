@@ -233,13 +233,17 @@ impl CandidateBroadcaster {
         self.select_rx.as_ref().map(AsRawFd::as_raw_fd)
     }
 
-    /// Drain pending click-selection datagrams from `dboard-popup` (non-blocking)
-    /// and return the latest clicked candidate slot index (`0..=2`).
+    /// Drain pending click-selection datagrams from `dboard-popup` (non-blocking,
+    /// bounded per poll tick so a flood can never starve `evdev_loop`) and return
+    /// the latest clicked candidate slot index (`0..=2`).
     pub fn poll_clicked_index(&self) -> Option<usize> {
         let rx = self.select_rx.as_ref()?;
         let mut latest = None;
         let mut buf = [0u8; 8];
-        while let Ok(len) = rx.recv(&mut buf) {
+        for _ in 0..64 {
+            let Ok(len) = rx.recv(&mut buf) else {
+                break;
+            };
             if len >= 1 {
                 match buf[0] {
                     b'0' => latest = Some(0),

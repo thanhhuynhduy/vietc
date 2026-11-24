@@ -268,7 +268,9 @@ pub fn run_with_evdev(
     let key_activity_seq = initial_focus.key_activity_signal();
     let mut focus_sync = crate::focus_sync::FocusSyncState::from_initial(initial_focus);
     let mut last_terminal_enter_at: Option<std::time::Instant> = None;
+    let mut last_pty_refresh_at: Option<std::time::Instant> = None;
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
+    let mut last_idle_suggestion_seq = key_activity_seq.load(Ordering::Acquire);
     let mut hotplug_state = crate::hotplug::HotplugState::new();
 
     log_info("[dboard] Event loop started");
@@ -383,19 +385,24 @@ pub fn run_with_evdev(
 
         if poll_ret == 0 {
             focus_sync.sync_on_idle(daemon, &*injector, &shared_focus);
-            if daemon.config.candidate_bar
-                && daemon.engine.is_enabled()
-                && daemon.engine.buffer().is_empty()
-            {
-                let surrounding = crate::focus::peek_surrounding_context(
-                    &shared_focus,
-                    focus_sync.last_focus_generation,
-                );
-                let word = surrounding
-                    .as_ref()
-                    .and_then(|s| s.word_at_caret.as_deref());
-                let prev = surrounding.as_ref().and_then(|s| s.prev_word.as_deref());
-                daemon.sync_caret_reselection(word, prev);
+            if daemon.config.candidate_bar && daemon.engine.is_enabled() {
+                if daemon.engine.buffer().is_empty() {
+                    let surrounding = crate::focus::peek_surrounding_context(
+                        &shared_focus,
+                        focus_sync.last_focus_generation,
+                    );
+                    let word = surrounding
+                        .as_ref()
+                        .and_then(|s| s.word_at_caret.as_deref());
+                    let prev = surrounding.as_ref().and_then(|s| s.prev_word.as_deref());
+                    daemon.sync_caret_reselection(word, prev);
+                } else {
+                    let cur_seq = key_activity_seq.load(Ordering::Acquire);
+                    if cur_seq != last_idle_suggestion_seq {
+                        last_idle_suggestion_seq = cur_seq;
+                        daemon.sync_candidate_bar(true);
+                    }
+                }
             }
             continue;
         }
@@ -514,8 +521,12 @@ pub fn run_with_evdev(
                 } else {
                     dev_key_state.clone()
                 };
-                injector.set_caps_lock(global_caps_lock);
-                injector.set_num_lock(global_num_lock);
+                if global_caps_lock != prev_caps {
+                    injector.set_caps_lock(global_caps_lock);
+                }
+                if global_num_lock != prev_num {
+                    injector.set_num_lock(global_num_lock);
+                }
                 // Complete a stroke already forwarded during uncertainty before
                 // focus recovery, policy, dedup or normal Backspace handling.
                 if finish_forwarded_stroke(&*injector, keycode, value, &mut forwarded_keys) {
@@ -551,11 +562,16 @@ pub fn run_with_evdev(
                     {
                         if matches!(key, evdev::KeyCode::KEY_ENTER | evdev::KeyCode::KEY_KPENTER) {
                             last_terminal_enter_at = Some(std::time::Instant::now());
+                            last_pty_refresh_at = None;
                         } else if !crate::password_detector::cached_pty_no_echo()
                             && last_terminal_enter_at.is_some_and(|at| {
-                                at.elapsed() < std::time::Duration::from_millis(350)
+                                at.elapsed() < std::time::Duration::from_millis(2000)
+                            })
+                            && last_pty_refresh_at.is_none_or(|at| {
+                                at.elapsed() >= std::time::Duration::from_millis(100)
                             })
                         {
+                            last_pty_refresh_at = Some(std::time::Instant::now());
                             crate::password_detector::refresh_pty_no_echo_now();
                         }
                     }
@@ -699,15 +715,13 @@ pub fn run_with_evdev(
                         {
                             let shift = is_modifier_held_shift(&key_state);
                             if keycode == 57 && !shift {
+                                let _ = daemon.process_key(' ');
                                 let _ = injector.send_char(' ');
-                            } else if key_to_char_with_layout(
-                                active_layout,
-                                key,
-                                shift,
-                                global_caps_lock,
-                            )
-                            .is_some_and(is_flush_char)
+                            } else if let Some(ch) =
+                                key_to_char_with_layout(active_layout, key, shift, global_caps_lock)
+                                    .filter(|&c| is_flush_char(c))
                             {
+                                let _ = daemon.process_key(ch);
                                 injector.send_key_event(keycode, 1);
                                 injector.send_key_event(keycode, 0);
                             }
@@ -750,7 +764,14 @@ pub fn run_with_evdev(
                                     {
                                         if key_state.contains(alt) {
                                             injector.send_key_event(alt.code(), 0);
-                                            consumed_keys.insert(alt.code());
+                                            if dev_key_state.contains(alt) {
+                                                consumed_keys.insert(alt.code());
+                                            }
+                                            for (idx, st) in device_states.iter_mut().enumerate() {
+                                                if idx != i && st.keys.contains(alt) {
+                                                    st.consumed_keys.insert(alt.code());
+                                                }
+                                            }
                                         }
                                     }
                                     let outcome = execute_commands(
@@ -941,6 +962,12 @@ pub fn run_with_evdev(
                             injector.send_key_event(keycode, 1);
                         }
                     } else if value == 2 {
+                        if matches!(
+                            key,
+                            evdev::KeyCode::KEY_LEFTSHIFT | evdev::KeyCode::KEY_RIGHTSHIFT
+                        ) {
+                            continue;
+                        }
                         if !daemon.engine.buffer().is_empty() {
                             daemon.reset_composition_state();
                         }

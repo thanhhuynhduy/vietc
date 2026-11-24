@@ -69,9 +69,9 @@ fn run<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
 
         let (output, display, events) = simulate_line(&mut state, line);
 
-        println!("  Events: {:?}", events);
-        println!("  Raw: {:?}", output);
-        println!("  Screen: {}", display);
+        writeln!(writer, "  Events: {:?}", events)?;
+        writeln!(writer, "  Raw: {:?}", output)?;
+        writeln!(writer, "  Screen: {}", display)?;
     }
 
     Ok(())
@@ -162,6 +162,17 @@ fn simulate_line(state: &mut CliState, input: &str) -> (String, String, Vec<(cha
                     output.push('\x08');
                 }
                 output.push_str(&replacement.insert);
+            }
+            EngineEvent::AutoRestore(word) => {
+                let del = if word_screen_len > 0 {
+                    word_screen_len
+                } else {
+                    word.chars().count()
+                };
+                for _ in 0..del {
+                    output.push('\x08');
+                }
+                output.push_str(word);
             }
             _ => {}
         }

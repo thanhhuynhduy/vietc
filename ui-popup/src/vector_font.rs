@@ -95,47 +95,53 @@ fn draw_vector_label(
 
     let cmap = font.charmap();
     let glyph_metrics = font.glyph_metrics(&[]).scale(px_size);
-    let mut ctx = ScaleContext::new();
-    let mut scaler = ctx.builder(font).size(px_size).hint(true).build();
+    thread_local! {
+        static SCALE_CTX: std::cell::RefCell<ScaleContext> =
+            std::cell::RefCell::new(ScaleContext::new());
+    }
+    SCALE_CTX.with(|cell| {
+        let mut ctx = cell.borrow_mut();
+        let mut scaler = ctx.builder(font).size(px_size).hint(true).build();
 
-    for (ci, ch) in label.chars().enumerate() {
-        let gid = cmap.map(ch);
-        let advance = glyph_metrics.advance_width(gid);
-        if pen_x + advance > max_x {
-            break;
-        }
-        let color = if ci < 3 { badge_fg } else { fg };
-        if let Some(img) = Render::new(&[Source::Outline])
-            .format(Format::Alpha)
-            .render(&mut scaler, gid)
-        {
-            let gx0 = pen_x.round() as i32 + img.placement.left;
-            let gy0 = baseline_y.round() as i32 - img.placement.top;
-            let gw = img.placement.width as usize;
-            let gh = img.placement.height as usize;
+        for (ci, ch) in label.chars().enumerate() {
+            let gid = cmap.map(ch);
+            let advance = glyph_metrics.advance_width(gid);
+            if pen_x + advance > max_x {
+                break;
+            }
+            let color = if ci < 3 { badge_fg } else { fg };
+            if let Some(img) = Render::new(&[Source::Outline])
+                .format(Format::Alpha)
+                .render(&mut scaler, gid)
+            {
+                let gx0 = pen_x.round() as i32 + img.placement.left;
+                let gy0 = baseline_y.round() as i32 - img.placement.top;
+                let gw = img.placement.width as usize;
+                let gh = img.placement.height as usize;
 
-            for row in 0..gh {
-                let py = gy0 + row as i32;
-                if py < 0 || py >= height as i32 {
-                    continue;
-                }
-                for col in 0..gw {
-                    let cov = img.data[row * gw + col];
-                    if cov == 0 {
+                for row in 0..gh {
+                    let py = gy0 + row as i32;
+                    if py < 0 || py >= height as i32 {
                         continue;
                     }
-                    let px = gx0 + col as i32;
-                    if px < 0 || px >= width as i32 {
-                        continue;
+                    for col in 0..gw {
+                        let cov = img.data[row * gw + col];
+                        if cov == 0 {
+                            continue;
+                        }
+                        let px = gx0 + col as i32;
+                        if px < 0 || px >= width as i32 {
+                            continue;
+                        }
+                        let off = ((py as u32 * width + px as u32) * 4) as usize;
+                        let alpha = (cov as f32) / 255.0;
+                        blend(&mut buf[off..off + 4], color, alpha);
                     }
-                    let off = ((py as u32 * width + px as u32) * 4) as usize;
-                    let alpha = (cov as f32) / 255.0;
-                    blend(&mut buf[off..off + 4], color, alpha);
                 }
             }
+            pen_x += advance;
         }
-        pen_x += advance;
-    }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
