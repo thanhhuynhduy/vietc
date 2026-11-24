@@ -88,6 +88,7 @@ pub struct Daemon {
     pub visible_revision: u64,
     pub candidate_ipc: crate::candidate_ipc::CandidateBroadcaster,
     pub caret_reselection: Option<(String, Vec<String>)>,
+    displayed_composing_suggestion: Option<String>,
 }
 
 impl Daemon {
@@ -147,6 +148,7 @@ impl Daemon {
             visible_revision: 0,
             candidate_ipc,
             caret_reselection: None,
+            displayed_composing_suggestion: None,
         }
     }
 
@@ -366,11 +368,13 @@ impl Daemon {
             || self.app_state.is_password_active()
             || self.engine.has_pasted_prefix();
         if sensitive_or_bypass {
+            self.displayed_composing_suggestion = None;
             self.candidate_ipc.hide();
             return;
         }
         let visible = self.engine.buffer();
         if visible.is_empty() {
+            self.displayed_composing_suggestion = None;
             let preds = self.engine.predict_next_words(3);
             if preds.is_empty() {
                 self.candidate_ipc.hide();
@@ -384,6 +388,7 @@ impl Daemon {
         let sug = include_suggestion
             .then(|| self.engine.candidate_suggestion())
             .flatten();
+        self.displayed_composing_suggestion = sug.clone();
         self.candidate_ipc
             .sync_from_engine(false, &visible, &raw, sug.as_deref());
     }
@@ -487,7 +492,14 @@ impl Daemon {
         if raw != visible {
             slots.push(raw.clone());
         }
-        if let Some(sug) = self.engine.candidate_suggestion() {
+        let suggestion = if include_predictions {
+            self.displayed_composing_suggestion
+                .clone()
+                .or_else(|| self.engine.candidate_suggestion())
+        } else {
+            self.displayed_composing_suggestion.clone()
+        };
+        if let Some(sug) = suggestion {
             if sug != visible && sug != raw {
                 slots.push(sug);
             }
@@ -498,6 +510,7 @@ impl Daemon {
             commands.push(OutputCommand::Backspace(visible.chars().count()));
             commands.push(OutputCommand::Type(chosen.clone()));
         }
+        self.displayed_composing_suggestion = None;
         self.engine.commit_selected_word(&chosen, false);
         self.candidate_ipc.hide();
         Some(commands)
@@ -618,6 +631,7 @@ impl Daemon {
         self.engine.reset_visible_revision();
         self.replay_reset();
         self.caret_reselection = None;
+        self.displayed_composing_suggestion = None;
         self.candidate_ipc.hide();
     }
 

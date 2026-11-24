@@ -39,9 +39,12 @@ fn symspell_index() -> &'static SymSpellIndex {
     INDEX.get_or_init(build_index)
 }
 
-/// Pre-builds the static SymSpell delete index so the first Space keystroke
-/// never incurs a lazy-initialization latency spike on the typing thread.
+/// Pre-builds the static SymSpell delete index and English/Vietnamese lexicon
+/// `OnceLock`s off the typing thread so the first Space keystroke never incurs
+/// a lazy-initialization latency spike on `evdev_loop`.
 pub fn warm_up() {
+    let _ = crate::engine::english_dict();
+    let _ = crate::spelling::is_in_vietnamese_dictionary("a");
     let _ = symspell_index();
 }
 
@@ -144,35 +147,50 @@ fn build_index() -> SymSpellIndex {
 }
 
 /// Compute `(edit_distance, spatial_cost)` for ASCII strings `src` -> `dst`
-/// using layout-aware Damerau-Levenshtein (`edit_distance <= 2`).
+/// using layout-aware Damerau-Levenshtein (`edit_distance <= 2`, zero heap allocations).
 fn weighted_spatial_edit(src: &str, dst: &str, layout: AutocorrectLayout) -> Option<(u8, i32)> {
-    let a: Vec<char> = src.chars().collect();
-    let b: Vec<char> = dst.chars().collect();
+    if !src.is_ascii() || !dst.is_ascii() {
+        return None;
+    }
+    let a = src.as_bytes();
+    let b = dst.as_bytes();
     let n = a.len();
     let m = b.len();
     if n.abs_diff(m) > 2 {
         return None;
     }
 
-    // Fast path: edit distance 1 checks (exact spatial weighting)
+    // Fast path: edit distance 1 checks (exact spatial weighting, stack-only)
     if n == m {
-        let diffs: Vec<usize> = (0..n).filter(|&i| a[i] != b[i]).collect();
-        match diffs.len() {
-            0 => return Some((0, 0)),
-            1 => {
-                let i = diffs[0];
-                // Never substitute across letter <-> digit rows (Task B2 safety).
-                if a[i].is_ascii_digit() != b[i].is_ascii_digit() {
+        let mut diff_count = 0usize;
+        let mut d0 = 0usize;
+        let mut d1 = 0usize;
+        for i in 0..n {
+            if a[i] != b[i] {
+                if diff_count == 0 {
+                    d0 = i;
+                } else if diff_count == 1 {
+                    d1 = i;
+                } else {
                     return None;
                 }
-                let d = key_distance_for_layout(layout, a[i], b[i]);
+                diff_count += 1;
+            }
+        }
+        match diff_count {
+            0 => return Some((0, 0)),
+            1 => {
+                // Never substitute across letter <-> digit rows (Task B2 safety).
+                if a[d0].is_ascii_digit() != b[d0].is_ascii_digit() {
+                    return None;
+                }
+                let d = key_distance_for_layout(layout, a[d0] as char, b[d0] as char);
                 let cost = if d <= MAX_SPATIAL_DIST { 10 } else { 26 };
                 return Some((1, cost));
             }
             2 => {
-                let (i, j) = (diffs[0], diffs[1]);
                 // Single adjacent transposition
-                if j == i + 1 && a[i] == b[j] && a[j] == b[i] {
+                if d1 == d0 + 1 && a[d0] == b[d1] && a[d1] == b[d0] {
                     return Some((1, 10));
                 }
                 return None;
@@ -201,11 +219,13 @@ fn weighted_spatial_edit(src: &str, dst: &str, layout: AutocorrectLayout) -> Opt
         // Protect single-letter prefixed brand/tool names (`gboard`, `dboard`, `kmail`, `vcode`)
         // from being truncated at index 0 unless the leading key was double-pressed (`bboard`).
         let leading_non_dup = idx == 0 && n > 1 && a[0] != a[1];
-        let adj_prev =
-            idx > 0 && key_distance_for_layout(layout, a[idx], a[idx - 1]) <= MAX_SPATIAL_DIST;
+        let adj_prev = idx > 0
+            && key_distance_for_layout(layout, a[idx] as char, a[idx - 1] as char)
+                <= MAX_SPATIAL_DIST;
         let adj_next = !leading_non_dup
             && idx + 1 < n
-            && key_distance_for_layout(layout, a[idx], a[idx + 1]) <= MAX_SPATIAL_DIST;
+            && key_distance_for_layout(layout, a[idx] as char, a[idx + 1] as char)
+                <= MAX_SPATIAL_DIST;
         let cost = if adj_prev || adj_next { 12 } else { 18 };
         return Some((1, cost));
     }
@@ -235,6 +255,7 @@ fn weighted_spatial_edit(src: &str, dst: &str, layout: AutocorrectLayout) -> Opt
 fn context_support_score(
     user_dict: &crate::user_dict::UserDict,
     prev_words: &[&str],
+    predicted_next: &[String],
     candidate: &str,
     is_vn: bool,
 ) -> i32 {
@@ -250,10 +271,7 @@ fn context_support_score(
         }
         score += user_dict.personal_bigram_bonus(p1, candidate);
     }
-    if crate::ngram_lm::predict_next_words(prev_words, 3)
-        .iter()
-        .any(|p| p == candidate)
-    {
+    if predicted_next.iter().any(|p| p == candidate) {
         score += 180;
     }
     score
@@ -270,7 +288,7 @@ fn looks_like_dev_identifier(raw_lower: &str) -> bool {
         "ctl", "map", "vec", "buf", "ptr", "ref", "mut", "cli", "api", "sdk", "cfg", "env", "tmp",
         "log", "err", "ctx", "idx", "len", "cap", "pos", "off", "val", "key", "src", "dst", "dir",
         "ext", "mgr", "svc", "srv", "req", "res", "ack", "seq", "pid", "uid", "gid", "rpc", "sql",
-        "xml", "css", "json", "toml", "yaml", "html",
+        "xml", "css", "json", "toml", "yaml", "html", "sync",
     ];
     PREFIXES.iter().any(|p| raw_lower.starts_with(p))
         || SUFFIXES.iter().any(|s| raw_lower.ends_with(s))
@@ -331,10 +349,15 @@ fn try_vn_symspell(
         }
     }
 
+    let predicted_next = if prev_words.is_empty() {
+        Vec::new()
+    } else {
+        crate::ngram_lm::predict_next_words(prev_words, 3)
+    };
     let mut scored: Vec<(&'static str, u8, i32, i32)> = best_by_syl
         .into_iter()
         .map(|(syl, (dist, cost))| {
-            let ctx = context_support_score(user_dict, prev_words, syl, true);
+            let ctx = context_support_score(user_dict, prev_words, &predicted_next, syl, true);
             (syl, dist, cost, ctx)
         })
         .collect();
@@ -467,6 +490,11 @@ fn try_core_en_symspell(
         return None;
     }
     let idx = symspell_index();
+    let predicted_next = if prev_words.is_empty() {
+        Vec::new()
+    } else {
+        crate::ngram_lm::predict_next_words(prev_words, 3)
+    };
     let mut seen: HashSet<&'static str> = HashSet::new();
     let mut scored: Vec<(&'static str, i32, i32, bool)> = Vec::new(); // (word, cost, ctx, is_core)
 
@@ -476,7 +504,8 @@ fn try_core_en_symspell(
         }
         if let Some((dist, cost)) = weighted_spatial_edit(raw_lower, word, layout) {
             if dist == 1 && cost <= 16 {
-                let ctx = context_support_score(user_dict, prev_words, word, false);
+                let ctx =
+                    context_support_score(user_dict, prev_words, &predicted_next, word, false);
                 let is_core = idx.en_core.contains(word);
                 scored.push((word, cost, ctx, is_core));
             }

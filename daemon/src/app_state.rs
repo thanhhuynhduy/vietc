@@ -403,6 +403,21 @@ impl AppStateManager {
         self.global_enabled = enabled;
     }
 
+    /// Return the user's global enabled state (ignoring per-app overrides/lists)
+    pub fn is_global_enabled(&self) -> bool {
+        self.global_enabled
+    }
+
+    /// Update the tracked focused application strictly for security and terminal
+    /// detection (Layer 2 `password_apps`, Layer 4 PTY `!ECHO`, terminal clipboard
+    /// shortcut, and disabling UserDict learning) without applying per-app VN/EN
+    /// overrides or altering `effective_method` when `app_state.enabled == false`.
+    pub fn set_current_app_for_security(&mut self, new_class: String) {
+        if new_class != self.current_app {
+            self.current_app = new_class;
+        }
+    }
+
     /// Clear app overrides
     #[allow(dead_code)]
     pub fn clear_overrides(&mut self) {

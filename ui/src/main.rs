@@ -19,6 +19,12 @@ fn exe_dir() -> PathBuf {
 }
 
 fn find_daemon_binary() -> String {
+    let dir = exe_dir();
+    for candidate in [dir.join("dboard-daemon"), dir.join("dboard")] {
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
     for candidate in [
         "/usr/bin/dboard-daemon",
         "/usr/bin/dboard",
@@ -28,12 +34,6 @@ fn find_daemon_binary() -> String {
     ] {
         if std::path::Path::new(candidate).exists() {
             return candidate.to_string();
-        }
-    }
-    let dir = exe_dir();
-    for candidate in [dir.join("dboard-daemon"), dir.join("dboard")] {
-        if candidate.exists() {
-            return candidate.to_string_lossy().into_owned();
         }
     }
     "dboard-daemon".to_string()
@@ -149,6 +149,12 @@ fn start_daemon() {
     let daemon_bin = find_daemon_binary();
     eprintln!("[dboard-tray] Starting unprivileged daemon: {}", daemon_bin);
     launch_unprivileged(&daemon_bin);
+}
+
+/// Returns `true` only when `dboard-tray` itself spawned and owns the daemon
+/// child process (as opposed to attaching to `dboard.service`).
+pub fn owns_daemon_child() -> bool {
+    DAEMON_PID.load(Ordering::SeqCst) != 0
 }
 
 pub fn stop_daemon() {

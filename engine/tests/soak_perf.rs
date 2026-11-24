@@ -56,6 +56,10 @@ fn apply_key(engine: &mut Engine, screen: &mut String, ch: char) {
 
 #[test]
 fn soak_100k_keystrokes_bilingual_telex_and_vni_meets_latency_and_exactness_gate() {
+    // Match production daemon startup (`dboard-warmup` background thread) so
+    // latency percentiles measure steady-state typing rather than cold OnceLock init.
+    dboard_engine::warm_up_symspell();
+
     let mut engine = Engine::new(InputMethod::Telex);
     engine.set_auto_restore(true);
     engine.set_autocorrect(true);
@@ -106,10 +110,22 @@ fn soak_100k_keystrokes_bilingual_telex_and_vni_meets_latency_and_exactness_gate
         "[dboard soak] total_telex_keys={total_keys} p50={p50_us:.2}us p95={p95_us:.2}us p99={p99_us:.2}us max={max_us:.2}us"
     );
 
-    // Performance gate: p99 per-keystroke processing must remain <= 2ms (2000us)
-    // even in unoptimized debug builds, and << 100us in release builds.
-    assert!(
-        p99_us <= 2_000.0,
-        "p99 keystroke latency exceeded 2ms gate: {p99_us:.2}us"
-    );
+    // Performance gate matching docs/dboard-gboard-parity-plan.md (Section 0.6):
+    // Release builds must stay strictly below `p50 < 2.0us` and `p99 < 10.0us`;
+    // unoptimized debug builds keep a generous 2ms upper bound.
+    if cfg!(debug_assertions) {
+        assert!(
+            p99_us <= 2_000.0,
+            "debug p99 keystroke latency exceeded 2ms gate: {p99_us:.2}us"
+        );
+    } else {
+        assert!(
+            p50_us < 2.0,
+            "release p50 keystroke latency {p50_us:.2}us exceeded 2.0us gate"
+        );
+        assert!(
+            p99_us < 10.0,
+            "release p99 keystroke latency {p99_us:.2}us exceeded 10.0us gate"
+        );
+    }
 }

@@ -11,9 +11,10 @@ use dboard_engine::{Engine, EngineEvent, InputMethod};
 
 const BENCH_TSV: &str = include_str!("testdata/bilingual_bench_500.tsv");
 
-fn simulate_telex(raw: &str) -> String {
+fn simulate_telex(raw: &str, autocorrect: bool) -> String {
     let mut engine = Engine::new(InputMethod::Telex);
     engine.set_auto_restore(true);
+    engine.set_autocorrect(autocorrect);
     let mut screen = String::new();
     for ch in raw.chars() {
         match engine.process_key(ch) {
@@ -98,7 +99,7 @@ fn bilingual_accuracy_benchmark_meets_m3_gate() {
     let mut failures: Vec<(&str, &str, &str, String)> = Vec::new();
 
     for &(cat, raw, expected) in &cases {
-        let actual = simulate_telex(raw);
+        let actual = simulate_telex(raw, false);
         let entry = per_cat.entry(cat).or_insert((0, 0));
         entry.1 += 1;
 
@@ -148,5 +149,72 @@ fn bilingual_accuracy_benchmark_meets_m3_gate() {
         "bilingual sentence accuracy {sentence_acc:.2}% ({passed}/{}) below 97.0% gate! Sample failures: {:#?}",
         cases.len(),
         &failures[..failures.len().min(30)]
+    );
+}
+
+#[test]
+fn bilingual_accuracy_benchmark_with_autocorrect_locks_false_positive_gate() {
+    let mut cases: Vec<(&str, &str, &str)> = Vec::new();
+    for line in BENCH_TSV.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let cat = parts.next().expect("category");
+        let raw = parts.next().expect("raw_telex");
+        let expected = parts.next().expect("expected_output");
+        cases.push((cat, raw, expected));
+    }
+
+    let mut passed = 0usize;
+    let mut total_words = 0usize;
+    let mut passed_words = 0usize;
+    let mut regressions: Vec<(&str, &str, String, String)> = Vec::new();
+
+    for &(cat, raw, expected) in &cases {
+        let baseline = simulate_telex(raw, false);
+        let with_ac = simulate_telex(raw, true);
+
+        let exp_words: Vec<&str> = expected.split_whitespace().collect();
+        let act_words: Vec<&str> = with_ac.split_whitespace().collect();
+        total_words += exp_words.len();
+        for (e, a) in exp_words.iter().zip(act_words.iter()) {
+            if e == a {
+                passed_words += 1;
+            }
+        }
+
+        if with_ac == expected {
+            passed += 1;
+        } else if baseline == expected {
+            // Sentence passed without autocorrect but was corrupted when autocorrect=true!
+            regressions.push((cat, raw, baseline, with_ac));
+        }
+    }
+
+    let sentence_acc = (passed as f64) * 100.0 / (cases.len() as f64);
+    let word_acc = (passed_words as f64) * 100.0 / (total_words as f64);
+    eprintln!(
+        "[bilingual_bench+autocorrect] sentences={}/{} ({:.2}%), words={}/{} ({:.2}%), ac_false_positives={}",
+        passed,
+        cases.len(),
+        sentence_acc,
+        passed_words,
+        total_words,
+        word_acc,
+        regressions.len()
+    );
+    for (cat, raw, exp, act) in &regressions {
+        eprintln!("  AC_FP [{cat}] raw={raw:?}\n    exp={exp:?}\n    act={act:?}");
+    }
+
+    assert!(
+        sentence_acc >= 97.0,
+        "Gboard autocorrect sentence accuracy {sentence_acc:.2}% below 97.0% gate"
+    );
+    assert!(
+        regressions.is_empty(),
+        "SymSpell autocorrect introduced {} false-positive sentence regressions on valid bilingual corpus!",
+        regressions.len()
     );
 }

@@ -365,9 +365,14 @@ fn main() {
                     wayland_bar = None;
                     last_visible_at = None;
                     last_reconnect_attempt = std::time::Instant::now();
-                } else if let Some(clicked_idx) = bar.take_clicked_slot() {
-                    send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
                 }
+            }
+        }
+        // Drain clicks after both `show()` (which may roundtrip during output rebind)
+        // and `dispatch_pending()` so no pointer click is ever lost.
+        if let Some(bar) = wayland_bar.as_mut() {
+            if let Some(clicked_idx) = bar.take_clicked_slot() {
+                send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
             }
         }
     }

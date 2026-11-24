@@ -90,7 +90,9 @@ fn simulate_line(state: &mut CliState, input: &str) -> (String, String, Vec<(cha
         match state.engine.process_key(ch) {
             None => {
                 output.push(ch);
-                if dboard_engine::is_flush_char(ch) {
+                if ch == '\x08' {
+                    word_screen_len = word_screen_len.saturating_sub(1);
+                } else if dboard_engine::is_flush_char(ch) {
                     word_screen_len = 0;
                 } else {
                     word_screen_len += 1;
@@ -200,6 +202,8 @@ fn print_help() {
     println!("  :vi                Enable Vietnamese mode");
     println!("  :en                Disable Vietnamese mode");
     println!("  :ar on|off         Toggle auto-restore");
+    println!("  :ac on|off         Toggle autocorrect (Gboard SymSpell)");
+    println!("  :cap on|off        Toggle auto-capitalize");
     println!("  :vni               Switch to VNI input");
     println!("  :telex             Switch to Telex input");
     println!("  :reset             Reset engine buffer");
@@ -226,6 +230,42 @@ fn handle_command(state: &mut CliState, input: &str) {
         ":vi" => {
             state.engine.set_enabled(true);
             println!("[Vietnamese mode ON]");
+        }
+
+        ":ac" => {
+            if let Some(arg) = parts.get(1) {
+                match *arg {
+                    "on" => {
+                        state.engine.set_autocorrect(true);
+                        println!("[Autocorrect ON]");
+                    }
+                    "off" => {
+                        state.engine.set_autocorrect(false);
+                        println!("[Autocorrect OFF]");
+                    }
+                    _ => println!("Usage: :ac on|off"),
+                }
+            } else {
+                println!("Usage: :ac on|off");
+            }
+        }
+
+        ":cap" => {
+            if let Some(arg) = parts.get(1) {
+                match *arg {
+                    "on" => {
+                        state.engine.set_auto_capitalize(true);
+                        println!("[Auto-capitalize ON]");
+                    }
+                    "off" => {
+                        state.engine.set_auto_capitalize(false);
+                        println!("[Auto-capitalize OFF]");
+                    }
+                    _ => println!("Usage: :cap on|off"),
+                }
+            } else {
+                println!("Usage: :cap on|off");
+            }
         }
 
         ":en" => {

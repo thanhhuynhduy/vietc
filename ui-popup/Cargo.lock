@@ -45,6 +45,7 @@ dependencies = [
  "libc",
  "swash",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
 ]
 

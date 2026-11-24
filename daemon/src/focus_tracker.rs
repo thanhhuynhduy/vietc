@@ -87,11 +87,16 @@ fn observe_atspi_focus_with_path(
     let fallback_class = app_name
         .filter(|n| !n.is_empty() && *n != "gnome-shell" && *n != "gnome-shell.desktop")
         .map(str::to_string);
-    // Preserve authoritative compositor class when present, but populate `class`
-    // from AT-SPI2 when `focus.class` is `None` (e.g. during `FocusLost` on a
-    // Wayland layer-shell Polkit / `cosmic-osd` / `pinentry` dialog) so Layer 2
-    // `password_apps` detection remains active.
-    let class = focus.class.clone().or(fallback_class);
+    // Preserve authoritative compositor class when `toplevel_tracker` is active
+    // (`class_from_compositor == true`), falling back to AT-SPI2 only when
+    // `focus.class` is `None` (e.g. `FocusLost` on Polkit / `cosmic-osd`).
+    // When `class_from_compositor == false`, prefer fresh AT-SPI2 `app_name`
+    // immediately so window switches never inherit a stale class for 250ms.
+    let class = if focus.class_from_compositor {
+        focus.class.clone().or(fallback_class)
+    } else {
+        fallback_class.or_else(|| focus.class.clone())
+    };
     focus.observe(Some(identity), class);
 }
 
@@ -546,6 +551,44 @@ mod tests {
         let focus = focus.lock().unwrap();
         assert_eq!(focus.identity, None);
         assert_eq!(focus.generation, 0);
+    }
+
+    #[test]
+    fn atspi_focus_updates_stale_class_immediately_without_compositor_authority() {
+        let focus = Arc::new(Mutex::new(FocusSnapshot::default()));
+        {
+            let mut snap = focus.lock().unwrap();
+            snap.observe(Some("poller:1".into()), Some("firefox".into()));
+            assert!(!snap.class_from_compositor);
+        }
+
+        // Without compositor authority, fresh AT-SPI2 app_name must replace stale class immediately.
+        super::observe_atspi_focus_with_path(&focus, Some(":1.9"), Some("/w1"), Some("keepassxc"));
+        assert_eq!(focus.lock().unwrap().class.as_deref(), Some("keepassxc"));
+
+        // With compositor authority, compositor class is preserved unless cleared by FocusLost.
+        {
+            let mut snap = focus.lock().unwrap();
+            snap.observe(Some("toplevel:1".into()), Some("firefox".into()));
+            snap.mark_class_from_compositor();
+        }
+        super::observe_atspi_focus_with_path(
+            &focus,
+            Some(":1.10"),
+            Some("/w2"),
+            Some("Web Content"),
+        );
+        assert_eq!(focus.lock().unwrap().class.as_deref(), Some("firefox"));
+
+        // After FocusLost clears class, AT-SPI2 fallback still populates Layer 2 class.
+        focus.lock().unwrap().observe_focus_lost();
+        super::observe_atspi_focus_with_path(
+            &focus,
+            Some(":1.11"),
+            Some("/w3"),
+            Some("cosmic-osd"),
+        );
+        assert_eq!(focus.lock().unwrap().class.as_deref(), Some("cosmic-osd"));
     }
 
     #[test]

@@ -35,6 +35,15 @@ impl FocusSyncState {
         }
     }
 
+    pub fn sync_injector_after_config_reload(
+        &mut self,
+        injector: &dyn KeyInjector,
+        is_terminal: bool,
+        is_bypass: bool,
+    ) {
+        self.sync_injector_if_changed(injector, None, is_terminal, is_bypass);
+    }
+
     fn sync_injector_if_changed(
         &mut self,
         injector: &dyn KeyInjector,
@@ -135,15 +144,21 @@ impl FocusSyncState {
             }
             daemon.reset_composition_state();
 
-            if daemon.config.app_state.enabled && !active_window_class.is_empty() {
-                daemon.check_app_change_with(active_window_class.clone());
+            if !active_window_class.is_empty() {
+                if daemon.config.app_state.enabled {
+                    daemon.check_app_change_with(active_window_class.clone());
+                } else {
+                    daemon
+                        .app_state
+                        .set_current_app_for_security(active_window_class.clone());
+                }
                 self.sync_injector_if_changed(
                     injector,
                     Some(&active_window_class),
                     daemon.app_state.is_terminal_app(),
                     daemon.is_current_app_bypassed(),
                 );
-            } else if active_window_class.is_empty() {
+            } else {
                 // FocusLost (layer-shell launcher / Polkit): never inherit previous app's
                 // bypass, terminal, method, or english overrides. Clear stale AT-SPI2
                 // password/app flags outside the 150ms grace window so freshly focused
@@ -156,13 +171,19 @@ impl FocusSyncState {
                 daemon.reset_app_focus_to_global();
                 self.sync_injector_if_changed(injector, Some(""), false, false);
             }
-        } else if daemon.config.app_state.enabled && !active_window_class.is_empty() {
+        } else if !active_window_class.is_empty() {
             if class_changed {
                 crate::password_detector::clear_atspi_password_flag_if_non_atspi(
                     focus.identity.as_deref(),
                 );
                 self.last_window_class = active_window_class.clone();
-                daemon.check_app_change_with(active_window_class.clone());
+                if daemon.config.app_state.enabled {
+                    daemon.check_app_change_with(active_window_class.clone());
+                } else {
+                    daemon
+                        .app_state
+                        .set_current_app_for_security(active_window_class.clone());
+                }
             }
             self.sync_injector_if_changed(
                 injector,
@@ -175,11 +196,16 @@ impl FocusSyncState {
         if daemon.config.password_detection.enabled {
             let is_pw = daemon.app_state.check_password_field();
             let currently_enabled = daemon.engine.is_enabled();
+            let restore_enabled = if daemon.config.app_state.enabled {
+                daemon.app_state.get_default_state()
+            } else {
+                daemon.app_state.is_global_enabled()
+            };
             if is_pw && currently_enabled {
                 daemon.engine.set_enabled(false);
                 daemon.reset_composition_state();
                 daemon.write_status();
-            } else if !is_pw && !currently_enabled && daemon.app_state.get_default_state() {
+            } else if !is_pw && !currently_enabled && restore_enabled {
                 daemon.engine.set_enabled(true);
                 daemon.reset_composition_state();
                 daemon.write_status();
@@ -382,5 +408,57 @@ mod tests {
         sync.sync_on_key_press(&mut daemon, &inj, &shared);
         assert!(!daemon.app_state.is_password_active());
         assert!(daemon.engine.is_enabled());
+    }
+
+    #[test]
+    fn disabled_app_state_preserves_layer2_password_and_terminal_security_without_per_app_overrides(
+    ) {
+        let _lock = crate::password_detector::atspi_test_lock();
+        crate::password_detector::reset_atspi_focus_state();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.app_state.enabled = false;
+        cfg.password_detection.enabled = true;
+        let enabled = Arc::new(AtomicBool::new(true));
+        let mut daemon = Daemon::new(cfg, std::path::PathBuf::from("test.toml"), enabled);
+        let shared = Arc::new(Mutex::new(FocusSnapshot::default()));
+        let mut sync = FocusSyncState::from_initial(FocusSnapshot::default());
+        let inj = CountingInjector::new();
+
+        // Focusing a terminal must still set `is_terminal_app()` for Layer 4 PTY `!ECHO`
+        // protection while keeping global input method (not switching to terminal_input_method).
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:term".into()), Some("cosmic-term".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(
+            daemon.app_state.is_terminal_app(),
+            "Layer 4 PTY !ECHO requires terminal tracking even when app_state.enabled == false"
+        );
+        assert!(daemon.engine.is_enabled());
+        assert!(!daemon.is_current_app_bypassed());
+
+        // Focusing a Layer 2 password_apps window must still disable the engine.
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:pw".into()), Some("keepassxc".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(daemon.app_state.is_password_active());
+        assert!(!daemon.engine.is_enabled());
+
+        // Returning to an english_apps window (`code`) when `app_state.enabled == false`
+        // must restore global enabled state (VN) instead of applying english_apps.
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:editor".into()), Some("code".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(!daemon.app_state.is_password_active());
+        assert!(
+            daemon.engine.is_enabled(),
+            "leaving password dialog with app_state.enabled=false must restore global state"
+        );
     }
 }

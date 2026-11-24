@@ -712,38 +712,55 @@ pub fn run() {
             let mode = read_status(&last_mode);
             let im = read_method(&last_im);
             let autostart = config::is_autostart_installed();
-            let cfg_now = config::Config::load();
+            let cfg_now = match config::Config::load_for_update() {
+                Ok(cfg) => Some(cfg),
+                Err(err) => {
+                    eprintln!(
+                        "[dboard-tray] Ignoring transient invalid config during watch: {err}"
+                    );
+                    None
+                }
+            };
+            let next_autocorrect = cfg_now.as_ref().map_or(last_autocorrect, |c| c.autocorrect);
+            let next_auto_cap = cfg_now
+                .as_ref()
+                .map_or(last_auto_cap, |c| c.auto_capitalize);
+            let next_candidate_bar = cfg_now
+                .as_ref()
+                .map_or(last_candidate_bar, |c| c.candidate_bar);
+            let next_layout = cfg_now
+                .as_ref()
+                .map_or_else(|| last_layout.clone(), |c| c.keyboard_layout.clone());
             if mode != last_mode
                 || im != last_im
                 || autostart != last_autostart
-                || cfg_now.autocorrect != last_autocorrect
-                || cfg_now.auto_capitalize != last_auto_cap
-                || cfg_now.candidate_bar != last_candidate_bar
-                || cfg_now.keyboard_layout != last_layout
+                || next_autocorrect != last_autocorrect
+                || next_auto_cap != last_auto_cap
+                || next_candidate_bar != last_candidate_bar
+                || next_layout != last_layout
             {
                 last_mode = mode.clone();
                 last_im = im.clone();
                 last_autostart = autostart;
-                last_autocorrect = cfg_now.autocorrect;
-                last_auto_cap = cfg_now.auto_capitalize;
-                if cfg_now.candidate_bar != last_candidate_bar {
-                    if cfg_now.candidate_bar {
+                last_autocorrect = next_autocorrect;
+                last_auto_cap = next_auto_cap;
+                if next_candidate_bar != last_candidate_bar {
+                    if next_candidate_bar {
                         spawn_popup_if_available();
                     } else {
                         stop_popup_if_running();
                     }
                 }
-                last_candidate_bar = cfg_now.candidate_bar;
-                last_layout = cfg_now.keyboard_layout.clone();
-                let new_layout = cfg_now.keyboard_layout;
+                last_candidate_bar = next_candidate_bar;
+                last_layout = next_layout.clone();
                 handle.update(move |t| {
                     t.mode = mode;
                     t.im = im;
                     t.autostart = autostart;
-                    t.autocorrect = cfg_now.autocorrect;
-                    t.auto_capitalize = cfg_now.auto_capitalize;
-                    t.candidate_bar = cfg_now.candidate_bar;
-                    t.keyboard_layout = new_layout;
+                    t.autocorrect = next_autocorrect;
+                    t.auto_capitalize = next_auto_cap;
+                    t.candidate_bar = next_candidate_bar;
+                    t.keyboard_layout = next_layout;
                 });
             }
         }
@@ -757,6 +774,10 @@ pub fn run() {
     while !crate::should_exit() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    stop_popup_if_running();
+    // Only stop `dboard-popup` if this tray instance owns the daemon lifecycle;
+    // when attached to `dboard.service`, closing the optional tray keeps both alive.
+    if crate::owns_daemon_child() {
+        stop_popup_if_running();
+    }
     shutdown_handle.shutdown();
 }

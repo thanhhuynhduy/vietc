@@ -348,6 +348,25 @@ fn candidate_selection_preserves_ring_buffer_and_avoids_idle_alt_hijack() {
     assert!(daemon.engine.has_pasted_prefix());
     assert!(daemon.try_select_candidate(1, false).is_none());
     assert!(daemon.try_select_candidate(0, true).is_none());
+
+    // Keyboard Alt+2 must NOT hijack an undisplayed SymSpell suggestion before
+    // the 50ms idle tick calls `sync_candidate_bar(true)`.
+    daemon.reset_composition_state();
+    for ch in "recive".chars() {
+        let _ = daemon.process_key(ch);
+    }
+    assert_eq!(daemon.engine.buffer(), "recive");
+    assert_eq!(daemon.engine.raw_buffer(), "recive");
+    assert!(
+        daemon.try_select_candidate(1, false).is_none(),
+        "Alt+2 must pass through before idle tick publishes SymSpell suggestion"
+    );
+    daemon.sync_candidate_bar(true);
+    let selected = daemon.try_select_candidate(1, false);
+    assert!(
+        selected.is_some(),
+        "Alt+2 must select SymSpell suggestion once published by idle tick"
+    );
 }
 
 #[test]

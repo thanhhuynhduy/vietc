@@ -511,3 +511,66 @@ fn symspell_protects_prefixed_brand_names_and_candidate_bar_uses_context() {
     let _ = cap.process_key('c');
     assert_eq!(cap.buffer(), "C");
 }
+
+#[test]
+fn invalidate_clears_last_boundary_char_and_seed_sets_space_boundary() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    engine.set_auto_restore(true);
+    engine.set_autocorrect(true);
+
+    // Type a dot boundary, then invalidate (cursor move / focus change).
+    for ch in "done.".chars() {
+        let _ = engine.process_key(ch);
+    }
+    engine.invalidate_composition();
+
+    // Autocorrect must still work on the next word instead of seeing stale `.` boundary.
+    let mut screen = String::new();
+    for ch in "teh ".chars() {
+        match engine.process_key(ch) {
+            Some(EngineEvent::Replace(rep)) => {
+                for _ in 0..rep.delete_before_cursor {
+                    screen.pop();
+                }
+                screen.push_str(&rep.insert);
+                if dboard_engine::is_flush_char(ch) {
+                    screen.push(ch);
+                }
+            }
+            None => screen.push(ch),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+    assert_eq!(
+        screen, "the ",
+        "invalidate_composition must clear stale '.' last_boundary_char"
+    );
+
+    // Seeding a preceding word without an active word_at_caret must arm Space boundary
+    // so next-word prediction fires immediately.
+    engine.reset();
+    assert!(engine.seed_surrounding_context(None, Some("xin"), false));
+    assert!(
+        !engine.predict_next_words(3).is_empty(),
+        "seed_surrounding_context(prev_word) must set Space boundary for predict_next_words"
+    );
+
+    // commit_selected_word(..., false) followed by Backspace must rehydrate and
+    // delete the last visible character so subsequent tone edits stay in sync.
+    engine.reset();
+    let mut screen = String::from("chào");
+    engine.commit_selected_word("chào", false);
+    assert!(engine.process_key('\x08').is_none());
+    screen.pop(); // native BS deletes 'o' -> "chà"
+    assert_eq!(screen, "chà");
+    match engine.process_key('s') {
+        Some(EngineEvent::Replace(rep)) => {
+            for _ in 0..rep.delete_before_cursor {
+                screen.pop();
+            }
+            screen.push_str(&rep.insert);
+        }
+        other => panic!("expected tone replacement after rehydrated BS, got {other:?}"),
+    }
+    assert_eq!(screen, "chá");
+}

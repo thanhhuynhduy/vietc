@@ -5,7 +5,7 @@
 //! - Always sets `KeyboardInteractivity::None` (NEVER steals keyboard focus).
 //! - Anchors directly beneath the AT-SPI2 caret (`Anchor::Top | Anchor::Left`)
 //!   with smart output-bounds clamping and above-caret flip near the bottom edge,
-//!   falling back cleanly to bottom-center when caret coordinates are unavailable.
+//!   falling back cleanly to top-center when caret coordinates are unavailable.
 //! - Supports multi-monitor, rotated outputs (90°/270°), HiDPI (`1..=4` via
 //!   `set_buffer_scale`), hover highlight, and left-click selection (`wl_pointer`).
 //! - Respects `wl_buffer::Event::Release` so buffers are never destroyed while
@@ -19,6 +19,7 @@ use wayland_client::protocol::{
     wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum};
+use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::pill_render::{
@@ -34,17 +35,33 @@ const MAX_IN_FLIGHT_BUFFERS: usize = 4;
 pub struct OutputInfo {
     pub global_name: u32,
     pub output: Option<wl_output::WlOutput>,
+    pub xdg_output: Option<zxdg_output_v1::ZxdgOutputV1>,
     pub x: i32,
     pub y: i32,
     pub width: i32,
     pub height: i32,
+    pub logical_x: Option<i32>,
+    pub logical_y: Option<i32>,
+    pub logical_width: Option<i32>,
+    pub logical_height: Option<i32>,
     pub scale: i32,
     pub rotated_90: bool,
 }
 
 impl OutputInfo {
-    fn logical_size(&self) -> (i32, i32, i32) {
+    /// Returns `(logical_x, logical_y, logical_width, logical_height, buffer_scale)`.
+    /// Prefers authoritative `zxdg_output_v1` logical geometry (exact for fractional
+    /// HiDPI such as 125%/150%/175% and rotated displays) and falls back to dividing
+    /// physical `wl_output::Mode` by integer `wl_output::Scale`.
+    fn logical_geometry(&self) -> (i32, i32, i32, i32, i32) {
         let scale = self.scale.clamp(1, 4);
+        let lx = self.logical_x.unwrap_or(self.x);
+        let ly = self.logical_y.unwrap_or(self.y);
+        if let (Some(lw), Some(lh)) = (self.logical_width, self.logical_height) {
+            if lw > 0 && lh > 0 {
+                return (lx, ly, lw, lh, scale);
+            }
+        }
         let (raw_w, raw_h) = if self.rotated_90 {
             (self.height, self.width)
         } else {
@@ -52,12 +69,12 @@ impl OutputInfo {
         };
         let lw = if raw_w > 0 { raw_w / scale } else { 1920 };
         let lh = if raw_h > 0 { raw_h / scale } else { 1080 };
-        (lw, lh, scale)
+        (lx, ly, lw, lh, scale)
     }
 }
 
 /// Select the output containing global `caret` coordinates and translate `caret`
-/// into output-local logical coordinates `(x - out.x, y - out.y)`.
+/// into output-local logical coordinates `(x - out.logical_x, y - out.logical_y)`.
 pub fn select_output_and_local_caret(
     outputs: &[OutputInfo],
     caret: Option<CaretRect>,
@@ -66,20 +83,20 @@ pub fn select_output_and_local_caret(
         return (None, 1920, 1080, 1, caret);
     };
     let Some(c) = caret else {
-        let (lw, lh, scale) = first.logical_size();
+        let (_, _, lw, lh, scale) = first.logical_geometry();
         return (None, lw, lh, scale, None);
     };
     let matched = outputs
         .iter()
         .find(|o| {
-            let (lw, lh, _) = o.logical_size();
-            c.x >= o.x && c.x < o.x + lw && c.y >= o.y && c.y < o.y + lh
+            let (ox, oy, lw, lh, _) = o.logical_geometry();
+            c.x >= ox && c.x < ox + lw && c.y >= oy && c.y < oy + lh
         })
         .unwrap_or(first);
-    let (lw, lh, scale) = matched.logical_size();
+    let (ox, oy, lw, lh, scale) = matched.logical_geometry();
     let local_caret = CaretRect {
-        x: c.x.saturating_sub(matched.x),
-        y: c.y.saturating_sub(matched.y),
+        x: c.x.saturating_sub(ox),
+        y: c.y.saturating_sub(oy),
         h: c.h,
     };
     (Some(matched.global_name), lw, lh, scale, Some(local_caret))
@@ -99,11 +116,11 @@ impl InFlightBuffer {
     }
 }
 
-#[derive(Default)]
 struct LayerState {
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
+    xdg_output_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     seat: Option<wl_seat::WlSeat>,
     pointer: Option<wl_pointer::WlPointer>,
     outputs: Vec<OutputInfo>,
@@ -115,6 +132,28 @@ struct LayerState {
     slot_bounds: Vec<(i32, i32)>,
     configured: bool,
     closed: bool,
+}
+
+impl Default for LayerState {
+    fn default() -> Self {
+        Self {
+            compositor: None,
+            shm: None,
+            layer_shell: None,
+            xdg_output_manager: None,
+            seat: None,
+            pointer: None,
+            outputs: Vec::new(),
+            in_flight_buffers: Vec::new(),
+            pointer_x: -1.0,
+            hovered_slot: None,
+            clicked_slot: None,
+            hover_dirty: false,
+            slot_bounds: Vec::new(),
+            configured: false,
+            closed: false,
+        }
+    }
 }
 
 impl LayerState {
@@ -155,15 +194,37 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LayerState {
                 "zwlr_layer_shell_v1" if state.layer_shell.is_none() => {
                     state.layer_shell = Some(registry.bind(name, version.min(4), qh, ()));
                 }
+                "zxdg_output_manager_v1" if state.xdg_output_manager.is_none() => {
+                    let mgr: zxdg_output_manager_v1::ZxdgOutputManagerV1 =
+                        registry.bind(name, version.min(3), qh, ());
+                    for out in &mut state.outputs {
+                        if out.xdg_output.is_none() {
+                            if let Some(ref wl_out) = out.output {
+                                out.xdg_output =
+                                    Some(mgr.get_xdg_output(wl_out, qh, out.global_name));
+                            }
+                        }
+                    }
+                    state.xdg_output_manager = Some(mgr);
+                }
                 "wl_output" => {
                     let out: wl_output::WlOutput = registry.bind(name, version.min(3), qh, name);
+                    let xdg_output = state
+                        .xdg_output_manager
+                        .as_ref()
+                        .map(|mgr| mgr.get_xdg_output(&out, qh, name));
                     state.outputs.push(OutputInfo {
                         global_name: name,
                         output: Some(out),
+                        xdg_output,
                         x: 0,
                         y: 0,
                         width: 0,
                         height: 0,
+                        logical_x: None,
+                        logical_y: None,
+                        logical_width: None,
+                        logical_height: None,
                         scale: 1,
                         rotated_90: false,
                     });
@@ -176,6 +237,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for LayerState {
             wl_registry::Event::GlobalRemove { name } => {
                 state.outputs.retain(|o| {
                     if o.global_name == name {
+                        if let Some(ref xdg) = o.xdg_output {
+                            xdg.destroy();
+                        }
                         if let Some(ref out) = o.output {
                             out.release();
                         }
@@ -235,6 +299,38 @@ impl Dispatch<wl_output::WlOutput, u32> for LayerState {
             }
             wl_output::Event::Scale { factor } if factor > 0 => {
                 out.scale = factor.clamp(1, 4);
+            }
+            _ => {}
+        }
+    }
+}
+
+wayland_client::delegate_noop!(LayerState: ignore zxdg_output_manager_v1::ZxdgOutputManagerV1);
+
+impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for LayerState {
+    fn event(
+        state: &mut Self,
+        _: &zxdg_output_v1::ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        global_name: &u32,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(out) = state
+            .outputs
+            .iter_mut()
+            .find(|o| o.global_name == *global_name)
+        else {
+            return;
+        };
+        match event {
+            zxdg_output_v1::Event::LogicalPosition { x, y } => {
+                out.logical_x = Some(x);
+                out.logical_y = Some(y);
+            }
+            zxdg_output_v1::Event::LogicalSize { width, height } if width > 0 && height > 0 => {
+                out.logical_width = Some(width);
+                out.logical_height = Some(height);
             }
             _ => {}
         }
@@ -404,8 +500,8 @@ impl WaylandLayerBar {
             (),
         );
         layer_surface.set_size(MIN_BAR_WIDTH, BAR_HEIGHT);
-        layer_surface.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
-        layer_surface.set_margin(0, 0, 28, 0);
+        layer_surface.set_anchor(zwlr_layer_surface_v1::Anchor::Top);
+        layer_surface.set_margin(36, 0, 0, 0);
         layer_surface.set_exclusive_zone(0);
         // Critical invariant: NEVER steal keyboard focus from the active editor!
         layer_surface
@@ -517,7 +613,7 @@ impl WaylandLayerBar {
                 zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Left,
             );
         } else {
-            next.set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
+            next.set_anchor(zwlr_layer_surface_v1::Anchor::Top);
         }
         next.set_margin(
             placement.margin_top,
@@ -576,7 +672,7 @@ impl WaylandLayerBar {
                 );
             } else {
                 self.layer_surface
-                    .set_anchor(zwlr_layer_surface_v1::Anchor::Bottom);
+                    .set_anchor(zwlr_layer_surface_v1::Anchor::Top);
             }
             self.layer_surface.set_margin(
                 placement.margin_top,
@@ -687,32 +783,64 @@ mod tests {
             OutputInfo {
                 global_name: 10,
                 output: None,
+                xdg_output: None,
                 x: 0,
                 y: 0,
                 width: 1920,
                 height: 1080,
+                logical_x: None,
+                logical_y: None,
+                logical_width: None,
+                logical_height: None,
                 scale: 1,
                 rotated_90: false,
             },
             OutputInfo {
                 global_name: 20,
                 output: None,
+                xdg_output: None,
                 x: 1920,
                 y: 0,
                 width: 3840,
                 height: 2160,
+                logical_x: Some(1920),
+                logical_y: Some(0),
+                logical_width: Some(1920),
+                logical_height: Some(1080),
                 scale: 2,
                 rotated_90: false,
             },
             OutputInfo {
                 global_name: 30,
                 output: None,
+                xdg_output: None,
                 x: -1080,
                 y: 0,
                 width: 1920,
                 height: 1080,
+                logical_x: None,
+                logical_y: None,
+                logical_width: None,
+                logical_height: None,
                 scale: 1,
                 rotated_90: true,
+            },
+            // Fractional 150% HiDPI display: physical 1920x1080, integer wl_output scale 2,
+            // authoritative zxdg_output_v1 logical size 1280x720 at x=3840.
+            OutputInfo {
+                global_name: 40,
+                output: None,
+                xdg_output: None,
+                x: 3840,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                logical_x: Some(3840),
+                logical_y: Some(0),
+                logical_width: Some(1280),
+                logical_height: Some(720),
+                scale: 2,
+                rotated_90: false,
             },
         ];
 
@@ -751,6 +879,27 @@ mod tests {
             Some(CaretRect {
                 x: 580,
                 y: 1600,
+                h: 20
+            })
+        );
+
+        // Fractional 150% monitor: caret at global (4900, 620) is local (1060, 620)
+        // which would have fallen outside `1920 / 2 = 960` without zxdg_output_v1.
+        let (frac_name, flw, flh, fscale, flocal) = select_output_and_local_caret(
+            &outputs,
+            Some(CaretRect {
+                x: 4900,
+                y: 620,
+                h: 20,
+            }),
+        );
+        assert_eq!(frac_name, Some(40));
+        assert_eq!((flw, flh, fscale), (1280, 720, 2));
+        assert_eq!(
+            flocal,
+            Some(CaretRect {
+                x: 1060,
+                y: 620,
                 h: 20
             })
         );

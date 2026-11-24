@@ -728,8 +728,11 @@ impl UinputInjector {
                         if restore_gen.load(Ordering::Acquire) != expected_gen {
                             return;
                         }
-                        let mut slot = paste_slot.lock().unwrap_or_else(|p| p.into_inner());
-                        let Some(entry) = slot.take() else { return };
+                        let entry = {
+                            let mut slot = paste_slot.lock().unwrap_or_else(|p| p.into_inner());
+                            let Some(entry) = slot.take() else { return };
+                            entry
+                        };
                         let ok = match entry.offer.ownership() {
                             Ownership::Owned => Self::restore_wayland_clipboard(&entry.backup),
                             Ownership::Replaced => true,
@@ -742,7 +745,10 @@ impl UinputInjector {
                             retired.retain(|offer| !offer.is_finished());
                             retired.push(entry.offer);
                         } else {
-                            *slot = Some(entry);
+                            let mut slot = paste_slot.lock().unwrap_or_else(|p| p.into_inner());
+                            if slot.is_none() {
+                                *slot = Some(entry);
+                            }
                         }
                     });
                 true

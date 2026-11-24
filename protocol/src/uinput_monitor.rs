@@ -274,9 +274,19 @@ impl UinputInjector {
 
     #[cfg(feature = "wayland-protocol")]
     fn transfer_vk_shift_to_uinput(&self) {
-        let (left_shift, right_shift) = self
-            .with_wayland_vk(|vk| vk.handoff_shift_to_uinput())
-            .unwrap_or((false, false));
+        // Never trigger a blocking VK reconnect just to hand off Shift; a
+        // disconnected/unhealthy session has no live Shift state to transfer.
+        let (left_shift, right_shift) = {
+            let slot = self
+                .wayland_vk
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            slot.vk
+                .as_ref()
+                .filter(|vk| vk.is_healthy())
+                .map(|vk| vk.handoff_shift_to_uinput())
+                .unwrap_or((false, false))
+        };
         if left_shift || right_shift {
             let mut bits = 0u8;
             if left_shift {
@@ -394,7 +404,7 @@ impl KeyInjector for UinputInjector {
             } else {
                 let _prev = self.uinput_mod_mask.fetch_or(bit, Ordering::AcqRel);
                 #[cfg(feature = "wayland-protocol")]
-                if _prev == 0 && value == 1 {
+                if _prev == 0 && value == 1 && !bypassed {
                     self.transfer_vk_shift_to_uinput();
                 }
             }
@@ -716,7 +726,15 @@ impl UinputInjector {
         {
             let no_sys_mods = self.uinput_mod_mask.load(Ordering::Acquire) == 0;
             let mut rem_us = self.mod_release_cooldown_remaining_us();
-            if no_sys_mods
+            let vk_available = {
+                let slot = self
+                    .wayland_vk
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                !slot.disabled && slot.vk.as_ref().is_some_and(|vk| vk.is_healthy())
+            };
+            if vk_available
+                && no_sys_mods
                 && rem_us > 0
                 && !is_layout_direct
                 && !text.is_empty()

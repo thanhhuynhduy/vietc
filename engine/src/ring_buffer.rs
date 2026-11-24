@@ -35,6 +35,9 @@ pub(crate) enum BackspaceAcrossBoundary {
     /// right at the end of `entry.visible_word` so the user can immediately append tones/marks
     /// or continue backspacing character-by-character.
     Rehydrated(CommittedWordEntry),
+    /// The committed word had no trailing delimiter (e.g. `commit_selected_word(..., false)`),
+    /// so the current Backspace must rehydrate `entry` AND delete its final visible character.
+    RehydratedNoDelimiter(CommittedWordEntry),
 }
 
 impl CommittedRingBuffer {
@@ -124,8 +127,8 @@ impl CommittedRingBuffer {
             return BackspaceAcrossBoundary::Empty;
         };
         if last.trailing_delimiters.pop().is_none() {
-            self.entries.pop_back();
-            return BackspaceAcrossBoundary::Empty;
+            let entry = self.entries.pop_back().unwrap();
+            return BackspaceAcrossBoundary::RehydratedNoDelimiter(entry);
         }
         if last.trailing_delimiters.is_empty() {
             let entry = self.entries.pop_back().unwrap();

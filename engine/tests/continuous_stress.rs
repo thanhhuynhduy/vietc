@@ -73,6 +73,9 @@ fn run_segment(
 
 #[test]
 fn continuous_50k_keystrokes_without_reset_zero_drift_telex_and_vni() {
+    // Match production daemon startup (`dboard-warmup` background thread).
+    dboard_engine::warm_up_symspell();
+
     let mut engine = Engine::new(InputMethod::Telex);
     engine.set_auto_restore(true);
     engine.set_autocorrect(true);
@@ -214,14 +217,21 @@ fn continuous_50k_keystrokes_without_reset_zero_drift_telex_and_vni() {
         "[dboard continuous_stress] total_keys={total_keys} (0 resets) telex_p50={p50_us:.2}us telex_p99={p99_us:.2}us"
     );
 
-    // Performance gate (generous for debug builds, tight in release builds)
-    let p99_limit_us = if cfg!(debug_assertions) {
-        2_000.0
+    // Performance gate matching docs/dboard-gboard-parity-plan.md (Section 0.6):
+    // Release builds must stay strictly below `p50 < 2.0us` and `p99 < 10.0us`.
+    if cfg!(debug_assertions) {
+        assert!(
+            p99_us <= 2_000.0,
+            "debug continuous un-reset p99 latency {p99_us:.2}us exceeded 2000.0us"
+        );
     } else {
-        15.0
-    };
-    assert!(
-        p99_us <= p99_limit_us,
-        "continuous un-reset p99 latency {p99_us:.2}us exceeded {p99_limit_us:.1}us"
-    );
+        assert!(
+            p50_us < 2.0,
+            "release continuous un-reset p50 latency {p50_us:.2}us exceeded 2.0us gate"
+        );
+        assert!(
+            p99_us < 10.0,
+            "release continuous un-reset p99 latency {p99_us:.2}us exceeded 10.0us gate"
+        );
+    }
 }

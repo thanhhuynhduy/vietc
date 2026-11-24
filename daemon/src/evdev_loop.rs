@@ -336,8 +336,11 @@ pub fn run_with_evdev(
         if config_changed.swap(false, Ordering::SeqCst) {
             daemon.reload_config();
             debug_logging = crate::log::is_debug_active(daemon.config.debug);
-            injector.set_terminal_app(daemon.app_state.is_terminal_app());
-            injector.set_bypass_mode(daemon.is_current_app_bypassed());
+            focus_sync.sync_injector_after_config_reload(
+                &*injector,
+                daemon.app_state.is_terminal_app(),
+                daemon.is_current_app_bypassed(),
+            );
         }
 
         // Wall-clock hotplug scan every 2s (immune to continuous-typing poll starvation)

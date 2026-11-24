@@ -837,3 +837,51 @@ fn pasted_prefix_backspace_is_o1_single_char_delete() {
     }
     assert_eq!(eng.buffer().len(), 1_999);
 }
+
+#[test]
+fn pasted_prefix_backspace_recovery_preserves_prefix_and_stays_o1() {
+    let mut eng = Engine::new(InputMethod::Telex);
+    eng.update_with_pasted_text("hello");
+    let mut screen = String::from("hello");
+
+    // First BS fails to apply on screen (`recover_composition`), so screen still has "hello".
+    assert!(matches!(
+        eng.process_key('\x08'),
+        Some(EngineEvent::Replace(rep)) if rep.delete_before_cursor == 1 && rep.insert.is_empty()
+    ));
+    eng.recover_composition();
+
+    // Second BS succeeds: deletes only the 2 removed chars ("lo") -> "hel", O(1).
+    match eng.process_key('\x08') {
+        Some(EngineEvent::Replace(rep)) => {
+            assert_eq!(rep.delete_before_cursor, 2);
+            assert!(rep.insert.is_empty());
+            let keep = screen
+                .chars()
+                .count()
+                .saturating_sub(rep.delete_before_cursor);
+            screen = screen.chars().take(keep).collect();
+        }
+        other => panic!("expected Replace(2, \"\"), got {other:?}"),
+    }
+    assert_eq!(screen, "hel");
+
+    // Another BS fails, then user types 'a' -> deletes only the 1 un-deleted char ('l') and inserts "a" -> "hea".
+    assert!(eng.process_key('\x08').is_some());
+    eng.recover_composition();
+    match eng.process_key('a') {
+        Some(EngineEvent::Replace(rep)) => {
+            assert_eq!(rep.delete_before_cursor, 1);
+            assert_eq!(rep.insert, "a");
+            let keep = screen
+                .chars()
+                .count()
+                .saturating_sub(rep.delete_before_cursor);
+            screen = screen.chars().take(keep).collect();
+            screen.push_str(&rep.insert);
+        }
+        other => panic!("expected Replace(1, \"a\"), got {other:?}"),
+    }
+    assert_eq!(screen, "hea");
+    assert_eq!(eng.buffer(), "hea");
+}

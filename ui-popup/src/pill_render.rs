@@ -18,7 +18,8 @@ pub struct PillPlacement {
 
 /// Compute screen-clamped placement for a pill of size `(bar_w, bar_h)` inside
 /// an output of `(out_w, out_h)`. Flips above the caret if below-caret would
-/// overflow the bottom edge; falls back to bottom-center when `caret` is `None`.
+/// overflow the bottom edge; falls back to top-center when `caret` is `None`
+/// (avoiding bottom chat/agent input boxes in modern IDEs and apps).
 pub fn compute_pill_placement(
     caret: Option<CaretRect>,
     bar_w: u32,
@@ -29,8 +30,8 @@ pub fn compute_pill_placement(
     let Some(c) = caret else {
         return PillPlacement {
             anchored_to_caret: false,
-            margin_top: 0,
-            margin_bottom: 28,
+            margin_top: 36,
+            margin_bottom: 0,
             margin_left: 0,
         };
     };
@@ -266,7 +267,8 @@ mod tests {
 
         let p_none = compute_pill_placement(None, 320, BAR_HEIGHT, 1920, 1080);
         assert!(!p_none.anchored_to_caret);
-        assert_eq!(p_none.margin_bottom, 28);
+        assert_eq!(p_none.margin_top, 36);
+        assert_eq!(p_none.margin_bottom, 0);
     }
 
     #[test]

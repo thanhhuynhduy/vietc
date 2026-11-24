@@ -9,7 +9,7 @@
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -27,11 +27,21 @@ use wayland_protocols_wlr::data_control::v1::client::{
 };
 
 const PIPE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONCURRENT_SEND_WORKERS: usize = 8;
 static ACTIVE_RESTORE_GEN: AtomicU64 = AtomicU64::new(0);
+
+struct SendWorkerGuard(Arc<AtomicUsize>);
+
+impl Drop for SendWorkerGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 struct RestoreState {
     globals: Vec<(u32, String)>,
-    entries: Vec<(String, Vec<u8>)>,
+    entries: Arc<Vec<(String, Vec<u8>)>>,
+    active_sends: Arc<AtomicUsize>,
     cancelled: bool,
     sync_done: bool,
 }
@@ -124,11 +134,35 @@ fn roundtrip_with_deadline(
 }
 
 impl RestoreState {
-    fn payload_for(&self, mime: &str) -> Option<&[u8]> {
-        self.entries
-            .iter()
-            .find(|(m, _)| m == mime)
-            .map(|(_, bytes)| bytes.as_slice())
+    fn payload_index_for(&self, mime: &str) -> Option<usize> {
+        self.entries.iter().position(|(m, _)| m == mime)
+    }
+
+    fn spawn_send_worker(&self, mime: &str, fd: OwnedFd) {
+        let Some(idx) = self.payload_index_for(mime) else {
+            return;
+        };
+        // Bound concurrent Send workers so a stalled reader (e.g. clipboard manager
+        // reading `image/png`) never blocks concurrent MIME transfers or `Cancelled`,
+        // while also capping thread count under adversarial `Send` floods.
+        let prev = self.active_sends.fetch_add(1, Ordering::AcqRel);
+        if prev >= MAX_CONCURRENT_SEND_WORKERS {
+            self.active_sends.fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
+        let entries = Arc::clone(&self.entries);
+        let guard = SendWorkerGuard(Arc::clone(&self.active_sends));
+        let spawned = thread::Builder::new()
+            .name("dboard-clip-send".into())
+            .spawn(move || {
+                let _guard = guard;
+                block_sigpipe_on_thread();
+                write_pipe_nonblocking(fd, &entries[idx].1);
+            });
+        if spawned.is_err() {
+            // `guard` dropped here if spawn failed (already moved into closure only on Ok,
+            // Wait: closure moved `guard`, so `Err` drops closure + `guard`, decrementing count).
+        }
     }
 }
 
@@ -257,9 +291,7 @@ macro_rules! impl_restore_dispatch {
             ) {
                 match event {
                     $sm::Event::Send { mime_type, fd } => {
-                        if let Some(bytes) = state.payload_for(&mime_type) {
-                            write_pipe_nonblocking(fd, bytes);
-                        }
+                        state.spawn_send_worker(&mime_type, fd);
                     }
                     $sm::Event::Cancelled => {
                         state.cancelled = true;
@@ -310,7 +342,8 @@ fn serve_multi_mime_connection(
     let registry = display.get_registry(&qh, ());
     let mut state = RestoreState {
         globals: Vec::new(),
-        entries,
+        entries: Arc::new(entries),
+        active_sends: Arc::new(AtomicUsize::new(0)),
         cancelled: false,
         sync_done: false,
     };
@@ -349,7 +382,7 @@ fn serve_multi_mime_connection(
         ($module:ident, $manager:ident, $name:expr) => {{
             let manager: $module::$manager = registry.bind($name, 1, &qh, ());
             let source = manager.create_data_source(&qh, ());
-            for (mime, _) in &state.entries {
+            for (mime, _) in state.entries.iter() {
                 source.offer(mime.clone());
             }
             let device = manager.get_data_device(&seat, &qh, ());
@@ -555,5 +588,36 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
         handle.join().expect("worker thread must exit cleanly");
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn stalled_mime_send_does_not_block_concurrent_mime_transfer() {
+        let (_stalled_r, stalled_w) = make_pipe();
+        let (fast_r, fast_w) = make_pipe();
+        let state = RestoreState {
+            globals: Vec::new(),
+            entries: Arc::new(vec![
+                ("image/png".into(), vec![0x89u8; 256 * 1024]),
+                ("text/plain".into(), b"hello world".to_vec()),
+            ]),
+            active_sends: Arc::new(AtomicUsize::new(0)),
+            cancelled: false,
+            sync_done: false,
+        };
+
+        let start = Instant::now();
+        // First Send stalls on an unread 256KB pipe; must return immediately without blocking.
+        state.spawn_send_worker("image/png", stalled_w);
+        // Second Send for `text/plain` must complete immediately in parallel.
+        state.spawn_send_worker("text/plain", fast_w);
+
+        let mut f = std::fs::File::from(fast_r);
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf).unwrap();
+        assert_eq!(buf, b"hello world");
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "concurrent MIME transfer must not wait for stalled reader"
+        );
     }
 }

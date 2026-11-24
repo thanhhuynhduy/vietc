@@ -5,6 +5,32 @@ use crate::state::{BoundaryState, ReplacementReason, TransitionKind};
 use super::{Engine, EngineEvent};
 
 impl Engine {
+    fn rehydrate_committed_entry(&mut self, entry: crate::ring_buffer::CommittedWordEntry) {
+        self.prev_context = entry.prior_context;
+        self.override_keep_vietnamese = entry.user_override_vn;
+        let method = self.method;
+        let canonical = (!entry.was_auto_restored)
+            .then(|| visible_to_canonical_raw(&entry.visible_word, method))
+            .flatten()
+            .filter(|cand| {
+                crate::spelling::is_valid_vietnamese_syllable(&entry.visible_word)
+                    && self.compose_candidate(cand) == entry.visible_word
+            });
+        if let Some(canon_raw) = canonical {
+            self.raw_buffer = canon_raw;
+            self.replay_bamboo_from_raw();
+            self.rehydrated_word = true;
+            self.rehydrated_edited = false;
+            self.rehydrated_ascii_only = false;
+        } else {
+            self.raw_buffer = entry.visible_word;
+            self.bamboo.reset();
+            self.rehydrated_word = true;
+            self.rehydrated_edited = false;
+            self.rehydrated_ascii_only = true;
+        }
+    }
+
     pub(super) fn handle_backspace(&mut self) -> Option<EngineEvent> {
         self.auto_cap.reset();
         self.last_dot_stem = None;
@@ -34,8 +60,11 @@ impl Engine {
         if self.raw_buffer.is_empty() {
             if !self.pasted_prefix.is_empty() {
                 let recovered = self.recovered_screen_len.take();
-                let prev_len = recovered.unwrap_or_else(|| self.pasted_prefix.chars().count());
-                self.previous_screen_len = Some(prev_len);
+                // Each O(1) Backspace on `pasted_prefix` deletes only the newly
+                // removed char plus any un-deleted chars from prior failed
+                // replacements, never the entire pasted prefix.
+                let del = recovered.map_or(1, |n| n + 1);
+                self.previous_screen_len = Some(del);
                 self.pasted_prefix.pop();
                 self.active_transform = None;
                 self.boundary = if self.pasted_prefix.is_empty() {
@@ -44,49 +73,29 @@ impl Engine {
                     BoundaryState::Composing
                 };
                 self.last_transition = Some(TransitionKind::Edit);
-                let (del, ins) = match recovered {
-                    Some(n) => (n, self.visible_output()),
-                    None => (1, String::new()),
-                };
-                return Some(self.replacement(del, ins, ReplacementReason::Edit));
+                return Some(self.replacement(del, String::new(), ReplacementReason::Edit));
             }
 
-            if let BackspaceAcrossBoundary::Rehydrated(entry) =
-                self.ring_buffer.on_backspace_when_idle()
-            {
-                self.prev_context = entry.prior_context;
-                self.override_keep_vietnamese = entry.user_override_vn;
-                let method = self.method;
-                let canonical = (!entry.was_auto_restored)
-                    .then(|| visible_to_canonical_raw(&entry.visible_word, method))
-                    .flatten()
-                    .filter(|cand| {
-                        crate::spelling::is_valid_vietnamese_syllable(&entry.visible_word)
-                            && self.compose_candidate(cand) == entry.visible_word
-                    });
-                if let Some(canon_raw) = canonical {
-                    self.raw_buffer = canon_raw;
-                    self.replay_bamboo_from_raw();
-                    self.rehydrated_word = true;
-                    self.rehydrated_edited = false;
-                    self.rehydrated_ascii_only = false;
-                } else {
-                    self.raw_buffer = entry.visible_word;
-                    self.bamboo.reset();
-                    self.rehydrated_word = true;
-                    self.rehydrated_edited = false;
-                    self.rehydrated_ascii_only = true;
+            match self.ring_buffer.on_backspace_when_idle() {
+                BackspaceAcrossBoundary::Rehydrated(entry) => {
+                    self.rehydrate_committed_entry(entry);
+                    self.active_transform = None;
+                    self.boundary = BoundaryState::Composing;
+                    self.last_transition = Some(TransitionKind::Edit);
+                    return None;
                 }
-                self.active_transform = None;
-                self.boundary = BoundaryState::Composing;
-                self.last_transition = Some(TransitionKind::Edit);
-                return None;
+                BackspaceAcrossBoundary::RehydratedNoDelimiter(entry) => {
+                    // Word had no trailing delimiter (`commit_selected_word(_, false)`):
+                    // rehydrate it and fall through to delete its final visible character.
+                    self.rehydrate_committed_entry(entry);
+                }
+                BackspaceAcrossBoundary::Empty | BackspaceAcrossBoundary::ConsumedDelimiterOnly => {
+                    self.active_transform = None;
+                    self.boundary = BoundaryState::Committed;
+                    self.last_transition = Some(TransitionKind::Edit);
+                    return None;
+                }
             }
-
-            self.active_transform = None;
-            self.boundary = BoundaryState::Committed;
-            self.last_transition = Some(TransitionKind::Edit);
-            return None;
         }
 
         // Character-granular Backspace for words rehydrated across Space:

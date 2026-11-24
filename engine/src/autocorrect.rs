@@ -406,6 +406,41 @@ pub(crate) fn suggest_correction_for_layout(
     )
 }
 
+fn is_known_english_inflection(dict: &EnglishDict, lower: &str) -> bool {
+    if lower.len() < 4 || !lower.is_ascii() {
+        return false;
+    }
+    // Regular plural / 3rd-person singular / past / agentive / adverbial suffixes
+    for suffix in ["s", "es", "ed", "d", "er", "r", "ing", "ly", "ion"] {
+        if let Some(stem) = lower.strip_suffix(suffix) {
+            if stem.len() >= 3 && dict.is_english_word(stem) {
+                return true;
+            }
+            if matches!(suffix, "ing" | "er" | "ion") && stem.len() >= 3 {
+                let mut with_e = String::with_capacity(stem.len() + 1);
+                with_e.push_str(stem);
+                with_e.push('e');
+                if dict.is_english_word(&with_e) {
+                    return true;
+                }
+            }
+        }
+    }
+    for suffix in ["ies", "ied"] {
+        if let Some(stem) = lower.strip_suffix(suffix) {
+            if stem.len() >= 2 {
+                let mut with_y = String::with_capacity(stem.len() + 1);
+                with_y.push_str(stem);
+                with_y.push('y');
+                if dict.is_english_word(&with_y) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn suggest_correction_with_context(
     dict: &EnglishDict,
@@ -436,6 +471,12 @@ pub(crate) fn suggest_correction_with_context(
     {
         return None;
     }
+    // Skip mixed-case acronyms / Pascal-acronym identifiers (`IBus`, `macOS`, `WaylandVK`).
+    let upper_count = raw.chars().filter(|c| c.is_ascii_uppercase()).count();
+    let lower_count = raw.chars().filter(|c| c.is_ascii_lowercase()).count();
+    if upper_count >= 2 && lower_count >= 1 {
+        return None;
+    }
     if crate::english::has_mixed_internal_caps(raw, composed) {
         return None;
     }
@@ -446,6 +487,7 @@ pub(crate) fn suggest_correction_with_context(
         || (crate::spelling::is_valid_vietnamese_syllable(composed)
             && crate::spelling::is_in_vietnamese_dictionary(composed))
         || dict.is_english_word(&raw_lower)
+        || is_known_english_inflection(dict, &raw_lower)
     {
         return None;
     }
