@@ -648,3 +648,53 @@ fn bilingual_code_switching_preserves_context_across_digits_and_auxiliary_pairs(
         "tôi thích cót "
     );
 }
+
+#[test]
+fn p0_cross_coda_reduplication_multi_syllable_and_buffer_saturation_guards() {
+    // P0.6: Phonotactic single-syllable prefix guard + 4-letter CV-CV reduplication guard.
+    assert_eq!(simulate_autocorrect("momo "), "momo ");
+    assert_eq!(simulate_autocorrect("nono "), "nono ");
+    assert_eq!(simulate_autocorrect("solana "), "solana ");
+    assert_eq!(simulate_autocorrect("katana "), "katana ");
+    assert_eq!(simulate_autocorrect("banana "), "banana ");
+    // Verify no circumflex flash on multi-syllable words (`solana` -> no `solân`,
+    // `katana` final `'a'` -> no `katân`).
+    let mut e = Engine::new(InputMethod::Telex);
+    for ch in "solana".chars() {
+        assert!(
+            e.process_key(ch).is_none(),
+            "solana must not flash circumflex mid-word at '{ch}'"
+        );
+    }
+    e.reset();
+    let mut last_ev = None;
+    for ch in "katana".chars() {
+        last_ev = e.process_key(ch);
+    }
+    assert!(
+        last_ev.is_none(),
+        "katana must not flash `katân` on final 'a'"
+    );
+    // Preserve valid Vietnamese cross-coda circumflex & toned forms.
+    assert_eq!(simulate_autocorrect("khongo "), "không ");
+    assert_eq!(simulate_autocorrect("khongso "), "khống ");
+    assert_eq!(simulate_autocorrect("vietej "), "việt ");
+    assert_eq!(simulate_autocorrect("vietje "), "việt ");
+    assert_eq!(simulate_autocorrect("tienges "), "tiếng ");
+    assert_eq!(simulate_autocorrect("tiengse "), "tiếng ");
+    assert_eq!(simulate_autocorrect("tana "), "tân ");
+    assert_eq!(simulate_autocorrect("momof "), "mồm ");
+
+    // P0.7: 64-char buffer saturation must NOT re-enter Telex composition mid-token,
+    // even after Backspace, and must resume Vietnamese cleanly after a flush delimiter.
+    let long_token = format!("{}aa chaof ", "x".repeat(65));
+    assert_eq!(
+        simulate_autocorrect(&long_token),
+        format!("{}aa chào ", "x".repeat(65))
+    );
+    let long_with_bs = format!("{}a\x08aa chaof ", "x".repeat(65));
+    assert_eq!(
+        simulate_autocorrect(&long_with_bs),
+        format!("{}aa chào ", "x".repeat(65))
+    );
+}

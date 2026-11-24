@@ -76,6 +76,7 @@ pub struct Engine {
     boundary: BoundaryState,
     last_transition: Option<TransitionKind>,
     last_boundary_char: Option<char>,
+    pub(super) saturated_until_flush: bool,
 }
 
 impl Engine {
@@ -120,6 +121,7 @@ impl Engine {
             boundary: BoundaryState::Committed,
             last_transition: None,
             last_boundary_char: None,
+            saturated_until_flush: false,
         }
     }
 
@@ -258,6 +260,7 @@ impl Engine {
         self.last_dot_stem = None;
         self.pending_restore_undo = None;
         self.last_boundary_char = None;
+        self.saturated_until_flush = false;
         self.auto_cap.reset();
     }
 
@@ -272,6 +275,7 @@ impl Engine {
         self.clear_word_only();
         self.last_dot_stem = None;
         self.pending_restore_undo = None;
+        self.saturated_until_flush = false;
         if chosen.is_empty() {
             return;
         }
@@ -359,6 +363,7 @@ impl Engine {
         self.last_dot_stem = None;
         self.last_boundary_char = None;
         self.pending_restore_undo = None;
+        self.saturated_until_flush = false;
         self.auto_cap.reset();
         self.boundary = BoundaryState::Invalidated;
         self.last_transition = Some(TransitionKind::Invalidate);
@@ -438,6 +443,7 @@ impl Engine {
         self.pending_restore_undo = None;
 
         if is_flush_char(ch) {
+            self.saturated_until_flush = false;
             let prev_boundary = self.last_boundary_char;
             self.last_boundary_char = Some(ch);
             let prev_word = (!self.raw_buffer.is_empty()).then_some(self.raw_buffer.as_str());
@@ -473,19 +479,37 @@ impl Engine {
                 .take()
                 .unwrap_or_else(|| previous.chars().count());
 
-            if let Some(expansion) = self.macros.get(&self.raw_buffer.to_lowercase()).cloned() {
-                let adapted = adapt_macro_casing(&self.raw_buffer, &expansion);
-                self.clear_word_only();
-                self.last_dot_stem = None;
-                self.ring_buffer.clear();
-                self.prev_context = if is_sentence_boundary(ch) {
-                    LanguageContext::None
-                } else {
-                    LanguageContext::Vietnamese
-                };
-                self.last_transition = Some(TransitionKind::Commit);
-                self.previous_screen_len = Some(prev_len);
-                return Some(self.replacement(prev_len, adapted, ReplacementReason::Macro));
+            if self.pasted_prefix.is_empty() {
+                if let Some(expansion) = self.macros.get(&self.raw_buffer.to_lowercase()).cloned() {
+                    let adapted = adapt_macro_casing(&self.raw_buffer, &expansion);
+                    let prior_context = self.prev_context;
+                    self.clear_word_only();
+                    self.last_dot_stem = None;
+                    self.prev_context = if is_sentence_boundary(ch) {
+                        LanguageContext::None
+                    } else {
+                        LanguageContext::Vietnamese
+                    };
+                    if ch == ' ' {
+                        for part in adapted.split(' ').filter(|p| !p.is_empty()) {
+                            let part_str = part.to_string();
+                            self.ring_buffer.push(CommittedWordEntry {
+                                raw_keys: part_str.clone(),
+                                visible_word: part_str,
+                                trailing_delimiters: " ".to_string(),
+                                prior_context,
+                                committed_context: self.prev_context,
+                                was_auto_restored: false,
+                                user_override_vn: false,
+                            });
+                        }
+                    } else {
+                        self.ring_buffer.clear();
+                    }
+                    self.last_transition = Some(TransitionKind::Commit);
+                    self.previous_screen_len = Some(prev_len);
+                    return Some(self.replacement(prev_len, adapted, ReplacementReason::Macro));
+                }
             }
 
             let raw = self.raw_buffer.clone();
@@ -762,9 +786,15 @@ impl Engine {
             return None;
         }
 
+        if self.saturated_until_flush {
+            self.previous_screen_len = None;
+            return None;
+        }
+
         if self.raw_buffer.chars().count() >= 64 {
             self.clear_word_only();
             self.ring_buffer.clear();
+            self.saturated_until_flush = true;
             return None;
         }
 

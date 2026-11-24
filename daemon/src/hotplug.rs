@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //! Keyboard hotplug retry scheduling and cross-device modifier aggregation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub const HOTPLUG_SCAN_INTERVAL: Duration = Duration::from_secs(2);
@@ -19,11 +21,14 @@ pub const MODIFIER_KEYS: [evdev::KeyCode; 8] = [
 ];
 
 /// Tracks wall-clock hotplug scan cadence (immune to continuous-typing poll
-/// starvation) and bounded retries for transient `EVIOCGRAB` failures while
-/// udev is still applying `uaccess` ACLs.
+/// starvation), bounded retries for transient `EVIOCGRAB` failures while
+/// udev is still applying `uaccess` ACLs, and a `(ino, ctime)` cache of
+/// non-keyboard `/dev/input/event*` nodes so `evdev_loop` never re-opens
+/// mice/touchpads/audio jacks every 2s.
 pub struct HotplugState {
     last_scan: Instant,
     grab_retries: HashMap<String, u8>,
+    rejected_devices: HashMap<String, (u64, i64)>,
 }
 
 impl HotplugState {
@@ -31,6 +36,7 @@ impl HotplugState {
         Self {
             last_scan: Instant::now(),
             grab_retries: HashMap::new(),
+            rejected_devices: HashMap::new(),
         }
     }
 
@@ -41,6 +47,30 @@ impl HotplugState {
         } else {
             false
         }
+    }
+
+    /// Returns `true` if `path` was already probed as a non-keyboard and its
+    /// devtmpfs `(ino, ctime)` has not changed (0 `open()`/ioctl needed).
+    pub fn is_rejected_unchanged(&self, path: &str, real_path: &Path) -> bool {
+        let Some(&cached) = self.rejected_devices.get(path) else {
+            return false;
+        };
+        std::fs::metadata(real_path)
+            .ok()
+            .is_some_and(|meta| (meta.ino(), meta.ctime()) == cached)
+    }
+
+    pub fn mark_rejected(&mut self, path: String, real_path: &Path) {
+        if let Ok(meta) = std::fs::metadata(real_path) {
+            self.rejected_devices
+                .insert(path, (meta.ino(), meta.ctime()));
+        }
+    }
+
+    pub fn prune_missing_paths(&mut self, present_paths: &HashSet<String>) {
+        self.rejected_devices
+            .retain(|p, _| present_paths.contains(p));
+        self.grab_retries.retain(|p, _| present_paths.contains(p));
     }
 
     /// Record a transient `dev.grab()` failure on `path`.
@@ -54,6 +84,7 @@ impl HotplugState {
 
     pub fn clear_path(&mut self, path: &str) {
         self.grab_retries.remove(path);
+        self.rejected_devices.remove(path);
     }
 }
 

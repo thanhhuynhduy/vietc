@@ -18,10 +18,13 @@ fn apply_key(engine: &mut Engine, screen: &mut String, ch: char) {
     if ch == BS {
         match engine.process_key(BS) {
             Some(EngineEvent::Replace(rep)) => {
-                let keep = screen
-                    .chars()
-                    .count()
-                    .saturating_sub(rep.delete_before_cursor);
+                let cur_len = screen.chars().count();
+                assert!(
+                    cur_len >= rep.delete_before_cursor,
+                    "over-delete on Backspace: screen={screen:?} (len={cur_len}) < delete={}",
+                    rep.delete_before_cursor
+                );
+                let keep = cur_len - rep.delete_before_cursor;
                 *screen = screen.chars().take(keep).collect();
                 screen.push_str(&rep.insert);
             }
@@ -35,10 +38,13 @@ fn apply_key(engine: &mut Engine, screen: &mut String, ch: char) {
 
     match engine.process_key(ch) {
         Some(EngineEvent::Replace(rep)) => {
-            let keep = screen
-                .chars()
-                .count()
-                .saturating_sub(rep.delete_before_cursor);
+            let cur_len = screen.chars().count();
+            assert!(
+                cur_len >= rep.delete_before_cursor,
+                "over-delete on key {ch:?}: screen={screen:?} (len={cur_len}) < delete={}",
+                rep.delete_before_cursor
+            );
+            let keep = cur_len - rep.delete_before_cursor;
             *screen = screen.chars().take(keep).collect();
             screen.push_str(&rep.insert);
             if dboard_engine::is_flush_char(ch) {
@@ -234,4 +240,60 @@ fn continuous_50k_keystrokes_without_reset_zero_drift_telex_and_vni() {
             "release continuous un-reset p99 latency {p99_us:.2}us exceeded 10.0us gate"
         );
     }
+}
+
+#[test]
+fn adversarial_chaos_stress_eviction_overflow_paste_and_vni_ac() {
+    dboard_engine::warm_up_symspell();
+
+    // 1. Telex adversarial chaos: reduplication, shape-override undo, >64-char overflow,
+    //    paste + macro protection, and ring_buffer preservation after macro.
+    let mut engine = Engine::new(InputMethod::Telex);
+    engine.set_auto_restore(true);
+    engine.set_autocorrect(true);
+    engine.add_macro("ko".into(), "không".into());
+    let mut lat = Vec::new();
+
+    run_segment(
+        &mut engine,
+        &mut lat,
+        "momo nono solana katana aaww awaa ooww owoo ",
+        "momo nono solana katana aaw awa oow owo ",
+        "telex_adversarial_phonotactics_and_undo",
+    );
+
+    let long_url = format!("https://example.com/{}aa chaof ", "x".repeat(65));
+    let long_expected = format!("https://example.com/{}aa chào ", "x".repeat(65));
+    run_segment(
+        &mut engine,
+        &mut lat,
+        &long_url,
+        &long_expected,
+        "telex_64char_overflow_recovery",
+    );
+
+    // Paste + macro must NOT corrupt pasted prefix
+    engine.update_with_pasted_text("hello");
+    let mut pasted_screen = String::from("hello");
+    for ch in "ko ".chars() {
+        apply_key(&mut engine, &mut pasted_screen, ch);
+    }
+    assert_eq!(pasted_screen, "helloko ");
+
+    // Standalone macro preserves ring_buffer for next-word prediction
+    run_segment(&mut engine, &mut lat, "ko ", "không ", "telex_macro_ring");
+    assert!(
+        !engine.predict_next_words(3).is_empty(),
+        "macro expansion must preserve ring_buffer for next-word prediction"
+    );
+
+    // 2. VNI + Autocorrect adversarial chaos: alphanumeric dev tokens + VN collisions + VNI typos
+    engine.set_method(InputMethod::Vni);
+    run_segment(
+        &mut engine,
+        &mut lat,
+        "chay5 test1 last1 cast1 best1 rest1 log1 host1 ban1 can61 tieng71 khonhg6 ",
+        "chạy test1 last1 cast1 best1 rest1 log1 host1 bán cấn tiếng không ",
+        "vni_ac_dev_tokens_and_typos",
+    );
 }

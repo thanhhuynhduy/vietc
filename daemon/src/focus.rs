@@ -93,6 +93,13 @@ impl Default for FocusSnapshot {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SurroundingFreshnessToken {
+    pub key_seq: u64,
+    pub generation: u64,
+    pub last_pointer_click_at: Option<Instant>,
+}
+
 impl FocusSnapshot {
     pub fn observe(&mut self, identity: Option<String>, class: Option<String>) {
         let seat = std::env::var("XDG_SEAT").unwrap_or_else(|_| "seat0".to_string());
@@ -125,17 +132,31 @@ impl FocusSnapshot {
         });
     }
 
-    /// Store AT-SPI2 surrounding context only if no physical keystroke occurred
-    /// while the asynchronous D-Bus `GetText` query was in flight.
+    pub fn surrounding_freshness_token(&self) -> SurroundingFreshnessToken {
+        SurroundingFreshnessToken {
+            key_seq: self.key_activity_seq.load(Ordering::Acquire),
+            generation: self.generation,
+            last_pointer_click_at: self.last_pointer_click_at,
+        }
+    }
+
+    /// Store AT-SPI2 surrounding context only if no physical keystroke, focus
+    /// change (`generation`), or pointer click occurred while the asynchronous
+    /// D-Bus `GetText` query was in flight. Returns `true` iff the token was
+    /// still fresh.
     pub fn set_surrounding_context_if_fresh(
         &mut self,
         data: Option<SurroundingContextData>,
-        expected_key_seq: u64,
-    ) {
-        if self.key_activity_seq.load(Ordering::Acquire) != expected_key_seq {
-            return;
+        token: SurroundingFreshnessToken,
+    ) -> bool {
+        if self.key_activity_seq.load(Ordering::Acquire) != token.key_seq
+            || self.generation != token.generation
+            || self.last_pointer_click_at != token.last_pointer_click_at
+        {
+            return false;
         }
         self.set_surrounding_context(data);
+        true
     }
 
     pub fn key_activity_signal(&self) -> Arc<AtomicU64> {
@@ -498,32 +519,40 @@ mod tests {
     }
 
     #[test]
-    fn stale_surrounding_context_is_discarded_when_keystroke_occurred_in_flight() {
+    fn stale_surrounding_context_is_discarded_when_keystroke_focus_or_click_occurred_in_flight() {
         use crate::surrounding_context::SurroundingContextData;
         use std::sync::atomic::Ordering;
 
         let mut snapshot = FocusSnapshot::default();
         snapshot.observe(Some("toplevel:firefox".into()), Some("firefox".into()));
         let sig = snapshot.key_activity_signal();
-        let seq_before_rpc = sig.load(Ordering::Acquire);
+        let token_before_key = snapshot.surrounding_freshness_token();
 
-        // User presses Backspace/Arrow while AT-SPI2 GetText RPC is in flight.
+        // 1. Keystroke occurred in flight -> must discard.
         sig.fetch_add(1, Ordering::AcqRel);
-
         let stale = SurroundingContextData {
             word_at_caret: Some("chao".into()),
             prev_word: Some("xin".into()),
             after_sentence_boundary: false,
         };
-        snapshot.set_surrounding_context_if_fresh(Some(stale.clone()), seq_before_rpc);
-        assert!(
-            snapshot.surrounding_context.is_none(),
-            "in-flight AT-SPI2 GetText response must be discarded if a keystroke occurred"
-        );
+        assert!(!snapshot.set_surrounding_context_if_fresh(Some(stale.clone()), token_before_key));
+        assert!(snapshot.surrounding_context.is_none());
 
-        // Fresh query with matching sequence succeeds.
-        let seq_fresh = sig.load(Ordering::Acquire);
-        snapshot.set_surrounding_context_if_fresh(Some(stale), seq_fresh);
+        // 2. Focus switched to Window B in flight (without any keystroke) -> must discard.
+        let token_window_a = snapshot.surrounding_freshness_token();
+        snapshot.observe(Some("toplevel:code".into()), Some("code".into()));
+        assert!(!snapshot.set_surrounding_context_if_fresh(Some(stale.clone()), token_window_a));
+        assert!(snapshot.surrounding_context.is_none());
+
+        // 3. Pointer click occurred inside same window in flight -> must discard.
+        let token_before_click = snapshot.surrounding_freshness_token();
+        snapshot.last_pointer_click_at = Some(std::time::Instant::now());
+        assert!(!snapshot.set_surrounding_context_if_fresh(Some(stale.clone()), token_before_click));
+        assert!(snapshot.surrounding_context.is_none());
+
+        // 4. Fresh query with unchanged key_seq, generation, and pointer click succeeds.
+        let token_fresh = snapshot.surrounding_freshness_token();
+        assert!(snapshot.set_surrounding_context_if_fresh(Some(stale), token_fresh));
         assert!(snapshot.surrounding_context.is_some());
     }
 }

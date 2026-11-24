@@ -130,7 +130,15 @@ fn try_start_systemd_user_service() -> bool {
         .status()
         .is_ok_and(|s| s.success());
     if ok {
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        // `dboard.service` is `Type=simple`, so `systemctl start` returns
+        // before the daemon acquires its single-instance lock. Poll up to 1.5s
+        // so high login load never causes a duplicate standalone spawn.
+        for _ in 0..15 {
+            if is_daemon_running() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         return is_daemon_running();
     }
     false
@@ -199,35 +207,37 @@ pub fn stop_daemon() {
 pub fn restart_daemon_for_layout(layout_label: &str) {
     let label = layout_label.to_string();
     std::thread::spawn(move || {
-        let restarted = if owns_daemon_child() {
+        let restarted = {
             let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             if STOPPING.load(Ordering::SeqCst) {
                 return;
             }
-            stop_owned_daemon_child_locked();
-            let daemon_bin = find_daemon_binary();
-            match std::process::Command::new(&daemon_bin).spawn() {
-                Ok(child) => {
-                    supervise_daemon(child);
-                    true
+            if owns_daemon_child() {
+                stop_owned_daemon_child_locked();
+                let daemon_bin = find_daemon_binary();
+                match std::process::Command::new(&daemon_bin).spawn() {
+                    Ok(child) => {
+                        supervise_daemon(child);
+                        true
+                    }
+                    Err(err) => {
+                        eprintln!("[dboard-tray] Failed to restart daemon: {err}");
+                        false
+                    }
                 }
-                Err(err) => {
-                    eprintln!("[dboard-tray] Failed to restart daemon: {err}");
+            } else {
+                let is_systemd = std::process::Command::new("systemctl")
+                    .args(["--user", "is-active", "--quiet", "dboard.service"])
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if is_systemd {
+                    std::process::Command::new("systemctl")
+                        .args(["--user", "restart", "dboard.service"])
+                        .status()
+                        .is_ok_and(|s| s.success())
+                } else {
                     false
                 }
-            }
-        } else {
-            let is_systemd = std::process::Command::new("systemctl")
-                .args(["--user", "is-active", "--quiet", "dboard.service"])
-                .status()
-                .is_ok_and(|s| s.success());
-            if is_systemd {
-                std::process::Command::new("systemctl")
-                    .args(["--user", "restart", "dboard.service"])
-                    .status()
-                    .is_ok_and(|s| s.success())
-            } else {
-                false
             }
         };
 

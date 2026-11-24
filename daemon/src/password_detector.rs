@@ -240,6 +240,10 @@ pub fn record_atspi_focus_state(is_password: bool, app_name: Option<String>) {
 
 /// Clear the cached AT-SPI2 password flag when focus moves to another top-level window
 /// (prevents permanent stuck password mode when switching into non-AT-SPI apps like terminals).
+pub fn is_atspi_password_focused() -> bool {
+    ATSPI_FOCUSED_IS_PASSWORD.load(Ordering::Acquire)
+}
+
 pub fn clear_atspi_password_flag() {
     ATSPI_FOCUSED_IS_PASSWORD.store(false, Ordering::Release);
     if let Ok(mut guard) = atspi_password_set_at().lock() {

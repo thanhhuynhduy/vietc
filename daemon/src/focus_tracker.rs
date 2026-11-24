@@ -135,7 +135,12 @@ struct FocusedNodeInspection {
     app_name: Option<String>,
 }
 
-fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedNodeInspection {
+fn inspect_focused_node(
+    conn: &Connection,
+    sender: &str,
+    path: &str,
+    shared_focus: &SharedFocusSnapshot,
+) -> FocusedNodeInspection {
     let proxy = conn.with_proxy(sender, path, QUERY_TIMEOUT);
     let role_res = proxy
         .method_call::<(i32,), _, _, _>("org.a11y.atspi.Accessible", "GetRole", ())
@@ -155,12 +160,22 @@ fn inspect_focused_node(conn: &Connection, sender: &str, path: &str) -> FocusedN
         };
     };
     let is_password = role == crate::password_detector::ROLE_PASSWORD_TEXT;
+    if is_password {
+        // Fail-closed immediately after `GetRole` (1st RPC) before slower
+        // `GetApplication`/`Name` RPCs so fast `Tab` -> password typing cannot
+        // slip through Layer 1 or leak into `dboard-popup` / `UserDict`.
+        crate::password_detector::record_atspi_focus_state(true, None);
+        crate::candidate_ipc::record_caret_rect(None);
+        crate::focus::clear_surrounding_word(shared_focus);
+    }
     let is_editable_text = !is_password
         && matches!(
             role,
             ROLE_AUTOCOMPLETE | ROLE_ENTRY | ROLE_TEXT | ROLE_PARAGRAPH | ROLE_DOCUMENT_TEXT
         );
-    let is_omnibox = if role == ROLE_AUTOCOMPLETE {
+    let is_omnibox = if is_password {
+        false
+    } else if role == ROLE_AUTOCOMPLETE {
         true
     } else if role == ROLE_ENTRY || role == ROLE_TEXT {
         proxy
@@ -261,10 +276,12 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
     );
 
     let pending: Arc<Mutex<Vec<PendingAtspiEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let has_pending_focus = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let mut focus_rule = MatchRule::new_signal("org.a11y.atspi.Event.Object", "StateChanged");
     focus_rule.path_is_namespace = true;
     let pending_focus = Arc::clone(&pending);
+    let pending_focus_flag = Arc::clone(&has_pending_focus);
     connection.add_match(focus_rule, move |_: (), _, message| {
         let mut fields = message.iter_init();
         let state = fields.read::<&str>().unwrap_or_default();
@@ -275,6 +292,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                 let s_str = s.to_string();
                 let p_str = p.to_string();
                 if !s_str.is_empty() && !p_str.is_empty() {
+                    pending_focus_flag.store(true, std::sync::atomic::Ordering::Release);
                     pending_focus
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
@@ -332,6 +350,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         connection.process(PROCESS_TIMEOUT)?;
+        has_pending_focus.store(false, std::sync::atomic::Ordering::Release);
         let drained: Vec<PendingAtspiEvent> = coalesce_atspi_events(
             pending
                 .lock()
@@ -346,7 +365,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                     latest_caret = None;
                     // Inspect role & password state BEFORE bumping focus generation so
                     // evdev_loop sees the updated password flag on the very next keystroke!
-                    let info = inspect_focused_node(&connection, &sender, &path);
+                    let info = inspect_focused_node(&connection, &sender, &path, &shared_focus);
                     let atspi_app = info.app_name.clone();
                     if info.role_known {
                         crate::password_detector::record_atspi_focus_state(
@@ -372,11 +391,10 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                         crate::focus::clear_omnibox_inline_selection(&shared_focus);
                     }
                     if info.is_editable_text {
-                        let key_seq = shared_focus
+                        let token = shared_focus
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .key_activity_seq
-                            .load(std::sync::atomic::Ordering::Acquire);
+                            .surrounding_freshness_token();
                         let caret = crate::surrounding_context::query_caret_offset(
                             &connection,
                             &sender,
@@ -402,11 +420,13 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                                 )
                             })
                         };
-                        crate::candidate_ipc::record_caret_rect(rect);
-                        shared_focus
+                        let fresh = shared_focus
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .set_surrounding_context_if_fresh(ctx, key_seq);
+                            .set_surrounding_context_if_fresh(ctx, token);
+                        if fresh {
+                            crate::candidate_ipc::record_caret_rect(rect);
+                        }
                         active_text_node = Some((sender, path));
                     } else {
                         active_text_node = None;
@@ -443,24 +463,33 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
             }
         }
         if let Some((sender, path, caret)) = latest_caret {
-            let key_seq = shared_focus
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .key_activity_seq
-                .load(std::sync::atomic::Ordering::Acquire);
-            let ctx = crate::surrounding_context::query_surrounding_context(
-                &connection,
-                &sender,
-                &path,
-                caret,
-            );
-            let rect =
-                crate::surrounding_context::query_caret_extents(&connection, &sender, &path, caret);
-            crate::candidate_ipc::record_caret_rect(rect);
-            shared_focus
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .set_surrounding_context_if_fresh(ctx, key_seq);
+            if !has_pending_focus.load(std::sync::atomic::Ordering::Acquire)
+                && !crate::password_detector::is_atspi_password_focused()
+            {
+                let token = shared_focus
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .surrounding_freshness_token();
+                let ctx = crate::surrounding_context::query_surrounding_context(
+                    &connection,
+                    &sender,
+                    &path,
+                    caret,
+                );
+                let rect = crate::surrounding_context::query_caret_extents(
+                    &connection,
+                    &sender,
+                    &path,
+                    caret,
+                );
+                let fresh = shared_focus
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .set_surrounding_context_if_fresh(ctx, token);
+                if fresh {
+                    crate::candidate_ipc::record_caret_rect(rect);
+                }
+            }
         }
     }
 }

@@ -289,7 +289,7 @@ if [ "$FROM_SOURCE" = true ]; then
     # Cargo's PATH is scoped to run_as_build_user. Do not modify user-owned
     # shell profiles or environment.d as root.
     REAL_GROUP="$(id -gn "$REAL_USER" 2>/dev/null || echo "$REAL_USER")"
-    if [ ! -f Cargo.toml ] || [ ! -d .git ]; then
+    if [ ! -f Cargo.toml ]; then
         t cloning
         chmod 755 "$TMPDIR" 2>/dev/null || true
         mkdir -p "$TMPDIR/source"
@@ -308,7 +308,9 @@ if [ "$FROM_SOURCE" = true ]; then
     fi
     run_as_build_user cargo build --release --locked
     (cd ui && run_as_build_user cargo build --release --locked)
-    [ -d ui-popup ] && (cd ui-popup && run_as_build_user cargo build --release --locked) || true
+    if [ -d ui-popup ]; then
+        (cd ui-popup && run_as_build_user cargo build --release --locked)
+    fi
 elif [ -f "./bin/dboard-daemon" ]; then
     INSTALL_DIR="$(pwd)"
     BIN_DIR="$INSTALL_DIR/bin"
@@ -398,7 +400,11 @@ else
     fi
 fi
 
-# Stop running processes before replacing binaries
+# Stop systemd service & running processes before replacing binaries
+if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && [ -n "${U_UID:-}" ] && [ -S "/run/user/$U_UID/bus" ]; then
+    sudo -u "$REAL_USER" XDG_RUNTIME_DIR="/run/user/$U_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
+        systemctl --user stop dboard.service 2>/dev/null || true
+fi
 pkill -x dboard-tray 2>/dev/null || true
 pkill -x dboard-popup 2>/dev/null || true
 pkill -x dboard-daemon 2>/dev/null || true

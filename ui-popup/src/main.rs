@@ -283,6 +283,19 @@ fn main() {
                 wayland_bar = Some(bar);
             }
         }
+        // Flush outgoing Wayland requests and drain any events already buffered
+        // in `wayland-client` BEFORE sleeping in `libc::poll` (per Wayland
+        // `prepare_read` contract) so `Release`/`Configure`/pointer events never
+        // wait up to 250ms in the internal queue.
+        if let Some(bar) = wayland_bar.as_mut() {
+            if bar.dispatch_pending().is_err() {
+                wayland_bar = None;
+                last_visible_at = None;
+                last_reconnect_attempt = std::time::Instant::now();
+            } else if let Some(clicked_idx) = bar.take_clicked_slot() {
+                send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
+            }
+        }
         let mut fds = [
             libc::pollfd {
                 fd: sock.as_raw_fd(),

@@ -34,6 +34,10 @@ impl Engine {
     pub(super) fn handle_backspace(&mut self) -> Option<EngineEvent> {
         self.auto_cap.reset();
         self.last_dot_stem = None;
+        if self.saturated_until_flush {
+            self.previous_screen_len = None;
+            return None;
+        }
         if self.raw_buffer.is_empty() && self.pasted_prefix.is_empty() {
             if let Some(undo) = self.pending_restore_undo.take() {
                 let (delete_len, restore_text) = crate::engine_helpers::apply_pending_restore_undo(

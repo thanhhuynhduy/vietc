@@ -441,6 +441,20 @@ fn is_known_english_inflection(dict: &EnglishDict, lower: &str) -> bool {
     false
 }
 
+fn is_vni_english_numbered_token(raw_lower: &str, dict: &EnglishDict) -> bool {
+    let Some(digit_idx) = raw_lower.bytes().position(|b| b.is_ascii_digit()) else {
+        return false;
+    };
+    if digit_idx < 2 {
+        return false;
+    }
+    let (prefix, suffix) = raw_lower.split_at(digit_idx);
+    prefix.bytes().all(|b| b.is_ascii_lowercase())
+        && suffix.bytes().all(|b| b.is_ascii_digit())
+        && dict.is_english_word(prefix)
+        && !crate::spelling::is_bare_vietnamese_syllable(prefix)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn suggest_correction_with_context(
     dict: &EnglishDict,
@@ -488,6 +502,7 @@ pub(crate) fn suggest_correction_with_context(
             && crate::spelling::is_in_vietnamese_dictionary(composed))
         || dict.is_english_word(&raw_lower)
         || is_known_english_inflection(dict, &raw_lower)
+        || (method == InputMethod::Vni && is_vni_english_numbered_token(&raw_lower, dict))
     {
         return None;
     }
@@ -507,6 +522,13 @@ pub(crate) fn suggest_correction_with_context(
     }
 
     let chars: Vec<char> = raw_lower.chars().collect();
+
+    // Protect 4-letter reduplicated `ABAB` tokens (`momo`, `nono`, `kaka`,
+    // `haha`, `baba`, `nana`, `tete`) from adjacent transposition into
+    // unrelated Vietnamese syllables (`momo -> moom -> môm`, `nono -> noon -> nôn`).
+    if chars.len() == 4 && chars[0] == chars[2] && chars[1] == chars[3] {
+        return None;
+    }
 
     // When already in English context, never corrupt OOV English/dev tokens into Vietnamese.
     if prev_ctx == LanguageContext::English {

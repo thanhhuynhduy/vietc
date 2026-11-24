@@ -34,6 +34,7 @@ struct WaylandVkSlot {
     disabled: bool,
     unsupported_attempts: u8,
     last_attempt: Option<std::time::Instant>,
+    reconnect_in_flight: bool,
 }
 
 /// Readiness/transfer wait budget, not proof that an application inserted text.
@@ -42,7 +43,7 @@ struct WaylandVkSlot {
 pub struct UinputInjector {
     file: File,
     #[cfg(feature = "wayland-protocol")]
-    wayland_vk: Mutex<WaylandVkSlot>,
+    wayland_vk: Arc<Mutex<WaylandVkSlot>>,
     #[cfg(feature = "wayland-protocol")]
     wayland_paste: Arc<Mutex<Option<RetainedWaylandPaste>>>,
     #[cfg(feature = "wayland-protocol")]
@@ -173,6 +174,7 @@ impl UinputInjector {
                 disabled,
                 unsupported_attempts: 0,
                 last_attempt: Some(std::time::Instant::now()),
+                reconnect_in_flight: false,
             }
         };
 
@@ -192,7 +194,7 @@ impl UinputInjector {
         Ok(Self {
             file,
             #[cfg(feature = "wayland-protocol")]
-            wayland_vk: Mutex::new(vk_slot),
+            wayland_vk: Arc::new(Mutex::new(vk_slot)),
             #[cfg(feature = "wayland-protocol")]
             wayland_paste: Arc::new(Mutex::new(None)),
             #[cfg(feature = "wayland-protocol")]
@@ -218,6 +220,53 @@ impl UinputInjector {
     }
 
     #[cfg(feature = "wayland-protocol")]
+    fn mark_vk_uinput_activity(&self) {
+        let slot = self
+            .wayland_vk
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(vk) = slot.vk.as_ref() {
+            vk.mark_uinput_activity();
+        }
+    }
+
+    fn send_char_uinput_only(&self, ch: char) -> InjectResult {
+        #[cfg(feature = "wayland-protocol")]
+        self.mark_vk_uinput_activity();
+        let caps_active = self.caps_lock.load(Ordering::Relaxed);
+        if let Some((keycode, base_shift)) =
+            crate::layout::char_to_evdev_and_shift_for_layout(self.layout, ch)
+        {
+            let needs_shift = if ch.is_ascii_alphabetic() {
+                base_shift ^ caps_active
+            } else {
+                base_shift
+            };
+            return if self.send_key_stroke(keycode as u16, needs_shift).is_ok() {
+                InjectResult::Success
+            } else {
+                InjectResult::Failed
+            };
+        }
+        let ascii = strip_vn_diacritic(ch);
+        if let Some((keycode, base_shift)) =
+            crate::layout::char_to_evdev_and_shift_for_layout(self.layout, ascii)
+        {
+            let needs_shift = if ascii.is_ascii_alphabetic() {
+                base_shift ^ caps_active
+            } else {
+                base_shift
+            };
+            return if self.send_key_stroke(keycode as u16, needs_shift).is_ok() {
+                InjectResult::Success
+            } else {
+                InjectResult::Failed
+            };
+        }
+        InjectResult::NotSupported
+    }
+
+    #[cfg(feature = "wayland-protocol")]
     fn with_wayland_vk<R>(
         &self,
         op: impl FnOnce(&crate::wayland_vk::WaylandVirtualKeyboard) -> R,
@@ -232,40 +281,62 @@ impl UinputInjector {
         if slot.vk.as_ref().is_some_and(|vk| !vk.is_healthy()) {
             slot.vk = None;
         }
-        if slot.vk.is_none() {
+        if slot.vk.is_none() && !slot.reconnect_in_flight {
             let now = std::time::Instant::now();
             let can_retry = slot
                 .last_attempt
                 .is_none_or(|prev| now.duration_since(prev) >= Duration::from_secs(3));
             if can_retry {
+                // Invariant 4: never block `evdev_loop` on Wayland socket probes or
+                // roundtrips; reconnect asynchronously on a single bounded worker.
                 slot.last_attempt = Some(now);
-                match crate::wayland_vk::WaylandVirtualKeyboard::connect_with_layout(
-                    self.layout,
-                    self.caps_lock.load(Ordering::Relaxed),
-                    self.num_lock.load(Ordering::Relaxed),
-                ) {
-                    Ok(vk) => {
-                        eprintln!("[dboard] Wayland zwp_virtual_keyboard_v1 connected");
-                        slot.unsupported_attempts = 0;
-                        slot.vk = Some(vk);
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-                        eprintln!(
-                            "[dboard] Wayland zwp_virtual_keyboard_v1 denied ({err}); disabling VK retries and using Tier 2 fallback"
-                        );
-                        slot.disabled = true;
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::Unsupported => {
-                        slot.unsupported_attempts = slot.unsupported_attempts.saturating_add(1);
-                        if slot.unsupported_attempts >= VK_UNSUPPORTED_MAX_RETRIES {
-                            eprintln!(
-                                "[dboard] Wayland zwp_virtual_keyboard_v1 unavailable after {} attempts ({err}); disabling VK retries and using Tier 2 fallback",
-                                slot.unsupported_attempts
-                            );
-                            slot.disabled = true;
+                slot.reconnect_in_flight = true;
+                let slot_arc = Arc::clone(&self.wayland_vk);
+                let layout = self.layout;
+                let caps = self.caps_lock.load(Ordering::Relaxed);
+                let num = self.num_lock.load(Ordering::Relaxed);
+                let spawned = std::thread::Builder::new()
+                    .name("dboard-vk-reconn".into())
+                    .spawn(move || {
+                        struct InFlightGuard(Arc<Mutex<WaylandVkSlot>>);
+                        impl Drop for InFlightGuard {
+                            fn drop(&mut self) {
+                                let mut s = self.0.lock().unwrap_or_else(|p| p.into_inner());
+                                s.reconnect_in_flight = false;
+                            }
                         }
-                    }
-                    Err(_) => {}
+                        let _guard = InFlightGuard(Arc::clone(&slot_arc));
+                        let res = crate::wayland_vk::WaylandVirtualKeyboard::connect_with_layout(
+                            layout, caps, num,
+                        );
+                        let mut s = slot_arc.lock().unwrap_or_else(|p| p.into_inner());
+                        match res {
+                            Ok(vk) => {
+                                eprintln!("[dboard] Wayland zwp_virtual_keyboard_v1 connected");
+                                s.unsupported_attempts = 0;
+                                s.vk = Some(vk);
+                            }
+                            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                                eprintln!(
+                                    "[dboard] Wayland zwp_virtual_keyboard_v1 denied ({err}); disabling VK retries and using Tier 2 fallback"
+                                );
+                                s.disabled = true;
+                            }
+                            Err(err) if err.kind() == std::io::ErrorKind::Unsupported => {
+                                s.unsupported_attempts = s.unsupported_attempts.saturating_add(1);
+                                if s.unsupported_attempts >= VK_UNSUPPORTED_MAX_RETRIES {
+                                    eprintln!(
+                                        "[dboard] Wayland zwp_virtual_keyboard_v1 unavailable after {} attempts ({err}); disabling VK retries and using Tier 2 fallback",
+                                        s.unsupported_attempts
+                                    );
+                                    s.disabled = true;
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                    });
+                if spawned.is_err() {
+                    slot.reconnect_in_flight = false;
                 }
             }
         }
@@ -494,37 +565,7 @@ impl KeyInjector for UinputInjector {
             }
         }
 
-        let caps_active = self.caps_lock.load(Ordering::Relaxed);
-        if let Some((keycode, base_shift)) =
-            crate::layout::char_to_evdev_and_shift_for_layout(self.layout, ch)
-        {
-            let needs_shift = if ch.is_ascii_alphabetic() {
-                base_shift ^ caps_active
-            } else {
-                base_shift
-            };
-            return if self.send_key_stroke(keycode as u16, needs_shift).is_ok() {
-                InjectResult::Success
-            } else {
-                InjectResult::Failed
-            };
-        }
-        let ascii = strip_vn_diacritic(ch);
-        if let Some((keycode, base_shift)) =
-            crate::layout::char_to_evdev_and_shift_for_layout(self.layout, ascii)
-        {
-            let needs_shift = if ascii.is_ascii_alphabetic() {
-                base_shift ^ caps_active
-            } else {
-                base_shift
-            };
-            return if self.send_key_stroke(keycode as u16, needs_shift).is_ok() {
-                InjectResult::Success
-            } else {
-                InjectResult::Failed
-            };
-        }
-        InjectResult::NotSupported
+        self.send_char_uinput_only(ch)
     }
 
     fn send_string(&self, s: &str) -> InjectResult {
@@ -765,6 +806,8 @@ impl UinputInjector {
         }
 
         if extra_deletes > 0 {
+            #[cfg(feature = "wayland-protocol")]
+            self.mark_vk_uinput_activity();
             for _ in 0..extra_deletes {
                 if self.send_key_stroke(111, false).is_err() {
                     return InjectResult::Failed;
@@ -773,6 +816,10 @@ impl UinputInjector {
         }
 
         if text.is_empty() {
+            #[cfg(feature = "wayland-protocol")]
+            if backspaces > 0 {
+                self.mark_vk_uinput_activity();
+            }
             if backspaces == 0 || self.send_backspaces(backspaces).is_ok() {
                 return InjectResult::Success;
             }
@@ -782,6 +829,12 @@ impl UinputInjector {
         if text.chars().all(|c| {
             crate::layout::char_to_evdev_and_shift_for_layout(self.layout, c).is_some() || c == '\n'
         }) {
+            // Invariant 2 (FIFO): once a replacement commits to `/dev/uinput`,
+            // every backspace and character in the transaction MUST stay on
+            // `/dev/uinput` (never mid-transaction switching to Wayland VK if
+            // the 12ms modifier cooldown expires during `send_backspaces`).
+            #[cfg(feature = "wayland-protocol")]
+            self.mark_vk_uinput_activity();
             if backspaces > 0 && self.send_backspaces(backspaces).is_err() {
                 return InjectResult::Failed;
             }
@@ -790,7 +843,7 @@ impl UinputInjector {
                     if self.send_enter().is_err() {
                         return InjectResult::Failed;
                     }
-                } else if self.send_char(ch) != InjectResult::Success {
+                } else if self.send_char_uinput_only(ch) != InjectResult::Success {
                     return InjectResult::Failed;
                 }
             }

@@ -689,15 +689,30 @@ pub(crate) fn commit_retroactive_pair(
             committed_context: w1_ctx,
             ..prev_entry
         });
-        ring_buffer.push(CommittedWordEntry {
-            raw_keys: raw,
-            visible_word: effective_w2,
-            trailing_delimiters: " ".to_string(),
-            prior_context: w1_ctx,
-            committed_context: updated_ctx,
-            was_auto_restored: should_restore || w1_restored,
-            user_override_vn: user_override,
-        });
+        if effective_w2.contains(' ') {
+            for part in effective_w2.split(' ').filter(|p| !p.is_empty()) {
+                let part_str = part.to_string();
+                ring_buffer.push(CommittedWordEntry {
+                    raw_keys: part_str.clone(),
+                    visible_word: part_str,
+                    trailing_delimiters: " ".to_string(),
+                    prior_context: w1_ctx,
+                    committed_context: updated_ctx,
+                    was_auto_restored: should_restore || w1_restored,
+                    user_override_vn: user_override,
+                });
+            }
+        } else {
+            ring_buffer.push(CommittedWordEntry {
+                raw_keys: raw,
+                visible_word: effective_w2,
+                trailing_delimiters: " ".to_string(),
+                prior_context: w1_ctx,
+                committed_context: updated_ctx,
+                was_auto_restored: should_restore || w1_restored,
+                user_override_vn: user_override,
+            });
+        }
     } else {
         ring_buffer.clear();
     }

@@ -46,6 +46,35 @@ fn can_circumflex_across_coda(raw: &[char], consumed: &[bool], j: usize, i: usiz
     {
         return false;
     }
+    // Phonotactic Single-Syllable Prefix Guard: a Vietnamese syllable never has
+    // a consonant separating an earlier vowel from the nucleus vowel `j`
+    // (blocks multi-syllable words like `solana`, `katana`, `banana`, `canada`
+    // while keeping `khongo`, `vietej`, `tienges`, `chuyene`, `hoana`, `tana`).
+    let mut seen_prefix_vowel = false;
+    for k in 0..j {
+        if consumed[k] {
+            continue;
+        }
+        if is_base_vowel(raw[k]) {
+            seen_prefix_vowel = true;
+        } else if seen_prefix_vowel {
+            return false;
+        }
+    }
+    // Phonotactic Reduplication Guard: block 4-letter untoned `C1 V C1 V`
+    // reduplicated tokens where onset == coda (e.g. `momo`, `nono`, `caca`,
+    // `tete`, `nana`, `papa`). Toned forms (`momof` -> `mồm`, `tetes` -> `tết`)
+    // have `raw.len() > 4` and non-reduplicated stems (`tana` -> `tân`) have
+    // `raw[0] != raw[2]`, so both remain intact.
+    if j == 1
+        && i == 3
+        && raw.len() == 4
+        && !consumed[0]
+        && !consumed[2]
+        && lower(raw[0]) == lower(raw[2])
+    {
+        return false;
+    }
     let mut coda_buf = [0u8; 3];
     let mut coda_len = 0usize;
     for k in (j + 1)..i {
@@ -340,6 +369,14 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             && marks[positions[0]] == VowelMark::Circumflex
             && consumed[positions[1]]
         {
+            // If a shape-override `'w'` between `positions[0]` and `positions[1]`
+            // (e.g. `awaa` -> `awa`, `owoo` -> `owo`) was consumed, restore it
+            // when undoing the circumflex so no literal character is dropped.
+            for w_idx in (positions[0] + 1)..positions[1] {
+                if lower(raw[w_idx]) == 'w' && consumed[w_idx] {
+                    consumed[w_idx] = false;
+                }
+            }
             for &pos in &positions {
                 letters[pos] = raw[pos];
                 marks[pos] = VowelMark::None;
@@ -364,9 +401,18 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
             .enumerate()
             .any(|(index, mark)| index > w_positions[0] && *mark != VowelMark::None);
         if !last_applies_distinct_mark {
-            for mark in &mut marks {
+            for (v_idx, mark) in marks.iter_mut().enumerate() {
                 if matches!(mark, VowelMark::Breve | VowelMark::Horn) {
                     *mark = VowelMark::None;
+                    // If a duplicate vowel between `v_idx` and `w_positions[0]`
+                    // was consumed by an earlier circumflex overridden by `w`
+                    // (e.g. `aaww` -> `aaw`, `ooww` -> `oow`), restore it.
+                    let base = lower(raw[v_idx]);
+                    for k in (v_idx + 1)..w_positions[0] {
+                        if lower(raw[k]) == base && consumed[k] {
+                            consumed[k] = false;
+                        }
+                    }
                 }
             }
             consumed[w_positions[0]] = true;

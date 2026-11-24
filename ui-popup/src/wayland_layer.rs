@@ -630,9 +630,24 @@ impl WaylandLayerBar {
         self.state.clicked_slot.take()
     }
 
+    fn flush_nonblocking(&self) -> io::Result<()> {
+        match self.connection.flush() {
+            Ok(()) => Ok(()),
+            Err(wayland_client::backend::WaylandError::Io(e))
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(())
+            }
+            Err(err) => Err(io::Error::other(err)),
+        }
+    }
+
     pub fn dispatch_pending(&mut self) -> io::Result<()> {
         let was_configured = self.state.configured;
-        self.queue.flush().map_err(io::Error::other)?;
+        self.flush_nonblocking()?;
         if let Some(guard) = self.queue.prepare_read() {
             match guard.read() {
                 Ok(_) => {}
@@ -647,6 +662,12 @@ impl WaylandLayerBar {
         self.queue
             .dispatch_pending(&mut self.state)
             .map_err(io::Error::other)?;
+        if self.state.closed {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "layer surface closed by compositor",
+            ));
+        }
         let just_configured = !was_configured && self.state.configured;
         if (self.state.hover_dirty || just_configured) && !self.last_candidates.is_empty() {
             self.state.hover_dirty = false;
@@ -727,6 +748,9 @@ impl WaylandLayerBar {
         self.last_placement = Some(placement);
         self.state.configured = false;
         self.surface.commit();
+        // Clear `closed` BEFORE roundtrip so a `Closed` event targeting the new
+        // surface during rebind (e.g. output hot-unplug) is never swallowed.
+        self.state.closed = false;
         roundtrip_with_timeout(
             &self.connection,
             &mut self.queue,
@@ -734,15 +758,15 @@ impl WaylandLayerBar {
             POPUP_ROUNDTRIP_TIMEOUT,
             "popup output rebind roundtrip",
         )?;
-        // Any `Closed` event dispatched during this roundtrip belonged to the
-        // just-destroyed previous layer_surface; keep the new surface alive.
-        self.state.closed = false;
         Ok(())
     }
 
     pub fn show(&mut self, candidates: &[String], caret: Option<CaretRect>) -> io::Result<()> {
         let (bar_w, slot_bounds) = compute_slot_layout(candidates);
         self.state.slot_bounds = slot_bounds.clone();
+        self.state.hovered_slot = (self.state.pointer_x >= 0.0)
+            .then(|| hit_test_slot(&self.state.slot_bounds, self.state.pointer_x))
+            .flatten();
         self.last_candidates = candidates.to_vec();
         self.last_caret = caret;
 
@@ -753,8 +777,12 @@ impl WaylandLayerBar {
             .bound_output_name
             .is_some_and(|n| !self.state.outputs.iter().any(|o| o.global_name == n));
         if self.state.outputs.len() > 1 || bound_removed {
+            // Avoid multi-monitor surface rebind thrash when `caret` transiently
+            // drops to `None`: keep the currently bound live output until caret
+            // moves to a different output or the bound output is unplugged.
             let effective_target = if self.state.outputs.len() > 1 {
                 target_output
+                    .or_else(|| (!bound_removed).then_some(self.bound_output_name).flatten())
             } else {
                 None
             };
@@ -783,7 +811,7 @@ impl WaylandLayerBar {
 
         if !self.state.configured {
             self.surface.commit();
-            self.connection.flush().map_err(io::Error::other)?;
+            self.flush_nonblocking()?;
             return Ok(());
         }
 
@@ -831,7 +859,7 @@ impl WaylandLayerBar {
             pool,
             _fd: fd,
         });
-        self.connection.flush().map_err(io::Error::other)?;
+        self.flush_nonblocking()?;
         Ok(())
     }
 
@@ -842,7 +870,7 @@ impl WaylandLayerBar {
         self.state.clicked_slot = None;
         self.surface.attach(None, 0, 0);
         self.surface.commit();
-        self.connection.flush().map_err(io::Error::other)?;
+        self.flush_nonblocking()?;
         Ok(())
     }
 }

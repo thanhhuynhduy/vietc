@@ -522,6 +522,11 @@ impl Daemon {
         }
         self.displayed_composing_suggestion = None;
         self.engine.commit_selected_word(&chosen, false);
+        if let Some(serialized) = self.engine.take_user_dict_for_save() {
+            if let Some(path) = crate::user_dict_store::user_dict_path() {
+                crate::user_dict_store::enqueue_user_dict_save(path, serialized);
+            }
+        }
         self.candidate_ipc.hide();
         Some(commands)
     }

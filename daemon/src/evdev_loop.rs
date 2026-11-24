@@ -289,6 +289,7 @@ pub fn run_with_evdev(
     let mut focus_sync = crate::focus_sync::FocusSyncState::from_initial(initial_focus);
     let mut last_terminal_enter_at: Option<std::time::Instant> = None;
     let mut last_pty_refresh_at: Option<std::time::Instant> = None;
+    let mut toggle_consumed_keys: HashSet<u16> = HashSet::new();
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
     let mut last_popup_click_at: Option<std::time::Instant> = None;
     let mut last_idle_suggestion_seq = key_activity_seq.load(Ordering::Acquire);
@@ -366,7 +367,8 @@ pub fn run_with_evdev(
 
         // Wall-clock hotplug scan every 2s (immune to continuous-typing poll starvation)
         if hotplug_state.due_for_scan(std::time::Instant::now()) {
-            let new_devs = discover_new_keyboards(&known_paths, &mut known_phys_ids);
+            let new_devs =
+                discover_new_keyboards(&known_paths, &mut known_phys_ids, &mut hotplug_state);
             for (mut dev, name) in new_devs {
                 let path = dev_path_of(&name);
                 if daemon.grab_enabled && crate::device::has_held_keys(&dev) {
@@ -441,7 +443,9 @@ pub fn run_with_evdev(
                 if !daemon.app_state.is_password_active()
                     && !daemon.is_current_app_bypassed()
                     && daemon.engine.is_enabled()
+                    && !injector.has_uncertain_edit()
                 {
+                    let buf_before = daemon.engine.buffer().chars().count();
                     let commands = daemon.select_candidate(idx);
                     crate::focus::clear_surrounding_word(&shared_focus);
                     // Absorb the popup's own BTN_LEFT / touchpad tap click (including a
@@ -450,6 +454,13 @@ pub fn run_with_evdev(
                     last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
                     last_popup_click_at = Some(std::time::Instant::now());
                     if !commands.is_empty() {
+                        if buf_before > 0
+                            && crate::focus::take_omnibox_inline_selection(&shared_focus)
+                        {
+                            injector.set_omnibox_inline_selection(true);
+                        } else {
+                            clear_omnibox_shield(&*injector, &shared_focus);
+                        }
                         let mut combined_keys = evdev::AttributeSet::<evdev::KeyCode>::new();
                         for ds in &device_states {
                             for k in ds.keys.iter() {
@@ -463,6 +474,7 @@ pub fn run_with_evdev(
                             focus_sync.last_focus_generation,
                             &combined_keys,
                         );
+                        clear_omnibox_shield(&*injector, &shared_focus);
                         let _ = daemon.handle_transaction_outcome(outcome);
                     }
                 }
@@ -598,7 +610,7 @@ pub fn run_with_evdev(
                                 at.elapsed() < std::time::Duration::from_millis(2000)
                             })
                             && last_pty_refresh_at.is_none_or(|at| {
-                                at.elapsed() >= std::time::Duration::from_millis(100)
+                                at.elapsed() >= std::time::Duration::from_millis(20)
                             })
                         {
                             last_pty_refresh_at = Some(std::time::Instant::now());
@@ -650,6 +662,7 @@ pub fn run_with_evdev(
                     && is_toggle_combination_state(&key_state, &daemon.config.toggle_key)
                 {
                     consumed_keys.insert(keycode);
+                    toggle_consumed_keys.insert(keycode);
                     clear_omnibox_shield(&*injector, &shared_focus);
                     daemon.toggle_method();
                     continue;
@@ -739,7 +752,10 @@ pub fn run_with_evdev(
                         && !is_modifier_pressed(&key_state))
                         && consume_released_or_repeated_key(&mut consumed_keys, keycode, value)
                     {
-                        if value == 2
+                        if value == 0 {
+                            toggle_consumed_keys.remove(&keycode);
+                        } else if value == 2
+                            && !toggle_consumed_keys.contains(&keycode)
                             && daemon.engine.is_enabled()
                             && !is_modifier_pressed(&key_state)
                         {
@@ -783,10 +799,20 @@ pub fn run_with_evdev(
                                 evdev::KeyCode::KEY_2 => 1,
                                 _ => 2,
                             };
+                            let buf_before = daemon.engine.buffer().chars().count();
                             if let Some(commands) = daemon.try_select_candidate(idx, false) {
                                 crate::focus::clear_surrounding_word(&shared_focus);
                                 consumed_keys.insert(keycode);
                                 if !commands.is_empty() {
+                                    if buf_before > 0
+                                        && crate::focus::take_omnibox_inline_selection(
+                                            &shared_focus,
+                                        )
+                                    {
+                                        injector.set_omnibox_inline_selection(true);
+                                    } else {
+                                        clear_omnibox_shield(&*injector, &shared_focus);
+                                    }
                                     // Release physically held Alt before injecting Backspace+Type so
                                     // target apps never receive Alt+Backspace or Alt+<char> mnemonics.
                                     for alt in
@@ -810,6 +836,7 @@ pub fn run_with_evdev(
                                         &mut daemon.visible_revision,
                                         focus_sync.last_focus_generation,
                                     );
+                                    clear_omnibox_shield(&*injector, &shared_focus);
                                     let _ = daemon.handle_transaction_outcome(outcome);
                                 }
                                 continue;
@@ -826,6 +853,22 @@ pub fn run_with_evdev(
                                     | evdev::KeyCode::KEY_RIGHTMETA
                             )
                         {
+                            // If Alt was suppressed by a prior Alt+1/2/3 candidate selection
+                            // while still physically held and user now presses another shortcut
+                            // (e.g. Alt+Tab), restore Alt Down cleanly before forwarding.
+                            for alt in [evdev::KeyCode::KEY_LEFTALT, evdev::KeyCode::KEY_RIGHTALT] {
+                                if key_state.contains(alt) {
+                                    let mut was_suppressed = consumed_keys.remove(&alt.code());
+                                    for (idx, st) in device_states.iter_mut().enumerate() {
+                                        if idx != i && st.consumed_keys.remove(&alt.code()) {
+                                            was_suppressed = true;
+                                        }
+                                    }
+                                    if was_suppressed {
+                                        injector.send_key_event(alt.code(), 1);
+                                    }
+                                }
+                            }
                             daemon.reset_composition_state();
                             crate::focus::clear_surrounding_word(&shared_focus);
                             clear_omnibox_shield(&*injector, &shared_focus);

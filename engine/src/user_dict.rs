@@ -40,12 +40,14 @@ pub struct UserDict {
     keep_vn: BTreeSet<String>,
     keep_raw: BTreeSet<String>,
     learned_words: BTreeMap<String, u16>,
+    promoted_word_count: usize,
     /// FIFO queue of single-observation (`count == 1`) candidates so one-off typos
     /// are evicted in O(1) instead of permanently saturating `learned_words`.
     pending_once: VecDeque<String>,
     /// Personal 2-word collocations `(w1, w2) -> count` (Vietnamese or bilingual
     /// alphabetic pairs only — never digits, symbols, or passwords).
     personal_bigrams: BTreeMap<(String, String), u16>,
+    promoted_bigram_count: usize,
     pending_bigram_once: VecDeque<(String, String)>,
     dirty: bool,
 }
@@ -89,8 +91,9 @@ impl UserDict {
                     if is_learnable_token(&lower)
                         && count >= PERSONAL_WORD_PROMOTE_COUNT
                         && dict.len() < MAX_USER_DICT_ENTRIES
+                        && dict.learned_words.insert(lower, count).is_none()
                     {
-                        dict.learned_words.insert(lower, count);
+                        dict.promoted_word_count += 1;
                     }
                 }
             } else if let Some(rest) = trimmed.strip_prefix("bigram:") {
@@ -104,8 +107,9 @@ impl UserDict {
                             && l1 != l2
                             && count >= PERSONAL_BIGRAM_PROMOTE_COUNT
                             && dict.promoted_bigram_count() < MAX_PERSONAL_BIGRAMS
+                            && dict.personal_bigrams.insert((l1, l2), count).is_none()
                         {
-                            dict.personal_bigrams.insert((l1, l2), count);
+                            dict.promoted_bigram_count += 1;
                         }
                     }
                 }
@@ -151,24 +155,47 @@ impl UserDict {
     }
 
     pub fn len(&self) -> usize {
-        self.keep_vn.len()
-            + self.keep_raw.len()
-            + self
-                .learned_words
-                .values()
-                .filter(|&&c| c >= PERSONAL_WORD_PROMOTE_COUNT)
-                .count()
+        self.keep_vn.len() + self.keep_raw.len() + self.promoted_word_count
     }
 
     pub fn promoted_bigram_count(&self) -> usize {
-        self.personal_bigrams
-            .values()
-            .filter(|&&c| c >= PERSONAL_BIGRAM_PROMOTE_COUNT)
-            .count()
+        self.promoted_bigram_count
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0 && self.promoted_bigram_count() == 0
+        self.len() == 0 && self.promoted_bigram_count == 0
+    }
+
+    fn evict_lowest_promoted_word(&mut self, exclude: &str) -> bool {
+        let victim = self
+            .learned_words
+            .iter()
+            .filter(|(k, &c)| c >= PERSONAL_WORD_PROMOTE_COUNT && k.as_str() != exclude)
+            .min_by_key(|(_, &c)| c)
+            .map(|(k, _)| k.clone());
+        if let Some(key) = victim {
+            if self.learned_words.remove(&key).is_some() {
+                self.promoted_word_count = self.promoted_word_count.saturating_sub(1);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn evict_lowest_promoted_bigram(&mut self, exclude: &(String, String)) -> bool {
+        let victim = self
+            .personal_bigrams
+            .iter()
+            .filter(|(k, &c)| c >= PERSONAL_BIGRAM_PROMOTE_COUNT && *k != exclude)
+            .min_by_key(|(_, &c)| c)
+            .map(|(k, _)| k.clone());
+        if let Some(key) = victim {
+            if self.personal_bigrams.remove(&key).is_some() {
+                self.promoted_bigram_count = self.promoted_bigram_count.saturating_sub(1);
+                return true;
+            }
+        }
+        false
     }
 
     /// Observe a committed alphabetic token; once seen `>= 2` times it becomes
@@ -179,25 +206,29 @@ impl UserDict {
             return;
         }
         if !self.learned_words.contains_key(&lower) {
-            if self.len() >= MAX_USER_DICT_ENTRIES {
-                return;
-            }
             while self.learned_words.len() >= MAX_USER_DICT_ENTRIES * 2 {
                 let Some(oldest) = self.pending_once.pop_front() else {
-                    return;
+                    break;
                 };
                 if self.learned_words.get(&oldest).copied() == Some(1) {
                     self.learned_words.remove(&oldest);
                 }
             }
+            if self.learned_words.len() >= MAX_USER_DICT_ENTRIES * 2 {
+                return;
+            }
             self.pending_once.push_back(lower.clone());
         }
-        let entry = self.learned_words.entry(lower).or_insert(0);
-        let prev = *entry;
-        *entry = entry.saturating_add(1);
-        if prev < PERSONAL_WORD_PROMOTE_COUNT && *entry >= PERSONAL_WORD_PROMOTE_COUNT {
+        let prev = self.learned_words.get(&lower).copied().unwrap_or(0);
+        let next = prev.saturating_add(1);
+        if prev < PERSONAL_WORD_PROMOTE_COUNT && next >= PERSONAL_WORD_PROMOTE_COUNT {
+            if self.len() >= MAX_USER_DICT_ENTRIES && !self.evict_lowest_promoted_word(&lower) {
+                return;
+            }
+            self.promoted_word_count += 1;
             self.dirty = true;
         }
+        self.learned_words.insert(lower, next);
     }
 
     /// Observe a committed 2-word alphabetic pair (Vietnamese or bilingual).
@@ -211,27 +242,33 @@ impl UserDict {
         }
         let key = (l1, l2);
         if !self.personal_bigrams.contains_key(&key) {
-            if self.promoted_bigram_count() >= MAX_PERSONAL_BIGRAMS {
-                return;
-            }
             while self.personal_bigrams.len() >= MAX_PERSONAL_BIGRAMS * 2 {
                 let Some(oldest) = self.pending_bigram_once.pop_front() else {
-                    return;
+                    break;
                 };
                 if self.personal_bigrams.get(&oldest).copied() == Some(1) {
                     self.personal_bigrams.remove(&oldest);
                 }
             }
+            if self.personal_bigrams.len() >= MAX_PERSONAL_BIGRAMS * 2 {
+                return;
+            }
             self.pending_bigram_once.push_back(key.clone());
         }
-        let entry = self.personal_bigrams.entry(key).or_insert(0);
-        let prev_cnt = *entry;
-        *entry = entry.saturating_add(1);
-        if (prev_cnt < PERSONAL_BIGRAM_PROMOTE_COUNT && *entry >= PERSONAL_BIGRAM_PROMOTE_COUNT)
-            || (*entry > PERSONAL_BIGRAM_PROMOTE_COUNT && (*entry).is_multiple_of(4))
-        {
+        let prev_cnt = self.personal_bigrams.get(&key).copied().unwrap_or(0);
+        let next_cnt = prev_cnt.saturating_add(1);
+        if prev_cnt < PERSONAL_BIGRAM_PROMOTE_COUNT && next_cnt >= PERSONAL_BIGRAM_PROMOTE_COUNT {
+            if self.promoted_bigram_count >= MAX_PERSONAL_BIGRAMS
+                && !self.evict_lowest_promoted_bigram(&key)
+            {
+                return;
+            }
+            self.promoted_bigram_count += 1;
+            self.dirty = true;
+        } else if next_cnt > PERSONAL_BIGRAM_PROMOTE_COUNT && next_cnt.is_multiple_of(4) {
             self.dirty = true;
         }
+        self.personal_bigrams.insert(key, next_cnt);
     }
 
     /// Adaptive ranking bonus for SymSpell / contextual autocorrect when
@@ -524,5 +561,47 @@ mod tests {
         dict.record_word_usage("dboard");
         dict.record_word_usage("dboard");
         assert!(dict.is_known_personal_word("dboard"));
+    }
+
+    #[test]
+    fn promoted_words_and_bigrams_evict_lfu_without_freezing_learning() {
+        let mut ud = UserDict::new();
+        for _ in 0..50 {
+            ud.record_word_usage("hotanchor");
+            ud.record_bigram_usage("hotanchor", "target");
+        }
+        for i in 0..(super::MAX_USER_DICT_ENTRIES + 80) {
+            let mut word = String::from("wk");
+            let mut n = i;
+            for _ in 0..4 {
+                word.push((b'a' + (n % 26) as u8) as char);
+                n /= 26;
+            }
+            ud.record_word_usage(&word);
+            ud.record_word_usage(&word);
+        }
+        assert!(ud.len() <= super::MAX_USER_DICT_ENTRIES);
+        assert!(ud.is_known_personal_word("hotanchor"));
+        ud.record_word_usage("brandnewword");
+        ud.record_word_usage("brandnewword");
+        assert!(ud.is_known_personal_word("brandnewword"));
+
+        for i in 0..(super::MAX_PERSONAL_BIGRAMS + 80) {
+            let mut w1 = String::from("ba");
+            let mut w2 = String::from("bb");
+            let mut n = i;
+            for _ in 0..4 {
+                w1.push((b'a' + (n % 26) as u8) as char);
+                w2.push((b'a' + ((n + 7) % 26) as u8) as char);
+                n /= 26;
+            }
+            ud.record_bigram_usage(&w1, &w2);
+            ud.record_bigram_usage(&w1, &w2);
+        }
+        assert!(ud.promoted_bigram_count() <= super::MAX_PERSONAL_BIGRAMS);
+        assert!(ud.personal_bigram_bonus("hotanchor", "target") > 0);
+        ud.record_bigram_usage("freshpair", "learned");
+        ud.record_bigram_usage("freshpair", "learned");
+        assert!(ud.personal_bigram_bonus("freshpair", "learned") > 0);
     }
 }
