@@ -9,13 +9,14 @@
 
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use wayland_client::backend::WaylandError;
-use wayland_client::protocol::{wl_registry, wl_seat};
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::protocol::{wl_callback, wl_registry, wl_seat};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::ext::data_control::v1::client::{
     ext_data_control_device_v1, ext_data_control_manager_v1, ext_data_control_offer_v1,
     ext_data_control_source_v1,
@@ -26,11 +27,100 @@ use wayland_protocols_wlr::data_control::v1::client::{
 };
 
 const PIPE_TRANSFER_TIMEOUT: Duration = Duration::from_secs(5);
+static ACTIVE_RESTORE_GEN: AtomicU64 = AtomicU64::new(0);
 
 struct RestoreState {
     globals: Vec<(u32, String)>,
     entries: Vec<(String, Vec<u8>)>,
     cancelled: bool,
+    sync_done: bool,
+}
+
+impl Dispatch<wl_callback::WlCallback, ()> for RestoreState {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_callback::Event::Done { .. }) {
+            state.sync_done = true;
+        }
+    }
+}
+
+fn roundtrip_with_deadline(
+    connection: &Connection,
+    queue: &mut EventQueue<RestoreState>,
+    state: &mut RestoreState,
+    deadline: Instant,
+    aborted: &AtomicBool,
+) -> io::Result<()> {
+    state.sync_done = false;
+    let qh = queue.handle();
+    let _cb = connection.display().sync(&qh, ());
+    while !state.sync_done {
+        if aborted.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "clipboard restore aborted",
+            ));
+        }
+        queue.flush().map_err(io::Error::other)?;
+        queue.dispatch_pending(state).map_err(io::Error::other)?;
+        if state.sync_done {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "clipboard restore roundtrip timed out",
+            ));
+        }
+        if let Some(guard) = queue.prepare_read() {
+            let remaining_ms = deadline
+                .saturating_duration_since(now)
+                .as_millis()
+                .clamp(1, i32::MAX as u128) as i32;
+            let mut pfd = libc::pollfd {
+                fd: guard.connection_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let rc = unsafe { libc::poll(&mut pfd, 1, remaining_ms) };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(err);
+            }
+            if rc == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "clipboard restore roundtrip timed out",
+                ));
+            }
+            if (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "Wayland compositor disconnected during restore",
+                ));
+            }
+            if let Err(WaylandError::Io(e)) = guard.read() {
+                if !matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl RestoreState {
@@ -209,6 +299,9 @@ fn serve_multi_mime_connection(
     connection: Connection,
     entries: Vec<(String, Vec<u8>)>,
     ready_tx: mpsc::SyncSender<io::Result<()>>,
+    deadline: Instant,
+    aborted: Arc<AtomicBool>,
+    generation: u64,
 ) {
     block_sigpipe_on_thread();
     let mut queue = connection.new_event_queue::<RestoreState>();
@@ -219,10 +312,22 @@ fn serve_multi_mime_connection(
         globals: Vec::new(),
         entries,
         cancelled: false,
+        sync_done: false,
     };
 
-    if let Err(err) = queue.roundtrip(&mut state) {
-        let _ = ready_tx.send(Err(io::Error::other(err)));
+    if let Err(err) =
+        roundtrip_with_deadline(&connection, &mut queue, &mut state, deadline, &aborted)
+    {
+        let _ = ready_tx.send(Err(err));
+        return;
+    }
+
+    // Never publish a stale clipboard selection if the caller already timed out
+    // (or fell back to `wl-copy`) or if a newer restore generation superseded us.
+    if aborted.load(Ordering::Acquire)
+        || Instant::now() >= deadline
+        || ACTIVE_RESTORE_GEN.load(Ordering::Acquire) != generation
+    {
         return;
     }
 
@@ -277,14 +382,23 @@ fn serve_multi_mime_connection(
         return;
     }
 
-    if let Err(err) = queue.roundtrip(&mut state) {
-        let _ = ready_tx.send(Err(io::Error::other(err)));
+    if let Err(err) =
+        roundtrip_with_deadline(&connection, &mut queue, &mut state, deadline, &aborted)
+    {
+        let _ = ready_tx.send(Err(err));
+        return;
+    }
+    if aborted.load(Ordering::Acquire) {
         return;
     }
     let _ = ready_tx.send(Ok(()));
 
     let max_lifetime = Instant::now() + Duration::from_secs(300);
-    while !state.cancelled && Instant::now() < max_lifetime {
+    while !state.cancelled
+        && !aborted.load(Ordering::Acquire)
+        && ACTIVE_RESTORE_GEN.load(Ordering::Acquire) == generation
+        && Instant::now() < max_lifetime
+    {
         let _ = queue.flush();
         let Some(guard) = queue.prepare_read() else {
             if queue.dispatch_pending(&mut state).is_err() {
@@ -346,13 +460,28 @@ pub(crate) fn restore_multi_mime_native(
         ));
     }
     let connection = connect_wayland_display()?;
+    let generation = ACTIVE_RESTORE_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+    let aborted = Arc::new(AtomicBool::new(false));
+    let aborted_bg = Arc::clone(&aborted);
+    let deadline = Instant::now() + timeout;
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name("dboard-clip-restore".into())
-        .spawn(move || serve_multi_mime_connection(connection, entries, ready_tx))?;
-    ready_rx
-        .recv_timeout(timeout)
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "multi-MIME restore timed out"))?
+        .spawn(move || {
+            serve_multi_mime_connection(
+                connection, entries, ready_tx, deadline, aborted_bg, generation,
+            )
+        })?;
+    match ready_rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => {
+            aborted.store(true, Ordering::Release);
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "multi-MIME restore timed out",
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -397,5 +526,34 @@ mod tests {
             start.elapsed() < Duration::from_secs(1),
             "must not block indefinitely on stalled reader"
         );
+    }
+
+    #[test]
+    fn stalled_compositor_restore_aborts_cleanly_without_hanging() {
+        let (client, _stalled_server) = std::os::unix::net::UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        let conn = Connection::from_socket(client).unwrap();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let aborted = Arc::new(AtomicBool::new(false));
+        let deadline = Instant::now() + Duration::from_millis(80);
+        let gen = ACTIVE_RESTORE_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+        let start = Instant::now();
+        let handle = thread::spawn(move || {
+            serve_multi_mime_connection(
+                conn,
+                vec![("text/html".into(), b"<b>hi</b>".to_vec())],
+                tx,
+                deadline,
+                aborted,
+                gen,
+            );
+        });
+        let err = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker must reply on timeout")
+            .expect_err("stalled compositor must return TimedOut");
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        handle.join().expect("worker thread must exit cleanly");
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 }

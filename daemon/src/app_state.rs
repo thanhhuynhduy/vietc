@@ -476,12 +476,25 @@ impl AppStateManager {
             return true;
         }
 
-        // Layer 2: Window class match (for known password dialogs)
+        // Layer 2: Window class match (for known password dialogs).
+        // When `current_app` is empty (e.g. `FocusLost` on a Wayland layer-shell
+        // Polkit / `cosmic-osd` / `pinentry` overlay), fall back to the live
+        // AT-SPI2 focused app name so Layer 2 protection is never blinded.
+        let atspi_fallback = if self.current_app.is_empty() {
+            crate::password_detector::get_focused_window_class_atspi()
+        } else {
+            None
+        };
+        let layer2_class = if !self.current_app.is_empty() {
+            self.current_app.as_str()
+        } else {
+            atspi_fallback.as_deref().unwrap_or("")
+        };
         for pattern in &self.password_apps {
-            if class_matches(&self.current_app, pattern) {
+            if class_matches(layer2_class, pattern) {
                 self.is_password_field = true;
                 if !was_password {
-                    log_password_detection("window-class", &self.current_app);
+                    log_password_detection("window-class", layer2_class);
                 }
                 return true;
             }

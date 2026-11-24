@@ -149,17 +149,28 @@ impl UinputInjector {
     fn backup_non_text_mimes(mimes: Vec<String>) -> Option<NonTextClipboard> {
         let mut entries = Vec::with_capacity(mimes.len());
         let mut total_bytes = 0usize;
-        for mime in mimes {
+        for (idx, mime) in mimes.into_iter().enumerate() {
             let Ok(mut cmd) = Self::user_cmd("wl-paste") else {
                 break;
             };
-            cmd.args(["--type", &mime]);
-            let Some(output) = Self::run_cmd_with_timeout(cmd, Duration::from_millis(250)) else {
+            // Always pass `--no-newline` so `wl-paste` never appends a spurious `\n`
+            // to `text/html`, `text/plain`, or `text/uri-list` payloads.
+            cmd.args(["--no-newline", "--type", &mime]);
+            let Some(output) = Self::run_cmd_with_timeout(cmd, Duration::from_millis(500)) else {
+                // If the primary rich MIME (e.g. large `image/png` or `text/html`)
+                // cannot be backed up completely, abort the backup rather than
+                // silently overwriting the clipboard with only a plain-text fallback.
+                if idx == 0 {
+                    return None;
+                }
                 continue;
             };
             if !output.status.success()
                 || total_bytes.saturating_add(output.stdout.len()) > MAX_BINARY_CLIPBOARD_BYTES
             {
+                if idx == 0 {
+                    return None;
+                }
                 continue;
             }
             total_bytes += output.stdout.len();
@@ -710,7 +721,10 @@ impl UinputInjector {
                         if restore_gen.load(Ordering::Acquire) != expected_gen {
                             return;
                         }
-                        let _io = clip.io_lock.lock().unwrap_or_else(|p| p.into_inner());
+                        let Ok(_io) = clip.io_lock.try_lock() else {
+                            // A newer paste on `evdev_loop` is already active and superseded this restore.
+                            return;
+                        };
                         if restore_gen.load(Ordering::Acquire) != expected_gen {
                             return;
                         }
@@ -723,10 +737,10 @@ impl UinputInjector {
                         };
                         if ok {
                             entry.offer.request_retire();
-                            retired_slot
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .push(entry.offer);
+                            let mut retired =
+                                retired_slot.lock().unwrap_or_else(|p| p.into_inner());
+                            retired.retain(|offer| !offer.is_finished());
+                            retired.push(entry.offer);
                         } else {
                             *slot = Some(entry);
                         }

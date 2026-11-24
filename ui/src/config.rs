@@ -138,12 +138,44 @@ impl Config {
     pub fn load() -> Self {
         for path in config_paths() {
             if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(config) = toml::from_str::<Config>(&content) {
-                    return config;
+                match toml::from_str::<Config>(&content) {
+                    Ok(config) => return config,
+                    Err(err) => {
+                        eprintln!(
+                            "[dboard-tray] Warning: invalid TOML in {}: {}",
+                            path.display(),
+                            err
+                        );
+                    }
                 }
             }
         }
         Self::default()
+    }
+
+    /// Load config strictly before mutating & saving back to `~/.config/dboard/config.toml`.
+    /// If the user's config file exists but has a TOML syntax error (or cannot be read),
+    /// returns `Err` instead of falling back to defaults and wiping custom user settings.
+    pub fn load_for_update() -> Result<Self, String> {
+        Self::load_for_update_from(&user_config_path())
+    }
+
+    fn load_for_update_from(path: &std::path::Path) -> Result<Self, String> {
+        match fs::read_to_string(path) {
+            Ok(content) => toml::from_str::<Config>(&content).map_err(|err| {
+                format!(
+                    "Refusing to overwrite invalid config {}: {}",
+                    path.display(),
+                    err
+                )
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::load()),
+            Err(err) => Err(format!(
+                "Refusing to overwrite unreadable config {}: {}",
+                path.display(),
+                err
+            )),
+        }
     }
 
     #[allow(dead_code)]
@@ -368,5 +400,27 @@ mod tests {
             saved.get("app_state").is_none(),
             "minimal config save must not emit empty [app_state] table: {saved_str}"
         );
+    }
+
+    #[test]
+    fn load_for_update_refuses_to_overwrite_invalid_toml() {
+        let directory =
+            std::env::temp_dir().join(format!("dboard-ui-config-invalid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("config.toml");
+        let broken = "input_method = \"telex\"\n[macros\nko = \"không\"\n";
+        fs::write(&path, broken).unwrap();
+
+        let err = Config::load_for_update_from(&path)
+            .expect_err("invalid TOML must return Err instead of falling back to defaults");
+        assert!(err.contains("Refusing to overwrite invalid config"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+
+        // Missing file is allowed and returns a default/system config.
+        let missing = directory.join("missing.toml");
+        assert!(Config::load_for_update_from(&missing).is_ok());
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }

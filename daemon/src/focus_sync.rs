@@ -145,7 +145,13 @@ impl FocusSyncState {
                 );
             } else if active_window_class.is_empty() {
                 // FocusLost (layer-shell launcher / Polkit): never inherit previous app's
-                // bypass, terminal, method, or english overrides.
+                // bypass, terminal, method, or english overrides. Clear stale AT-SPI2
+                // password/app flags outside the 150ms grace window so freshly focused
+                // Polkit/pinentry/cosmic-osd prompts remain protected while launchers don't
+                // inherit stale password state.
+                crate::password_detector::clear_atspi_password_flag_if_non_atspi(
+                    focus.identity.as_deref(),
+                );
                 self.last_window_class.clear();
                 daemon.reset_app_focus_to_global();
                 self.sync_injector_if_changed(injector, Some(""), false, false);
@@ -325,5 +331,53 @@ mod tests {
             sync.last_focus_generation > gen_after_game,
             "idle FocusLost must advance last_focus_generation"
         );
+    }
+
+    #[test]
+    fn focus_lost_preserves_layer2_password_protection_for_polkit_and_cosmic_osd() {
+        let _lock = crate::password_detector::atspi_test_lock();
+        crate::password_detector::reset_atspi_focus_state();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.app_state.enabled = true;
+        cfg.password_detection.enabled = true;
+        let enabled = Arc::new(AtomicBool::new(true));
+        let mut daemon = Daemon::new(cfg, std::path::PathBuf::from("test.toml"), enabled);
+        let shared = Arc::new(Mutex::new(FocusSnapshot::default()));
+        let mut sync = FocusSyncState::from_initial(FocusSnapshot::default());
+        let inj = CountingInjector::new();
+
+        // Start in a normal browser window (VN enabled).
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:browser".into()), Some("firefox".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(daemon.engine.is_enabled());
+        assert!(!daemon.app_state.is_password_active());
+
+        // Case A: AT-SPI2 reports `cosmic-osd` (without ROLE_PASSWORD_TEXT) just before
+        // compositor emits `FocusLost` for the layer-shell password dialog.
+        crate::password_detector::record_atspi_focus_state(false, Some("cosmic-osd".to_string()));
+        shared.lock().unwrap().observe_focus_lost();
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(
+            daemon.app_state.is_password_active(),
+            "Layer 2 password_apps must catch cosmic-osd even during FocusLost"
+        );
+        assert!(
+            !daemon.engine.is_enabled(),
+            "Engine must be disabled for layer-shell cosmic-osd password prompt"
+        );
+
+        // Case B: Returning to a normal window clears password mode cleanly.
+        crate::password_detector::reset_atspi_focus_state();
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("toplevel:browser2".into()), Some("firefox".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(!daemon.app_state.is_password_active());
+        assert!(daemon.engine.is_enabled());
     }
 }

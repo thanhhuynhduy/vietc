@@ -198,10 +198,14 @@ fn weighted_spatial_edit(src: &str, dst: &str, layout: AutocorrectLayout) -> Opt
             }
         }
         let idx = extra_idx.unwrap_or(n - 1);
+        // Protect single-letter prefixed brand/tool names (`gboard`, `dboard`, `kmail`, `vcode`)
+        // from being truncated at index 0 unless the leading key was double-pressed (`bboard`).
+        let leading_non_dup = idx == 0 && n > 1 && a[0] != a[1];
         let adj_prev =
             idx > 0 && key_distance_for_layout(layout, a[idx], a[idx - 1]) <= MAX_SPATIAL_DIST;
-        let adj_next =
-            idx + 1 < n && key_distance_for_layout(layout, a[idx], a[idx + 1]) <= MAX_SPATIAL_DIST;
+        let adj_next = !leading_non_dup
+            && idx + 1 < n
+            && key_distance_for_layout(layout, a[idx], a[idx + 1]) <= MAX_SPATIAL_DIST;
         let cost = if adj_prev || adj_next { 12 } else { 18 };
         return Some((1, cost));
     }

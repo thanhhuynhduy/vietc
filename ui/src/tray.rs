@@ -183,10 +183,21 @@ fn spawn_popup_if_available() {
 }
 
 impl VietTray {
-    fn save_config_update(update: impl FnOnce(&mut config::Config)) {
-        let mut cfg = config::Config::load();
-        update(&mut cfg);
-        let _ = cfg.save();
+    fn save_config_update(update: impl FnOnce(&mut config::Config)) -> bool {
+        match config::Config::load_for_update() {
+            Ok(mut cfg) => {
+                update(&mut cfg);
+                if let Err(err) = cfg.save() {
+                    eprintln!("[dboard-tray] Failed to save config: {}", err);
+                    return false;
+                }
+                true
+            }
+            Err(err) => {
+                eprintln!("[dboard-tray] {}", err);
+                false
+            }
+        }
     }
 
     fn cycle_mode(&mut self) {
@@ -385,15 +396,16 @@ impl Tray for VietTray {
                     StandardItem {
                         label: "Preset: Gboard Mode (All On)".into(),
                         activate: Box::new(|this: &mut VietTray| {
-                            this.autocorrect = true;
-                            this.auto_capitalize = true;
-                            this.candidate_bar = true;
-                            Self::save_config_update(|cfg| {
+                            if Self::save_config_update(|cfg| {
                                 cfg.autocorrect = true;
                                 cfg.auto_capitalize = true;
                                 cfg.candidate_bar = true;
-                            });
-                            spawn_popup_if_available();
+                            }) {
+                                this.autocorrect = true;
+                                this.auto_capitalize = true;
+                                this.candidate_bar = true;
+                                spawn_popup_if_available();
+                            }
                         }),
                         ..Default::default()
                     }
@@ -401,14 +413,15 @@ impl Tray for VietTray {
                     StandardItem {
                         label: "Preset: Classic Mode (Minimal)".into(),
                         activate: Box::new(|this: &mut VietTray| {
-                            this.autocorrect = false;
-                            this.auto_capitalize = false;
-                            this.candidate_bar = false;
-                            Self::save_config_update(|cfg| {
+                            if Self::save_config_update(|cfg| {
                                 cfg.autocorrect = false;
                                 cfg.auto_capitalize = false;
                                 cfg.candidate_bar = false;
-                            });
+                            }) {
+                                this.autocorrect = false;
+                                this.auto_capitalize = false;
+                                this.candidate_bar = false;
+                            }
                         }),
                         ..Default::default()
                     }
@@ -419,8 +432,9 @@ impl Tray for VietTray {
                         checked: self.autocorrect,
                         activate: Box::new(|this: &mut VietTray| {
                             let next = !this.autocorrect;
-                            this.autocorrect = next;
-                            Self::save_config_update(|cfg| cfg.autocorrect = next);
+                            if Self::save_config_update(|cfg| cfg.autocorrect = next) {
+                                this.autocorrect = next;
+                            }
                         }),
                         ..Default::default()
                     }
@@ -430,8 +444,9 @@ impl Tray for VietTray {
                         checked: self.auto_capitalize,
                         activate: Box::new(|this: &mut VietTray| {
                             let next = !this.auto_capitalize;
-                            this.auto_capitalize = next;
-                            Self::save_config_update(|cfg| cfg.auto_capitalize = next);
+                            if Self::save_config_update(|cfg| cfg.auto_capitalize = next) {
+                                this.auto_capitalize = next;
+                            }
                         }),
                         ..Default::default()
                     }
@@ -441,10 +456,11 @@ impl Tray for VietTray {
                         checked: self.candidate_bar,
                         activate: Box::new(|this: &mut VietTray| {
                             let next = !this.candidate_bar;
-                            this.candidate_bar = next;
-                            Self::save_config_update(|cfg| cfg.candidate_bar = next);
-                            if next {
-                                spawn_popup_if_available();
+                            if Self::save_config_update(|cfg| cfg.candidate_bar = next) {
+                                this.candidate_bar = next;
+                                if next {
+                                    spawn_popup_if_available();
+                                }
                             }
                         }),
                         ..Default::default()
@@ -464,8 +480,9 @@ impl Tray for VietTray {
                             2 => "colemak",
                             _ => "us",
                         };
-                        this.keyboard_layout = layout.into();
-                        Self::save_config_update(|cfg| cfg.keyboard_layout = layout.into());
+                        if Self::save_config_update(|cfg| cfg.keyboard_layout = layout.into()) {
+                            this.keyboard_layout = layout.into();
+                        }
                     }),
                     options: vec![
                         RadioItem {
@@ -578,6 +595,7 @@ pub fn run() {
         let mut buffer = [0u8; 4096];
 
         while !crate::should_exit() {
+            let mut dirty = false;
             if inotify_fd >= 0 && wd >= 0 {
                 let mut pfd = libc::pollfd {
                     fd: inotify_fd,
@@ -585,7 +603,29 @@ pub fn run() {
                     revents: 0,
                 };
                 let res = unsafe { libc::poll(&mut pfd, 1, 500) };
+                if res < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() != Some(libc::EINTR) {
+                        unsafe {
+                            libc::close(inotify_fd);
+                        }
+                        inotify_fd = -1;
+                        wd = -1;
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    continue;
+                }
+                if res > 0 && (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0
+                {
+                    unsafe {
+                        libc::close(inotify_fd);
+                    }
+                    inotify_fd = -1;
+                    wd = -1;
+                    continue;
+                }
                 if res > 0 && (pfd.revents & libc::POLLIN) != 0 {
+                    dirty = true;
                     loop {
                         let n = unsafe {
                             libc::read(
@@ -610,6 +650,11 @@ pub fn run() {
                                 & (libc::IN_IGNORED | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF))
                                 != 0
                             {
+                                if (ev.mask & libc::IN_MOVE_SELF) != 0 && wd >= 0 {
+                                    unsafe {
+                                        libc::inotify_rm_watch(inotify_fd, wd);
+                                    }
+                                }
                                 wd = -1;
                             }
                             offset += hdr_size + ev.len as usize;
@@ -617,6 +662,7 @@ pub fn run() {
                     }
                 }
             } else {
+                dirty = true;
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 if inotify_fd < 0 {
                     inotify_fd =
@@ -632,6 +678,9 @@ pub fn run() {
                 }
             }
 
+            if !dirty {
+                continue;
+            }
             let mode = read_status(&last_mode);
             let im = read_method(&last_im);
             let autostart = config::is_autostart_installed();

@@ -113,17 +113,39 @@ pub(crate) fn connect_unix_nonblocking(path: &Path) -> io::Result<UnixStream> {
     if rc < 0 {
         let err = io::Error::last_os_error();
         if err.raw_os_error() == Some(libc::EINPROGRESS) {
-            let mut pfd = libc::pollfd {
-                fd: fd.as_raw_fd(),
-                events: libc::POLLOUT,
-                revents: 0,
-            };
-            let ready = unsafe { libc::poll(&mut pfd, 1, CONNECT_INPROGRESS_TIMEOUT_MS) };
-            if ready <= 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Wayland socket connect timed out",
-                ));
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_millis(CONNECT_INPROGRESS_TIMEOUT_MS as u64);
+            loop {
+                let remaining_ms = deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_millis()
+                    .min(i32::MAX as u128) as i32;
+                if remaining_ms == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Wayland socket connect timed out",
+                    ));
+                }
+                let mut pfd = libc::pollfd {
+                    fd: fd.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                let ready = unsafe { libc::poll(&mut pfd, 1, remaining_ms) };
+                if ready < 0 {
+                    let poll_err = io::Error::last_os_error();
+                    if poll_err.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    return Err(poll_err);
+                }
+                if ready == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Wayland socket connect timed out",
+                    ));
+                }
+                break;
             }
             let mut so_err: libc::c_int = 0;
             let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;

@@ -380,3 +380,21 @@ fn dvorak_capslock_unlocks_eight_level_vietnamese_keys() {
     assert!(!is_eight_level_evdev(28));
     assert!(!is_eight_level_evdev(57));
 }
+
+#[test]
+fn stalled_compositor_roundtrip_times_out_instead_of_hanging_evdev_loop() {
+    let (client, _stalled_server) = UnixStream::pair().unwrap();
+    client.set_nonblocking(true).unwrap();
+    let conn = Connection::from_socket(client).unwrap();
+    let start = Instant::now();
+    let err = match WaylandVirtualKeyboard::from_connection(conn, false, false) {
+        Ok(_) => panic!("stalled compositor without sync reply must time out"),
+        Err(err) => err,
+    };
+    let elapsed = start.elapsed();
+    assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "bounded roundtrip took too long: {elapsed:?}"
+    );
+}

@@ -251,35 +251,56 @@ fn main() {
         ];
         let nfds = if fds[1].fd >= 0 { 2 } else { 1 };
         let rc = unsafe { libc::poll(fds.as_mut_ptr(), nfds, 250) };
-        if rc <= 0 {
+        if rc < 0 {
+            if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                break;
+            }
             continue;
         }
-        if (fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+        if rc == 0 {
+            continue;
+        }
+        if (fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0
+            || (fds[1].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0
+        {
             break;
         }
-        if (fds[1].revents & libc::POLLIN) != 0 {
-            if let Some(bar) = wayland_bar.as_mut() {
-                if bar.dispatch_pending().is_err() {
-                    wayland_bar = None;
-                } else if let Some(clicked_idx) = bar.take_clicked_slot() {
-                    send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
-                }
-            }
-        }
+        // Drain daemon updates before dispatching Wayland pointer clicks so a
+        // queued Hide/Update is applied before any stale click fires.
         if (fds[0].revents & libc::POLLIN) != 0 {
+            let mut wayland_dead = false;
             while let Ok(len) = sock.recv(&mut buf) {
                 if let Ok(text) = std::str::from_utf8(&buf[..len]) {
                     if let Some(pkt) = parse_packet(text) {
                         if pkt.visible && !pkt.candidates.is_empty() {
                             if let Some(bar) = wayland_bar.as_mut() {
-                                let _ = bar.show(&pkt.candidates, pkt.caret);
+                                if bar.show(&pkt.candidates, pkt.caret).is_err() {
+                                    wayland_dead = true;
+                                    break;
+                                }
                             } else if let Some(line) = format_strip(&pkt) {
                                 println!("{line}");
                             }
                         } else if let Some(bar) = wayland_bar.as_mut() {
-                            let _ = bar.hide();
+                            if bar.hide().is_err() {
+                                wayland_dead = true;
+                                break;
+                            }
                         }
                     }
+                }
+            }
+            if wayland_dead {
+                break;
+            }
+        }
+        if (fds[1].revents & libc::POLLIN) != 0 {
+            if let Some(bar) = wayland_bar.as_mut() {
+                if bar.dispatch_pending().is_err() {
+                    break;
+                }
+                if let Some(clicked_idx) = bar.take_clicked_slot() {
+                    send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
                 }
             }
         }

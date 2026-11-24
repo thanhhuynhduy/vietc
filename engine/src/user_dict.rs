@@ -385,7 +385,7 @@ impl AutoCapState {
                     self.expect_cap = false;
                 }
             }
-            '!' | '?' => {
+            '!' | '?' | '…' => {
                 self.pending_sentence_end = true;
                 self.expect_cap = false;
             }

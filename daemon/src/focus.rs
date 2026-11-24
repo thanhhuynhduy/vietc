@@ -68,6 +68,10 @@ pub struct FocusSnapshot {
     /// Timestamp of the most recent pointer click so pre-click surrounding
     /// context is discarded while post-click AT-SPI `TextCaretMoved` context survives.
     pub last_pointer_click_at: Option<Instant>,
+    /// Monotonic counter incremented on every physical KeyDown (`evdev_loop`) so
+    /// in-flight AT-SPI2 `GetText` responses that began before a keystroke/Backspace
+    /// are discarded instead of overwriting fresh editor state.
+    pub key_activity_seq: Arc<AtomicU64>,
 }
 
 impl Default for FocusSnapshot {
@@ -84,6 +88,7 @@ impl Default for FocusSnapshot {
             omnibox_selection_at: None,
             surrounding_context: None,
             last_pointer_click_at: None,
+            key_activity_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -118,6 +123,23 @@ impl FocusSnapshot {
             generation: self.generation,
             captured_at: Instant::now(),
         });
+    }
+
+    /// Store AT-SPI2 surrounding context only if no physical keystroke occurred
+    /// while the asynchronous D-Bus `GetText` query was in flight.
+    pub fn set_surrounding_context_if_fresh(
+        &mut self,
+        data: Option<SurroundingContextData>,
+        expected_key_seq: u64,
+    ) {
+        if self.key_activity_seq.load(Ordering::Acquire) != expected_key_seq {
+            return;
+        }
+        self.set_surrounding_context(data);
+    }
+
+    pub fn key_activity_signal(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.key_activity_seq)
     }
 
     pub fn observe_target(&mut self, target: Option<TargetIdentity>, class: Option<String>) {
@@ -473,5 +495,35 @@ mod tests {
             snapshot.generation, gen_after_lost,
             "background poll must not spuriously bump generation and wipe launcher composition"
         );
+    }
+
+    #[test]
+    fn stale_surrounding_context_is_discarded_when_keystroke_occurred_in_flight() {
+        use crate::surrounding_context::SurroundingContextData;
+        use std::sync::atomic::Ordering;
+
+        let mut snapshot = FocusSnapshot::default();
+        snapshot.observe(Some("toplevel:firefox".into()), Some("firefox".into()));
+        let sig = snapshot.key_activity_signal();
+        let seq_before_rpc = sig.load(Ordering::Acquire);
+
+        // User presses Backspace/Arrow while AT-SPI2 GetText RPC is in flight.
+        sig.fetch_add(1, Ordering::AcqRel);
+
+        let stale = SurroundingContextData {
+            word_at_caret: Some("chao".into()),
+            prev_word: Some("xin".into()),
+            after_sentence_boundary: false,
+        };
+        snapshot.set_surrounding_context_if_fresh(Some(stale.clone()), seq_before_rpc);
+        assert!(
+            snapshot.surrounding_context.is_none(),
+            "in-flight AT-SPI2 GetText response must be discarded if a keystroke occurred"
+        );
+
+        // Fresh query with matching sequence succeeds.
+        let seq_fresh = sig.load(Ordering::Acquire);
+        snapshot.set_surrounding_context_if_fresh(Some(stale), seq_fresh);
+        assert!(snapshot.surrounding_context.is_some());
     }
 }

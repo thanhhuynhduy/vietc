@@ -135,10 +135,17 @@ pub fn run_doctor() -> i32 {
 
     let display = detect_display_server();
     let compositor = detect_compositor().unwrap_or_else(|| "unknown".into());
+    let unsupported_wayland_de = is_unsupported_wayland_compositor(&compositor);
     report(
-        display == DisplayServer::Wayland,
+        display == DisplayServer::Wayland && !unsupported_wayland_de,
         "Display / Compositor",
-        &format!("{display:?} ({compositor})"),
+        &if unsupported_wayland_de {
+            format!(
+                "{display:?} ({compositor} — unsupported: lacks zwp_virtual_keyboard_v1; requires COSMIC/Hyprland/Sway/wlroots)"
+            )
+        } else {
+            format!("{display:?} ({compositor})")
+        },
     );
 
     let (udev_ok, udev_detail) = check_udev_rules();
@@ -241,18 +248,51 @@ pub fn run_doctor() -> i32 {
         .as_str(),
     );
 
+    let layout_known = is_known_keyboard_layout(&cfg.keyboard_layout);
     let active_layout =
         dboard_protocol::layout::KeyboardLayout::from_str_name(&cfg.keyboard_layout);
-    report(true, "Keyboard layout", active_layout.display_name());
     report(
-        true,
-        "Candidate bar",
-        if cfg.candidate_bar {
-            "enabled (non-blocking Unix datagram IPC)"
+        layout_known,
+        "Keyboard layout",
+        &if layout_known {
+            active_layout.display_name().to_string()
         } else {
-            "disabled (zero-underline default)"
+            format!(
+                "unknown layout '{}' (falling back to {}); expected us | dvorak | colemak",
+                cfg.keyboard_layout,
+                active_layout.display_name()
+            )
         },
     );
+    let (cb_ok, cb_detail) = if cfg.candidate_bar {
+        let has_runtime = std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|v| !v.is_empty());
+        let popup_found = ["/usr/bin/dboard-popup", "/usr/local/bin/dboard-popup"]
+            .iter()
+            .any(|p| Path::new(p).exists())
+            || std::process::Command::new("which")
+                .arg("dboard-popup")
+                .output()
+                .is_ok_and(|o| o.status.success());
+        if has_runtime && popup_found {
+            (
+                true,
+                "enabled (dboard-popup found, non-blocking Unix datagram IPC)",
+            )
+        } else if !has_runtime {
+            (
+                false,
+                "enabled, but XDG_RUNTIME_DIR is unset (popup socket unavailable)",
+            )
+        } else {
+            (
+                false,
+                "enabled, but dboard-popup binary not found in PATH or /usr/bin",
+            )
+        }
+    } else {
+        (true, "disabled (zero-underline default)")
+    };
+    report(cb_ok, "Candidate bar", cb_detail);
 
     if let Some(dict_path) = crate::user_dict_store::user_dict_path() {
         if dict_path.exists() {
@@ -324,6 +364,22 @@ fn detect_mod3_mod5_conflicts() -> Vec<String> {
     hits
 }
 
+fn is_unsupported_wayland_compositor(compositor: &str) -> bool {
+    let lower = compositor.to_ascii_lowercase();
+    lower.contains("gnome")
+        || lower.contains("mutter")
+        || lower.contains("kde")
+        || lower.contains("plasma")
+        || lower.contains("kwin")
+}
+
+fn is_known_keyboard_layout(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "" | "us" | "qwerty" | "us-qwerty" | "dvorak" | "us-dvorak" | "colemak" | "us-colemak"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +388,19 @@ mod tests {
     fn status_tag_formats_pass_and_warn() {
         assert_eq!(status_tag(true), "[OK]  ");
         assert_eq!(status_tag(false), "[WARN]");
+    }
+
+    #[test]
+    fn doctor_validates_supported_compositors_and_keyboard_layouts() {
+        assert!(is_unsupported_wayland_compositor("gnome"));
+        assert!(is_unsupported_wayland_compositor("KDE Plasma"));
+        assert!(!is_unsupported_wayland_compositor("cosmic"));
+        assert!(!is_unsupported_wayland_compositor("hyprland"));
+        assert!(!is_unsupported_wayland_compositor("sway"));
+
+        assert!(is_known_keyboard_layout("us"));
+        assert!(is_known_keyboard_layout("dvorak"));
+        assert!(is_known_keyboard_layout("colemak"));
+        assert!(!is_known_keyboard_layout("dvroak"));
     }
 }

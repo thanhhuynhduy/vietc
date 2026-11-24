@@ -5,6 +5,7 @@ use crate::engine_helpers::{
     adapt_macro_casing, build_composition_state, build_surrounding_prev_entry,
     commit_rehydrated_ascii_word, commit_retroactive_pair, is_flush_char,
     is_seedable_surrounding_word, is_sentence_boundary, match_casing, resolve_coda_edit_canon,
+    resolve_retroactive_undo_w2,
 };
 use crate::english::{EnglishDict, LanguageContext};
 use crate::filename_restore::{try_dot_filename_restore, DotStemEntry};
@@ -273,30 +274,35 @@ impl Engine {
             return;
         }
         let dict = english_dict();
-        let (mut entry, mut ctx) = build_surrounding_prev_entry(chosen, dict);
-        if ctx == LanguageContext::English && !dict.is_english_word(&chosen.to_ascii_lowercase()) {
-            ctx = LanguageContext::None;
-            entry.committed_context = LanguageContext::None;
-            entry.was_auto_restored = false;
-        }
-        entry.raw_keys =
-            visible_to_canonical_raw(chosen, self.method).unwrap_or_else(|| chosen.to_string());
-        entry.trailing_delimiters = if trailing_space {
-            " ".to_string()
-        } else {
-            String::new()
-        };
-        self.prev_context = ctx;
-        self.ring_buffer.push(entry);
-        if self.learning_enabled {
-            if let Some(prev) = prev_word {
-                self.user_dict.record_bigram_usage(&prev, chosen);
+        let parts: Vec<&str> = chosen.split(' ').filter(|p| !p.is_empty()).collect();
+        let mut prev = prev_word;
+        for (idx, part) in parts.iter().enumerate() {
+            let is_last = idx + 1 == parts.len();
+            let (mut entry, mut ctx) = build_surrounding_prev_entry(part, dict);
+            if ctx == LanguageContext::English && !dict.is_english_word(&part.to_ascii_lowercase())
+            {
+                ctx = LanguageContext::None;
+                entry.committed_context = LanguageContext::None;
+                entry.was_auto_restored = false;
             }
+            entry.raw_keys =
+                visible_to_canonical_raw(part, self.method).unwrap_or_else(|| (*part).to_string());
+            entry.trailing_delimiters = if !is_last || trailing_space {
+                " ".to_string()
+            } else {
+                String::new()
+            };
+            self.prev_context = ctx;
+            self.ring_buffer.push(entry);
+            if self.learning_enabled {
+                if let Some(ref p) = prev {
+                    self.user_dict.record_bigram_usage(p, part);
+                }
+            }
+            prev = Some((*part).to_string());
         }
-        if trailing_space {
-            self.last_boundary_char = Some(' ');
-            self.auto_cap.on_flush_char(' ', Some(chosen));
-        }
+        self.auto_cap.reset();
+        self.last_boundary_char = trailing_space.then_some(' ');
     }
 
     pub fn reset_visible_revision(&mut self) {
@@ -311,9 +317,12 @@ impl Engine {
         prev_word: Option<&str>,
         after_sentence_boundary: bool,
     ) -> bool {
-        if !(self.raw_buffer.is_empty() && self.pasted_prefix.is_empty()) {
+        if !(self.raw_buffer.is_empty() && self.pasted_prefix.is_empty())
+            || (word_at_caret.is_none() && prev_word.is_none() && !after_sentence_boundary)
+        {
             return false;
         }
+        self.invalidate_composition();
         let mut seeded = false;
         if after_sentence_boundary {
             self.auto_cap.arm();
@@ -502,13 +511,7 @@ impl Engine {
                     && !self.user_dict.is_keep_raw(&raw)
                     && !matches!(prev_boundary, Some('_' | '/' | '\\' | '.'))
                 {
-                    let (p3, p2, p1) = self.ring_buffer.last_three();
-                    let mut prev_buf = [""; 3];
-                    let mut prev_len_ctx = 0;
-                    for entry in [p3, p2, p1].into_iter().flatten() {
-                        prev_buf[prev_len_ctx] = entry.visible_word.as_str();
-                        prev_len_ctx += 1;
-                    }
+                    let (prev_buf, prev_len_ctx) = self.ring_buffer.prev_words_buf();
                     crate::autocorrect::suggest_correction_with_context(
                         english_dict(),
                         &self.user_dict,
@@ -587,10 +590,15 @@ impl Engine {
                                 prev_entry.visible_word, prev_entry.trailing_delimiters, final_word
                             );
                             let orig_w1 = prev_entry.clone();
-                            let w2_raw = raw.clone();
-                            let w2_was_ascii = should_restore
-                                || (final_word == w2_raw
-                                    && self.compose_candidate(&w2_raw) != final_word);
+                            let can_undo_pair = ch == ' ' && !final_word.contains(' ');
+                            let (w2_raw, w2_was_ascii) = resolve_retroactive_undo_w2(
+                                &raw,
+                                &final_word,
+                                should_restore,
+                                autocorrected.is_some(),
+                                self.method,
+                                |s| self.compose_candidate(s),
+                            );
                             let (total_delete, combined_insert, updated_ctx) =
                                 commit_retroactive_pair(
                                     &mut self.ring_buffer,
@@ -605,7 +613,7 @@ impl Engine {
                                     should_restore,
                                     user_override,
                                 );
-                            if ch == ' ' {
+                            if can_undo_pair {
                                 self.pending_restore_undo =
                                     Some(AutoRestoreUndo::RetroactivePair {
                                         rewritten_pair: combined_insert.clone(),
@@ -906,7 +914,8 @@ impl Engine {
             return None;
         }
         let visible = self.composed_tail();
-        let cand = crate::autocorrect::suggest_correction_for_layout(
+        let (prev_buf, prev_len_ctx) = self.ring_buffer.prev_words_buf();
+        let cand = crate::autocorrect::suggest_correction_with_context(
             english_dict(),
             &self.user_dict,
             &visible,
@@ -914,6 +923,7 @@ impl Engine {
             self.method,
             self.keyboard_layout,
             self.prev_context,
+            &prev_buf[..prev_len_ctx],
             |r| self.compose_candidate(r),
         )?;
         (cand != visible && cand != self.raw_buffer).then_some(cand)

@@ -387,3 +387,127 @@ fn one_tap_undo_respects_learning_disabled_privacy_guard() {
         "One-Tap Undo must not mark UserDict dirty when learning_enabled is false"
     );
 }
+
+#[test]
+fn retroactive_pair_with_autocorrected_w2_one_tap_undo_never_corrupts_screen() {
+    fn run_seq(input: &str) -> String {
+        let mut engine = Engine::new(InputMethod::Telex);
+        engine.set_auto_restore(true);
+        engine.set_autocorrect(true);
+        let mut screen = String::new();
+        for ch in input.chars() {
+            if ch == '\x08' {
+                match engine.process_key('\x08') {
+                    Some(EngineEvent::Replace(rep)) => {
+                        for _ in 0..rep.delete_before_cursor {
+                            screen.pop();
+                        }
+                        screen.push_str(&rep.insert);
+                    }
+                    None => {
+                        screen.pop();
+                    }
+                    other => panic!("unexpected backspace event: {:?}", other),
+                }
+                continue;
+            }
+            match engine.process_key(ch) {
+                Some(EngineEvent::Replace(rep)) => {
+                    for _ in 0..rep.delete_before_cursor {
+                        screen.pop();
+                    }
+                    screen.push_str(&rep.insert);
+                    if dboard_engine::is_flush_char(ch) {
+                        screen.push(ch);
+                    }
+                }
+                Some(EngineEvent::AutoRestore(word)) => {
+                    screen.push_str(&word);
+                    if dboard_engine::is_flush_char(ch) {
+                        screen.push(ch);
+                    }
+                }
+                Some(EngineEvent::Insert(t))
+                | Some(EngineEvent::Flush(t))
+                | Some(EngineEvent::Paste(t)) => screen.push_str(&t),
+                Some(EngineEvent::UndoTones {
+                    backspaces,
+                    restored,
+                }) => {
+                    for _ in 0..backspaces {
+                        screen.pop();
+                    }
+                    screen.push_str(&restored);
+                }
+                None => screen.push(ch),
+            }
+        }
+        screen
+    }
+
+    // Direction-A: "nói " + "has " (kept as "há ") + "recive " (SymSpell -> "receive" + retroactive -> "has receive ")
+    // Backspace #1 (One-Tap Undo) -> "nói há receive", Backspace #2 -> "nói há receiv" (never "nói há rreciv"!)
+    assert_eq!(run_seq("nois has recive "), "nói has receive ");
+    assert_eq!(run_seq("nois has recive \x08"), "nói há receive");
+    assert_eq!(run_seq("nois has recive \x08\x08"), "nói há receiv");
+}
+
+#[test]
+fn commit_selected_word_disarms_autocap_updates_boundary_and_splits_multiword_candidates() {
+    let mut engine = Engine::new(InputMethod::Telex);
+    engine.set_auto_capitalize(true);
+    // Arm AutoCap via Enter, then commit a selected word at start of line.
+    let _ = engine.process_key('\n');
+    engine.commit_selected_word("Xin", true);
+    // Word #2 must NOT be auto-capitalized.
+    let _ = engine.process_key('c');
+    assert_eq!(
+        engine.buffer(),
+        "c",
+        "commit_selected_word must disarm sentence-start AutoCap"
+    );
+
+    // Committing without trailing space must clear last_boundary_char so next-word
+    // prediction does not fire without a space at caret.
+    engine.commit_selected_word("test", false);
+    assert!(
+        engine.predict_next_words(3).is_empty(),
+        "trailing_space=false must not leave stale Space boundary for next-word prediction"
+    );
+
+    // Committing a split-word candidate must push separate ring_buffer words so
+    // n-gram next-word prediction still fires cleanly.
+    engine.commit_selected_word("không biết", true);
+    assert!(
+        !engine.predict_next_words(3).is_empty(),
+        "split-word candidate must push separate tokens for next-word prediction"
+    );
+}
+
+#[test]
+fn symspell_protects_prefixed_brand_names_and_candidate_bar_uses_context() {
+    // Leading single-letter brand/tool names must NOT be truncated (e.g. gboard -> board).
+    assert_eq!(simulate_autocorrect("gboard "), "gboard ");
+    assert_eq!(simulate_autocorrect("dboard "), "dboard ");
+
+    // Candidate bar suggestion must use sentence context (ring_buffer) just like Space autocorrect.
+    let mut engine = Engine::new(InputMethod::Telex);
+    engine.set_autocorrect(true);
+    for ch in "xin chaod".chars() {
+        let _ = engine.process_key(ch);
+    }
+    assert_eq!(
+        engine.candidate_suggestion().as_deref(),
+        Some("chào"),
+        "candidate_suggestion must disambiguate 'xin chaod' -> 'chào' using ring_buffer context"
+    );
+
+    // Unicode ellipsis '…' must arm sentence-start auto-capitalization.
+    let mut cap = Engine::new(InputMethod::Telex);
+    cap.set_auto_capitalize(true);
+    for ch in "xin… ".chars() {
+        let _ = cap.process_key(ch);
+    }
+    let _ = cap.process_key('c');
+    assert_eq!(cap.buffer(), "C");
+}

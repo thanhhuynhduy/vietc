@@ -729,6 +729,36 @@ pub(crate) fn apply_bamboo_telex_undo(
     true
 }
 
+/// Compute the `(w2_raw_keys, w2_was_ascii)` state to restore into `raw_buffer`
+/// when a `RetroactivePair` One-Tap Undo writes `final_word` back to the screen.
+/// Ensures `composed_tail()` / `raw_buffer` length ALWAYS matches `final_word`
+/// even when `w2` was simultaneously autocorrected to a different length.
+pub(crate) fn resolve_retroactive_undo_w2<F>(
+    raw: &str,
+    final_word: &str,
+    should_restore: bool,
+    was_autocorrected: bool,
+    method: crate::InputMethod,
+    compose: F,
+) -> (String, bool)
+where
+    F: Fn(&str) -> String,
+{
+    if was_autocorrected {
+        if final_word.is_ascii() {
+            return (final_word.to_string(), true);
+        }
+        if let Some(canon) = crate::ring_buffer::visible_to_canonical_raw(final_word, method) {
+            if compose(&canon) == final_word {
+                return (canon, false);
+            }
+        }
+        return (final_word.to_string(), true);
+    }
+    let w2_was_ascii = should_restore || (final_word == raw && compose(raw) != final_word);
+    (raw.to_string(), w2_was_ascii)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_pending_restore_undo(
     undo: crate::user_dict::AutoRestoreUndo,

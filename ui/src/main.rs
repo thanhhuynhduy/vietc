@@ -7,6 +7,7 @@ mod config;
 mod tray;
 
 static DAEMON_PID: AtomicI32 = AtomicI32::new(0);
+static DAEMON_CHILD: Mutex<Option<std::process::Child>> = Mutex::new(None);
 static STOPPING: AtomicBool = AtomicBool::new(false);
 static LAUNCH_LOCK: Mutex<()> = Mutex::new(());
 
@@ -70,6 +71,7 @@ fn is_daemon_running() -> bool {
     check("dboard") || check("dboard-daemon")
 }
 
+#[cfg(test)]
 fn reap_in_background(
     mut child: std::process::Child,
     on_exit: impl FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static,
@@ -80,10 +82,34 @@ fn reap_in_background(
 fn supervise_daemon(child: std::process::Child) {
     let pid = child.id() as i32;
     DAEMON_PID.store(pid, Ordering::SeqCst);
-    reap_in_background(child, move |result| {
-        let _ = DAEMON_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
-        if !result.is_ok_and(|status| status.success()) {
-            eprintln!("[dboard-tray] Supervised daemon exited unsuccessfully");
+    *DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if STOPPING.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut guard = DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(child) = guard.as_mut() else {
+            return;
+        };
+        if child.id() as i32 != pid {
+            return;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                *guard = None;
+                let _ = DAEMON_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+                if !status.success() {
+                    eprintln!("[dboard-tray] Supervised daemon exited unsuccessfully");
+                }
+                return;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                *guard = None;
+                let _ = DAEMON_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+                return;
+            }
         }
     });
 }
@@ -128,29 +154,33 @@ fn start_daemon() {
 pub fn stop_daemon() {
     STOPPING.store(true, Ordering::SeqCst);
     let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let pid = DAEMON_PID.load(Ordering::SeqCst);
-    // Only stop a daemon directly spawned by this tray process (`DAEMON_PID > 0`).
-    // Never `pkill` a `dboard.service` instance managed by systemd.
-    if pid > 0 {
-        eprintln!("[dboard-tray] Stopping tray-spawned daemon (PID {})", pid);
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-        for _ in 0..20 {
-            if DAEMON_PID.load(Ordering::SeqCst) != pid || unsafe { libc::kill(pid, 0) } != 0 {
-                eprintln!("[dboard-tray] Daemon exited");
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        // Re-check `DAEMON_PID` right before `SIGKILL` so a PID recycled by the OS
-        // after `reap_in_background()` reaped our child is never signaled.
-        if DAEMON_PID.load(Ordering::SeqCst) == pid {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
+    // Take ownership of the un-reaped `Child` handle so the kernel cannot
+    // recycle its PID until after we finish signaling and reaping it.
+    let mut child_guard = DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(mut child) = child_guard.take() else {
+        DAEMON_PID.store(0, Ordering::SeqCst);
+        return;
+    };
+    drop(child_guard);
+    let pid = child.id() as i32;
+    DAEMON_PID.store(0, Ordering::SeqCst);
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
     }
+    eprintln!("[dboard-tray] Stopping tray-spawned daemon (PID {})", pid);
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    for _ in 0..20 {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            eprintln!("[dboard-tray] Daemon exited");
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Still alive and un-reaped: PID belongs exclusively to our child.
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn ensure_single_instance(name: &str) {

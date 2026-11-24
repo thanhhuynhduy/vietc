@@ -265,7 +265,9 @@ pub fn run_with_evdev(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
+    let key_activity_seq = initial_focus.key_activity_signal();
     let mut focus_sync = crate::focus_sync::FocusSyncState::from_initial(initial_focus);
+    let mut last_terminal_enter_at: Option<std::time::Instant> = None;
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
     let mut hotplug_state = crate::hotplug::HotplugState::new();
 
@@ -404,19 +406,32 @@ pub fn run_with_evdev(
             .is_some_and(|p| (p.revents & libc::POLLIN) != 0)
         {
             if let Some(idx) = daemon.candidate_ipc.poll_clicked_index() {
-                let commands = daemon.select_candidate(idx);
-                crate::focus::clear_surrounding_word(&shared_focus);
-                // Absorb the popup's own BTN_LEFT click so the next keypress does not
-                // reset `ring_buffer` and break chained next-word prediction.
-                last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
-                if !commands.is_empty() {
-                    let outcome = execute_commands(
-                        &*injector,
-                        &commands,
-                        &mut daemon.visible_revision,
-                        focus_sync.last_focus_generation,
-                    );
-                    let _ = daemon.handle_transaction_outcome(outcome);
+                focus_sync.sync_on_idle(daemon, &*injector, &shared_focus);
+                if !daemon.app_state.is_password_active()
+                    && !daemon.is_current_app_bypassed()
+                    && daemon.engine.is_enabled()
+                {
+                    let commands = daemon.select_candidate(idx);
+                    crate::focus::clear_surrounding_word(&shared_focus);
+                    // Absorb the popup's own BTN_LEFT click so the next keypress does not
+                    // reset `ring_buffer` and break chained next-word prediction.
+                    last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
+                    if !commands.is_empty() {
+                        let mut combined_keys = evdev::AttributeSet::<evdev::KeyCode>::new();
+                        for ds in &device_states {
+                            for k in ds.keys.iter() {
+                                combined_keys.insert(k);
+                            }
+                        }
+                        let outcome = execute_with_shift_released(
+                            &*injector,
+                            &commands,
+                            &mut daemon.visible_revision,
+                            focus_sync.last_focus_generation,
+                            &combined_keys,
+                        );
+                        let _ = daemon.handle_transaction_outcome(outcome);
+                    }
                 }
             }
         }
@@ -467,6 +482,8 @@ pub fn run_with_evdev(
 
                 // Update per-device modifier and shared lock state, then OR-union
                 // modifiers across all connected keyboards (split keyboards / numpads).
+                let prev_caps = global_caps_lock;
+                let prev_num = global_num_lock;
                 update_keyboard_state(
                     &mut dev_key_state,
                     &mut global_caps_lock,
@@ -475,14 +492,25 @@ pub fn run_with_evdev(
                     value,
                 );
                 let key_state = if device_states.len() > 1 {
-                    crate::hotplug::combine_cross_device_modifiers(
+                    let combined = crate::hotplug::combine_cross_device_modifiers(
                         &dev_key_state,
                         device_states
                             .iter()
                             .enumerate()
                             .filter(|(idx, _)| *idx != i)
                             .map(|(_, st)| &st.keys),
-                    )
+                    );
+                    if value == 1
+                        && is_modifier_pressed(&combined)
+                        && matches!(
+                            key,
+                            evdev::KeyCode::KEY_CAPSLOCK | evdev::KeyCode::KEY_NUMLOCK
+                        )
+                    {
+                        global_caps_lock = prev_caps;
+                        global_num_lock = prev_num;
+                    }
+                    combined
                 } else {
                     dev_key_state.clone()
                 };
@@ -498,6 +526,7 @@ pub fn run_with_evdev(
                 // without any keyboard event: the half-typed word no longer
                 // matches the screen, so it must not be replayed or replaced.
                 if value == 1 {
+                    key_activity_seq.fetch_add(1, Ordering::AcqRel);
                     let pointer_now = pointer_activity.load(Ordering::SeqCst);
                     if pointer_now != last_pointer_activity {
                         last_pointer_activity = pointer_now;
@@ -517,6 +546,19 @@ pub fn run_with_evdev(
                 // password field transitions ONCE per keystroke (single lock on
                 // `shared_focus`) BEFORE bypass, toggle, engine, or Backspace logic.
                 if value == 1 {
+                    if daemon.config.password_detection.enabled
+                        && daemon.app_state.is_terminal_app()
+                    {
+                        if matches!(key, evdev::KeyCode::KEY_ENTER | evdev::KeyCode::KEY_KPENTER) {
+                            last_terminal_enter_at = Some(std::time::Instant::now());
+                        } else if !crate::password_detector::cached_pty_no_echo()
+                            && last_terminal_enter_at.is_some_and(|at| {
+                                at.elapsed() < std::time::Duration::from_millis(350)
+                            })
+                        {
+                            crate::password_detector::refresh_pty_no_echo_now();
+                        }
+                    }
                     focus_sync.sync_on_key_press(daemon, &*injector, &shared_focus);
                 }
 
@@ -557,6 +599,7 @@ pub fn run_with_evdev(
                 }
 
                 if value == 1
+                    && !daemon.app_state.is_password_active()
                     && is_toggle_key(key, &daemon.config.toggle_key)
                     && is_toggle_combination_state(&key_state, &daemon.config.toggle_key)
                 {

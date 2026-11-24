@@ -385,6 +385,7 @@ pub(crate) fn build_xkb_keymap_for_layout(layout: KeyboardLayout) -> String {
         modifiers = Shift + Lock + Mod5 + Mod3;
         map[none] = Level1;
         map[Shift] = Level2;
+        map[Shift+Lock] = Level2;
         map[Mod5] = Level3;
         map[Shift+Mod5] = Level4;
         map[Lock+Mod5] = Level4;
@@ -698,6 +699,34 @@ mod tests {
                 st_mask(state, 0, 0, 0, 0, 0, 0);
                 assert_eq!(st_led_active(state, c"Num Lock".as_ptr()), 0);
                 assert_eq!(st_led_active(state, c"Caps Lock".as_ptr()), 0);
+
+                // Verify DBOARD_EIGHT_LEVEL_NONALPHA punctuation under CapsLock and CapsLock+Shift.
+                if matches!(layout, KeyboardLayout::Dvorak | KeyboardLayout::Colemak) {
+                    let (unshifted, shifted) = if layout == KeyboardLayout::Dvorak {
+                        ('\'', '"')
+                    } else {
+                        (';', ':')
+                    };
+                    let stroke = char_to_vk_stroke_for_layout(layout, unshifted).unwrap();
+                    let mut buf = [0 as c_char; 16];
+                    st_mask(state, 0, 0, XKB_MOD_LOCK, 0, 0, 0);
+                    let len = st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
+                    assert!(len > 0);
+                    assert_eq!(
+                        CStr::from_ptr(buf.as_ptr()).to_str().unwrap(),
+                        unshifted.to_string(),
+                        "bare CapsLock must not shift punctuation on {layout:?}"
+                    );
+                    st_mask(state, XKB_MOD_SHIFT, 0, XKB_MOD_LOCK, 0, 0, 0);
+                    let len = st_utf8(state, stroke.evdev_code + 8, buf.as_mut_ptr(), buf.len());
+                    assert!(len > 0);
+                    assert_eq!(
+                        CStr::from_ptr(buf.as_ptr()).to_str().unwrap(),
+                        shifted.to_string(),
+                        "CapsLock+Shift must still produce shifted punctuation on {layout:?}"
+                    );
+                    st_mask(state, 0, 0, 0, 0, 0, 0);
+                }
 
                 for &(lo, up) in &VIETNAMESE_PAIRS {
                     for &ch in &[lo, up] {

@@ -381,6 +381,7 @@ pub(crate) fn suggest_correction(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn suggest_correction_for_layout(
     dict: &EnglishDict,

@@ -19,6 +19,11 @@ fn atspi_password_set_at() -> &'static Mutex<Option<Instant>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+fn atspi_app_set_at() -> &'static Mutex<Option<Instant>> {
+    static CACHE: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
 fn compositor_title_cache() -> &'static Mutex<Option<String>> {
     static CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
@@ -75,6 +80,17 @@ pub fn cached_window_is_sudo() -> Option<bool> {
 
 pub fn cached_pty_no_echo() -> bool {
     BG_OBSERVED_WINDOW.load(Ordering::Acquire) && BG_PTY_NO_ECHO.load(Ordering::Acquire)
+}
+
+/// Immediately refresh the kernel PTY `ICANON && !ECHO` status (pure in-kernel
+/// `open(O_NONBLOCK)` + `fstat` + `tcgetattr` on `/dev/pts/*`, ~10µs) to close
+/// the 250ms background-poll blind window right after pressing `Enter` in a
+/// terminal (`sudo`/`ssh`/`passwd`).
+pub fn refresh_pty_no_echo_now() -> bool {
+    let no_echo = any_user_pty_echo_disabled();
+    BG_PTY_NO_ECHO.store(no_echo, Ordering::Release);
+    BG_OBSERVED_WINDOW.store(true, Ordering::Release);
+    no_echo
 }
 
 /// Returns true if a terminal's termios flags indicate a canonical password prompt
@@ -216,6 +232,9 @@ pub fn record_atspi_focus_state(is_password: bool, app_name: Option<String>) {
         if let Ok(mut guard) = atspi_app_cache().lock() {
             *guard = Some(name);
         }
+        if let Ok(mut guard) = atspi_app_set_at().lock() {
+            *guard = Some(Instant::now());
+        }
     }
 }
 
@@ -228,10 +247,10 @@ pub fn clear_atspi_password_flag() {
     }
 }
 
-/// Clear the cached AT-SPI2 password flag on a compositor toplevel activation
-/// unless AT-SPI2 *just* reported a password field within the grace window
-/// (prevents Alt+Tab into a password prompt from having its flag wiped by a
-/// slightly later `Activated` event).
+/// Clear the cached AT-SPI2 password flag (and stale AT-SPI2 app name) on a
+/// compositor toplevel activation or `FocusLost` unless AT-SPI2 *just* reported
+/// focus within the grace window (prevents Alt+Tab or layer-shell Polkit/pinentry
+/// prompts from having their password state wiped by a slightly later compositor event).
 pub fn clear_atspi_password_flag_on_window_switch() {
     let freshly_set = atspi_password_set_at()
         .lock()
@@ -240,6 +259,19 @@ pub fn clear_atspi_password_flag_on_window_switch() {
         .is_some_and(|at| at.elapsed() < ATSPI_PASSWORD_SWITCH_GRACE);
     if !freshly_set {
         clear_atspi_password_flag();
+    }
+    let app_freshly_set = atspi_app_set_at()
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .is_some_and(|at| at.elapsed() < ATSPI_PASSWORD_SWITCH_GRACE);
+    if !app_freshly_set {
+        if let Ok(mut guard) = atspi_app_cache().lock() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = atspi_app_set_at().lock() {
+            *guard = None;
+        }
     }
 }
 
@@ -256,7 +288,13 @@ pub fn clear_atspi_password_flag_if_non_atspi(identity: Option<&str>) {
 pub fn reset_atspi_focus_state() {
     ATSPI_OBSERVED_FOCUS.store(false, Ordering::Release);
     ATSPI_FOCUSED_IS_PASSWORD.store(false, Ordering::Release);
+    if let Ok(mut guard) = atspi_password_set_at().lock() {
+        *guard = None;
+    }
     if let Ok(mut guard) = atspi_app_cache().lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = atspi_app_set_at().lock() {
         *guard = None;
     }
 }

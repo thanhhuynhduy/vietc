@@ -114,7 +114,7 @@ pub struct OutputInfo {
 
 impl OutputInfo {
     fn logical_size(&self) -> (i32, i32, i32) {
-        let scale = self.scale.clamp(1, 2);
+        let scale = self.scale.clamp(1, 4);
         let lw = if self.width > 0 {
             self.width / scale
         } else {
@@ -263,10 +263,8 @@ impl Dispatch<wl_output::WlOutput, u32> for LayerState {
                 out.width = width;
                 out.height = height;
             }
-            wl_output::Event::Scale { factor } => {
-                if factor >= 1 {
-                    out.scale = factor.min(2);
-                }
+            wl_output::Event::Scale { factor } if factor >= 1 => {
+                out.scale = factor.min(4);
             }
             _ => {}
         }
@@ -313,6 +311,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for LayerState {
                 }
             }
             wl_pointer::Event::Leave { .. } => {
+                state.pointer_x = -1.0;
                 if state.hovered_slot.is_some() {
                     state.hovered_slot = None;
                     state.hover_dirty = true;
@@ -323,7 +322,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for LayerState {
                 state: WEnum::Value(wl_pointer::ButtonState::Pressed),
                 ..
             } if button == BTN_LEFT => {
-                if let Some(slot) = hit_test_slot(&state.slot_bounds, state.pointer_x) {
+                if let Some(slot) = state.hovered_slot.or_else(|| {
+                    (state.pointer_x >= 0.0)
+                        .then(|| hit_test_slot(&state.slot_bounds, state.pointer_x))
+                        .flatten()
+                }) {
                     state.clicked_slot = Some(slot);
                 }
             }
@@ -449,6 +452,7 @@ impl WaylandLayerBar {
     }
 
     pub fn dispatch_pending(&mut self) -> io::Result<()> {
+        let was_configured = self.state.configured;
         let _ = self.queue.flush();
         if let Some(guard) = self.queue.prepare_read() {
             let _ = guard.read();
@@ -456,7 +460,8 @@ impl WaylandLayerBar {
         self.queue
             .dispatch_pending(&mut self.state)
             .map_err(io::Error::other)?;
-        if self.state.hover_dirty && !self.last_candidates.is_empty() {
+        let just_configured = !was_configured && self.state.configured;
+        if (self.state.hover_dirty || just_configured) && !self.last_candidates.is_empty() {
             self.state.hover_dirty = false;
             let cands = self.last_candidates.clone();
             let caret = self.last_caret;
@@ -477,7 +482,10 @@ impl WaylandLayerBar {
         if self.bound_output_name == target_output && bound_still_exists {
             return Ok(());
         }
-        let Some(layer_shell) = self.state.layer_shell.clone() else {
+        let (Some(compositor), Some(layer_shell)) = (
+            self.state.compositor.clone(),
+            self.state.layer_shell.clone(),
+        ) else {
             return Ok(());
         };
         let wl_out = target_output.and_then(|name| {
@@ -488,11 +496,22 @@ impl WaylandLayerBar {
                 .and_then(|o| o.output.clone())
         });
         let qh = self.queue.handle();
-        self.surface.attach(None, 0, 0);
-        self.surface.commit();
+        // Per Wayland core protocol (`wl_surface` role lifecycle), a surface that
+        // was assigned a role must NOT be reused for a new `zwlr_layer_surface_v1`.
+        // Destroy the old role + surface + active SHM buffer and allocate a fresh
+        // `wl_surface` before binding to the target output.
         self.layer_surface.destroy();
+        self.surface.destroy();
+        if let Some((old_buf, old_pool, _old_fd)) = self.active_buffer.take() {
+            old_buf.destroy();
+            old_pool.destroy();
+        }
+        self.state.hovered_slot = None;
+        self.state.clicked_slot = None;
+
+        let new_surface = compositor.create_surface(&qh, ());
         let next = layer_shell.get_layer_surface(
-            &self.surface,
+            &new_surface,
             wl_out.as_ref(),
             zwlr_layer_shell_v1::Layer::Overlay,
             "dboard-candidates".into(),
@@ -515,6 +534,7 @@ impl WaylandLayerBar {
         );
         next.set_exclusive_zone(0);
         next.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+        self.surface = new_surface;
         self.layer_surface = next;
         self.bound_output_name = if wl_out.is_some() {
             target_output
@@ -570,6 +590,15 @@ impl WaylandLayerBar {
             );
             self.last_width = bar_w;
             self.last_placement = Some(placement);
+        }
+
+        // Never attach a buffer before the compositor acknowledges the initial
+        // `zwlr_layer_surface_v1::Event::Configure`; `dispatch_pending` will
+        // re-render automatically using `self.last_candidates` once configured.
+        if !self.state.configured {
+            self.surface.commit();
+            self.connection.flush().map_err(io::Error::other)?;
+            return Ok(());
         }
 
         let phys_w = bar_w * (scale as u32);
@@ -851,7 +880,9 @@ mod tests {
         let pixels = render_gboard_pill_argb8888(&cands, &bounds, Some(1), w, BAR_HEIGHT, 2);
         assert_eq!(pixels.len(), ((w * 2) * (BAR_HEIGHT * 2) * 4) as usize);
         let fg_pixels = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|px| px[0] == 0xF4 && px[1] == 0xD6 && px[2] == 0xCD && px[3] == 0xFF)
             .count();
         assert!(

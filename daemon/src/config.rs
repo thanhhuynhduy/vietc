@@ -384,7 +384,13 @@ pub fn format_toggle_key(toggle_key: &str) -> String {
         })
         .collect();
     if parts.len() == 1 {
-        format!("Ctrl+{}", parts[0])
+        match parts[0].as_str() {
+            "Z" => "Alt+Z".into(),
+            "Ctrl" | "Shift" | "Alt" | "Super" | "Capslock" | "Scrolllock" | "Pause" => {
+                parts[0].clone()
+            }
+            _ => format!("Ctrl+{}", parts[0]),
+        }
     } else {
         parts.join("+")
     }
@@ -704,6 +710,8 @@ toggle_method_key = "shift"
     #[test]
     fn format_toggle_key_handles_single_and_chord_forms() {
         assert_eq!(format_toggle_key("space"), "Ctrl+Space");
+        assert_eq!(format_toggle_key("z"), "Alt+Z");
+        assert_eq!(format_toggle_key("ctrl"), "Ctrl");
         assert_eq!(format_toggle_key("alt+z"), "Alt+Z");
         assert_eq!(format_toggle_key("ctrl+shift"), "Ctrl+Shift");
     }

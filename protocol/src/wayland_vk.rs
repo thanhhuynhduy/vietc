@@ -11,9 +11,9 @@ use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use wayland_client::protocol::{wl_registry, wl_seat};
+use wayland_client::protocol::{wl_callback, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 
 use crate::layout::KeyboardLayout;
@@ -54,6 +54,10 @@ const KEY_DELETE: u32 = 111;
 const KEY_LEFTSHIFT: u16 = 42;
 const KEY_RIGHTSHIFT: u16 = 54;
 
+/// Bounded Wayland roundtrip timeout so a stalled compositor or dead socket
+/// can NEVER permanently freeze `evdev_loop` (Invariant 4).
+const VK_ROUNDTRIP_TIMEOUT: Duration = Duration::from_millis(200);
+
 #[derive(Default)]
 struct VkDiscovery {
     seat: Option<wl_seat::WlSeat>,
@@ -61,6 +65,84 @@ struct VkDiscovery {
     manager: Option<ZwpVirtualKeyboardManagerV1>,
     manager_global_name: Option<u32>,
     global_removed: bool,
+    sync_done: bool,
+}
+
+impl Dispatch<wl_callback::WlCallback, ()> for VkDiscovery {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_callback::Event::Done { .. }) {
+            state.sync_done = true;
+        }
+    }
+}
+
+fn roundtrip_with_timeout(
+    connection: &Connection,
+    queue: &mut EventQueue<VkDiscovery>,
+    discovery: &mut VkDiscovery,
+    timeout: Duration,
+    label: &str,
+) -> io::Result<()> {
+    discovery.sync_done = false;
+    let qh = queue.handle();
+    let _cb = connection.display().sync(&qh, ());
+    let deadline = Instant::now() + timeout;
+    while !discovery.sync_done {
+        queue
+            .flush()
+            .map_err(|e| io::Error::other(format!("{label}: {e}")))?;
+        queue
+            .dispatch_pending(discovery)
+            .map_err(|e| io::Error::other(format!("{label}: {e}")))?;
+        if discovery.sync_done {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{label} timed out"),
+            ));
+        }
+        if let Some(guard) = queue.prepare_read() {
+            let remaining_ms = deadline
+                .saturating_duration_since(now)
+                .as_millis()
+                .clamp(1, i32::MAX as u128) as i32;
+            let mut pfd = libc::pollfd {
+                fd: guard.connection_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let rc = unsafe { libc::poll(&mut pfd, 1, remaining_ms) };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(err);
+            }
+            if rc == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("{label} timed out"),
+                ));
+            }
+            if let Err(wayland_client::backend::WaylandError::Io(e)) = guard.read() {
+                if e.kind() != io::ErrorKind::WouldBlock {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for VkDiscovery {
@@ -89,10 +171,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for VkDiscovery {
                     state.manager_global_name = Some(name);
                 }
             }
-            wl_registry::Event::GlobalRemove { name } => {
-                if state.seat_global_name == Some(name) || state.manager_global_name == Some(name) {
-                    state.global_removed = true;
-                }
+            wl_registry::Event::GlobalRemove { name }
+                if state.seat_global_name == Some(name)
+                    || state.manager_global_name == Some(name) =>
+            {
+                state.global_removed = true;
             }
             _ => {}
         }
@@ -168,9 +251,13 @@ impl WaylandVirtualKeyboard {
         let _registry = connection.display().get_registry(&qh, ());
         let mut discovery = VkDiscovery::default();
 
-        queue
-            .roundtrip(&mut discovery)
-            .map_err(|e| io::Error::other(format!("waylandvk registry roundtrip: {e}")))?;
+        roundtrip_with_timeout(
+            &connection,
+            &mut queue,
+            &mut discovery,
+            VK_ROUNDTRIP_TIMEOUT,
+            "waylandvk registry roundtrip",
+        )?;
 
         let seat = discovery.seat.as_ref().ok_or_else(|| {
             io::Error::new(
@@ -198,9 +285,13 @@ impl WaylandVirtualKeyboard {
             | (if initial_num_lock { XKB_MOD_MOD2 } else { 0 });
         vk.modifiers(0, 0, initial_locked, 0);
 
-        queue
-            .roundtrip(&mut discovery)
-            .map_err(|e| io::Error::other(format!("waylandvk keymap roundtrip: {e}")))?;
+        roundtrip_with_timeout(
+            &connection,
+            &mut queue,
+            &mut discovery,
+            VK_ROUNDTRIP_TIMEOUT,
+            "waylandvk keymap roundtrip",
+        )?;
 
         Ok(Self {
             session: Mutex::new(VkSession {
@@ -470,9 +561,10 @@ impl WaylandVirtualKeyboard {
     /// Reverse handoff: when the last Ctrl/Alt/Super modifier is released on `uinput`
     /// while `Shift` is still physically held, adopt `Shift` back onto `WaylandVirtualKeyboard`
     /// so subsequent typing and `Shift+Arrow` selection stay 100% synchronized.
-    pub(crate) fn adopt_shift_from_uinput(&self, left: bool, right: bool) {
+    /// Returns `true` only if the handoff flushed cleanly to the compositor.
+    pub(crate) fn adopt_shift_from_uinput(&self, left: bool, right: bool) -> bool {
         if !self.is_healthy() || (!left && !right) {
-            return;
+            return false;
         }
         let mut sess = self
             .session
@@ -495,7 +587,9 @@ impl WaylandVirtualKeyboard {
         sess.vk.modifiers(dep, 0, lck, 0);
         if sess.flush_and_drain().is_err() {
             self.healthy.store(false, Ordering::Relaxed);
+            return false;
         }
+        true
     }
 
     /// Atomically deletes `extra_deletes_after_caret` forward selections (for
@@ -563,7 +657,8 @@ impl WaylandVirtualKeyboard {
         let needs_caps_unlock = sess.caps_lock
             && strokes.iter().any(|s| {
                 is_layout_alpha_evdev(sess.layout, s.evdev_code)
-                    || crate::wayland_vk_keymap::is_eight_level_evdev(s.evdev_code)
+                    || ((s.modifiers & !XKB_MOD_SHIFT) != 0
+                        && crate::wayland_vk_keymap::is_eight_level_evdev(s.evdev_code))
             });
         let edit_locked = if needs_caps_unlock {
             sess.num_lock_mask()

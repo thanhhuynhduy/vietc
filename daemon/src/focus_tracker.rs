@@ -24,10 +24,36 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 const PROCESS_TIMEOUT: Duration = Duration::from_millis(500);
 const QUERY_TIMEOUT: Duration = Duration::from_millis(35);
 
+#[derive(Debug, PartialEq, Eq)]
 enum PendingAtspiEvent {
     Focused(String, String),
     SelectionChanged(String, String),
     CaretMoved(String, String, i32),
+}
+
+/// Coalesce a burst of queued AT-SPI2 signals so rapid Alt+Tab / Tab switching
+/// never stalls Layer 1 password detection behind obsolete widgets:
+/// - Keep only the latest `Focused` event (discarding all earlier events).
+/// - Keep at most the latest `SelectionChanged` event after it.
+/// - Preserve `CaretMoved` ordering (further coalesced to `latest_caret`).
+fn coalesce_atspi_events(drained: Vec<PendingAtspiEvent>) -> Vec<PendingAtspiEvent> {
+    let start_idx = drained
+        .iter()
+        .rposition(|ev| matches!(ev, PendingAtspiEvent::Focused(_, _)))
+        .unwrap_or(0);
+    let mut tail: Vec<PendingAtspiEvent> = drained.into_iter().skip(start_idx).collect();
+    let last_sel_idx = tail
+        .iter()
+        .rposition(|ev| matches!(ev, PendingAtspiEvent::SelectionChanged(_, _)));
+    if let Some(keep_idx) = last_sel_idx {
+        let mut idx = 0usize;
+        tail.retain(|ev| {
+            let keep = !matches!(ev, PendingAtspiEvent::SelectionChanged(_, _)) || idx == keep_idx;
+            idx += 1;
+            keep
+        });
+    }
+    tail
 }
 
 fn accessibility_bus_address() -> Result<String, Box<dyn Error>> {
@@ -39,13 +65,14 @@ fn accessibility_bus_address() -> Result<String, Box<dyn Error>> {
 
 #[cfg(test)]
 fn observe_atspi_focus(shared_focus: &SharedFocusSnapshot, application_identity: Option<&str>) {
-    observe_atspi_focus_with_path(shared_focus, application_identity, None);
+    observe_atspi_focus_with_path(shared_focus, application_identity, None, None);
 }
 
 fn observe_atspi_focus_with_path(
     shared_focus: &SharedFocusSnapshot,
     application_identity: Option<&str>,
     object_path: Option<&str>,
+    app_name: Option<&str>,
 ) {
     let Some(application_identity) = application_identity.filter(|value| !value.is_empty()) else {
         return;
@@ -57,7 +84,14 @@ fn observe_atspi_focus_with_path(
     };
 
     let mut focus = shared_focus.lock().unwrap_or_else(|p| p.into_inner());
-    let class = focus.class.clone();
+    let fallback_class = app_name
+        .filter(|n| !n.is_empty() && *n != "gnome-shell" && *n != "gnome-shell.desktop")
+        .map(str::to_string);
+    // Preserve authoritative compositor class when present, but populate `class`
+    // from AT-SPI2 when `focus.class` is `None` (e.g. during `FocusLost` on a
+    // Wayland layer-shell Polkit / `cosmic-osd` / `pinentry` dialog) so Layer 2
+    // `password_apps` detection remains active.
+    let class = focus.class.clone().or(fallback_class);
     focus.observe(Some(identity), class);
 }
 
@@ -278,11 +312,13 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
             return Ok(());
         }
         connection.process(PROCESS_TIMEOUT)?;
-        let drained: Vec<PendingAtspiEvent> = pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .drain(..)
-            .collect();
+        let drained: Vec<PendingAtspiEvent> = coalesce_atspi_events(
+            pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .drain(..)
+                .collect(),
+        );
         let mut latest_caret: Option<(String, String, i32)> = None;
         for ev in drained {
             match ev {
@@ -291,11 +327,17 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                     // Inspect role & password state BEFORE bumping focus generation so
                     // evdev_loop sees the updated password flag on the very next keystroke!
                     let info = inspect_focused_node(&connection, &sender, &path);
+                    let atspi_app = info.app_name.clone();
                     crate::password_detector::record_atspi_focus_state(
                         info.is_password,
                         info.app_name,
                     );
-                    observe_atspi_focus_with_path(&shared_focus, Some(&sender), Some(&path));
+                    observe_atspi_focus_with_path(
+                        &shared_focus,
+                        Some(&sender),
+                        Some(&path),
+                        atspi_app.as_deref(),
+                    );
                     if info.is_omnibox {
                         let inline = query_has_inline_selection(&connection, &sender, &path);
                         shared_focus
@@ -308,6 +350,11 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                         crate::focus::clear_omnibox_inline_selection(&shared_focus);
                     }
                     if info.is_editable_text {
+                        let key_seq = shared_focus
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .key_activity_seq
+                            .load(std::sync::atomic::Ordering::Acquire);
                         let caret = crate::surrounding_context::query_caret_offset(
                             &connection,
                             &sender,
@@ -337,7 +384,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
                         shared_focus
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .set_surrounding_context(ctx);
+                            .set_surrounding_context_if_fresh(ctx, key_seq);
                         active_text_node = Some((sender, path));
                     } else {
                         active_text_node = None;
@@ -374,6 +421,11 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
             }
         }
         if let Some((sender, path, caret)) = latest_caret {
+            let key_seq = shared_focus
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .key_activity_seq
+                .load(std::sync::atomic::Ordering::Acquire);
             let ctx = crate::surrounding_context::query_surrounding_context(
                 &connection,
                 &sender,
@@ -386,7 +438,7 @@ fn watch_once(shared_focus: SharedFocusSnapshot) -> Result<(), Box<dyn Error>> {
             shared_focus
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .set_surrounding_context(ctx);
+                .set_surrounding_context_if_fresh(ctx, key_seq);
         }
     }
 }
@@ -450,11 +502,13 @@ mod tests {
             &focus,
             Some(":1.100"),
             Some("/org/a11y/atspi/accessible/10"),
+            None,
         );
         observe_atspi_focus_with_path(
             &focus,
             Some(":1.100"),
             Some("/org/a11y/atspi/accessible/20"),
+            None,
         );
 
         let focus = focus.lock().unwrap();
@@ -475,6 +529,30 @@ mod tests {
         let focus = focus.lock().unwrap();
         assert_eq!(focus.identity, None);
         assert_eq!(focus.generation, 0);
+    }
+
+    #[test]
+    fn coalesce_atspi_events_keeps_only_latest_focus_and_selection() {
+        use super::{coalesce_atspi_events, PendingAtspiEvent};
+
+        let events = vec![
+            PendingAtspiEvent::Focused(":1.1".into(), "/w1".into()),
+            PendingAtspiEvent::SelectionChanged(":1.1".into(), "/w1".into()),
+            PendingAtspiEvent::CaretMoved(":1.1".into(), "/w1".into(), 5),
+            PendingAtspiEvent::Focused(":1.2".into(), "/pw".into()),
+            PendingAtspiEvent::SelectionChanged(":1.2".into(), "/pw".into()),
+            PendingAtspiEvent::SelectionChanged(":1.2".into(), "/pw".into()),
+            PendingAtspiEvent::CaretMoved(":1.2".into(), "/pw".into(), 0),
+        ];
+        let coalesced = coalesce_atspi_events(events);
+        assert_eq!(
+            coalesced,
+            vec![
+                PendingAtspiEvent::Focused(":1.2".into(), "/pw".into()),
+                PendingAtspiEvent::SelectionChanged(":1.2".into(), "/pw".into()),
+                PendingAtspiEvent::CaretMoved(":1.2".into(), "/pw".into(), 0),
+            ]
+        );
     }
 }
 

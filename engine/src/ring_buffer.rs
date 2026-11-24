@@ -104,6 +104,17 @@ impl CommittedRingBuffer {
         }
     }
 
+    pub(crate) fn prev_words_buf(&self) -> ([&str; 3], usize) {
+        let (p3, p2, p1) = self.last_three();
+        let mut buf = [""; 3];
+        let mut count = 0;
+        for entry in [p3, p2, p1].into_iter().flatten() {
+            buf[count] = entry.visible_word.as_str();
+            count += 1;
+        }
+        (buf, count)
+    }
+
     pub(crate) fn pop_last(&mut self) -> Option<CommittedWordEntry> {
         self.entries.pop_back()
     }

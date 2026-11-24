@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 const POLL_TIMEOUT_MS: i32 = 200;
@@ -45,7 +45,7 @@ fn is_pointer_device(device: &evdev::Device) -> bool {
 /// palm brushes, drags, two-finger scrolls, and physical clickpad presses.
 #[derive(Debug, Default)]
 struct TapTracker {
-    touch_down_at: Option<Instant>,
+    touch_down_at: Option<SystemTime>,
     moved_or_multitouch: bool,
     clicked_during_touch: bool,
     start_x: Option<i32>,
@@ -58,7 +58,7 @@ impl TapTracker {
         event_type: evdev::EventType,
         code: u16,
         value: i32,
-        now: Instant,
+        now: SystemTime,
     ) -> bool {
         match event_type {
             evdev::EventType::KEY => {
@@ -79,7 +79,9 @@ impl TapTracker {
                         self.start_y = None;
                     } else if value == 0 {
                         let short_tap = self.touch_down_at.take().is_some_and(|down| {
-                            now.saturating_duration_since(down) < TAP_MAX_DURATION
+                            now.duration_since(down)
+                                .ok()
+                                .is_some_and(|d| d < TAP_MAX_DURATION)
                         });
                         let fire =
                             short_tap && !self.moved_or_multitouch && !self.clicked_during_touch;
@@ -184,7 +186,6 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
                 continue;
             }
             let mut dead = Vec::new();
-            let now = Instant::now();
             for (index, pfd) in pfds.iter().enumerate() {
                 if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
                     dead.push(index);
@@ -201,7 +202,7 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
                                 event.event_type(),
                                 event.code(),
                                 event.value(),
-                                now,
+                                event.timestamp(),
                             ) {
                                 crate::focus::record_pointer_click(&shared_focus);
                                 shared.fetch_add(1, Ordering::SeqCst);
@@ -239,7 +240,7 @@ mod tests {
     #[test]
     fn touchpad_tap_tracker_distinguishes_short_tap_from_drag_scroll_and_clickpad() {
         let mut tracker = TapTracker::default();
-        let t0 = Instant::now();
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
 
         // 1. Short single-finger tap (< 200ms, minimal movement) -> fires on release
         assert!(!tracker.observe_event(
