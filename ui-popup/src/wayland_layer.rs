@@ -13,10 +13,11 @@
 
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::time::{Duration, Instant};
 
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_callback, wl_compositor, wl_output, wl_pointer, wl_registry, wl_seat, wl_shm,
+    wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum};
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
@@ -30,6 +31,7 @@ use crate::CaretRect;
 
 const BTN_LEFT: u32 = 0x110;
 const MAX_IN_FLIGHT_BUFFERS: usize = 4;
+const POPUP_ROUNDTRIP_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
@@ -132,6 +134,7 @@ struct LayerState {
     slot_bounds: Vec<(i32, i32)>,
     configured: bool,
     closed: bool,
+    sync_done: bool,
 }
 
 impl Default for LayerState {
@@ -152,6 +155,7 @@ impl Default for LayerState {
             slot_bounds: Vec::new(),
             configured: false,
             closed: false,
+            sync_done: false,
         }
     }
 }
@@ -444,6 +448,83 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for LayerState {
     }
 }
 
+impl Dispatch<wl_callback::WlCallback, ()> for LayerState {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_callback::Event::Done { .. }) {
+            state.sync_done = true;
+        }
+    }
+}
+
+fn roundtrip_with_timeout(
+    connection: &Connection,
+    queue: &mut EventQueue<LayerState>,
+    state: &mut LayerState,
+    timeout: Duration,
+    label: &str,
+) -> io::Result<()> {
+    state.sync_done = false;
+    let qh = queue.handle();
+    let _cb = connection.display().sync(&qh, ());
+    let deadline = Instant::now() + timeout;
+    while !state.sync_done {
+        queue
+            .flush()
+            .map_err(|e| io::Error::other(format!("{label}: {e}")))?;
+        queue
+            .dispatch_pending(state)
+            .map_err(|e| io::Error::other(format!("{label}: {e}")))?;
+        if state.sync_done {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{label} timed out"),
+            ));
+        }
+        if let Some(guard) = queue.prepare_read() {
+            let remaining_ms = deadline
+                .saturating_duration_since(now)
+                .as_millis()
+                .clamp(1, i32::MAX as u128) as i32;
+            let mut pfd = libc::pollfd {
+                fd: guard.connection_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let rc = unsafe { libc::poll(&mut pfd, 1, remaining_ms) };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(err);
+            }
+            if rc == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("{label} timed out"),
+                ));
+            }
+            if let Err(wayland_client::backend::WaylandError::Io(e)) = guard.read() {
+                if e.kind() != io::ErrorKind::WouldBlock {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 wayland_client::delegate_noop!(LayerState: ignore wl_compositor::WlCompositor);
 wayland_client::delegate_noop!(LayerState: ignore wl_surface::WlSurface);
 wayland_client::delegate_noop!(LayerState: ignore wl_shm::WlShm);
@@ -472,7 +553,13 @@ impl WaylandLayerBar {
         let qh = queue.handle();
         let _registry = connection.display().get_registry(&qh, ());
         let mut state = LayerState::default();
-        queue.roundtrip(&mut state).map_err(io::Error::other)?;
+        roundtrip_with_timeout(
+            &connection,
+            &mut queue,
+            &mut state,
+            POPUP_ROUNDTRIP_TIMEOUT,
+            "popup registry roundtrip",
+        )?;
 
         let compositor = state.compositor.as_ref().ok_or_else(|| {
             io::Error::new(
@@ -507,7 +594,13 @@ impl WaylandLayerBar {
         layer_surface
             .set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
         surface.commit();
-        queue.roundtrip(&mut state).map_err(io::Error::other)?;
+        roundtrip_with_timeout(
+            &connection,
+            &mut queue,
+            &mut state,
+            POPUP_ROUNDTRIP_TIMEOUT,
+            "popup initial surface roundtrip",
+        )?;
 
         Ok(Self {
             connection,
@@ -634,9 +727,13 @@ impl WaylandLayerBar {
         self.last_placement = Some(placement);
         self.state.configured = false;
         self.surface.commit();
-        self.queue
-            .roundtrip(&mut self.state)
-            .map_err(io::Error::other)?;
+        roundtrip_with_timeout(
+            &self.connection,
+            &mut self.queue,
+            &mut self.state,
+            POPUP_ROUNDTRIP_TIMEOUT,
+            "popup output rebind roundtrip",
+        )?;
         // Any `Closed` event dispatched during this roundtrip belonged to the
         // just-destroyed previous layer_surface; keep the new surface alive.
         self.state.closed = false;
@@ -774,134 +871,5 @@ fn create_shm_memfd(bytes: &[u8]) -> io::Result<OwnedFd> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selects_matching_monitor_and_translates_global_caret_coordinates() {
-        let outputs = vec![
-            OutputInfo {
-                global_name: 10,
-                output: None,
-                xdg_output: None,
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-                logical_x: None,
-                logical_y: None,
-                logical_width: None,
-                logical_height: None,
-                scale: 1,
-                rotated_90: false,
-            },
-            OutputInfo {
-                global_name: 20,
-                output: None,
-                xdg_output: None,
-                x: 1920,
-                y: 0,
-                width: 3840,
-                height: 2160,
-                logical_x: Some(1920),
-                logical_y: Some(0),
-                logical_width: Some(1920),
-                logical_height: Some(1080),
-                scale: 2,
-                rotated_90: false,
-            },
-            OutputInfo {
-                global_name: 30,
-                output: None,
-                xdg_output: None,
-                x: -1080,
-                y: 0,
-                width: 1920,
-                height: 1080,
-                logical_x: None,
-                logical_y: None,
-                logical_width: None,
-                logical_height: None,
-                scale: 1,
-                rotated_90: true,
-            },
-            // Fractional 150% HiDPI display: physical 1920x1080, integer wl_output scale 2,
-            // authoritative zxdg_output_v1 logical size 1280x720 at x=3840.
-            OutputInfo {
-                global_name: 40,
-                output: None,
-                xdg_output: None,
-                x: 3840,
-                y: 0,
-                width: 1920,
-                height: 1080,
-                logical_x: Some(3840),
-                logical_y: Some(0),
-                logical_width: Some(1280),
-                logical_height: Some(720),
-                scale: 2,
-                rotated_90: false,
-            },
-        ];
-
-        let (out_name, lw, lh, scale, local) = select_output_and_local_caret(
-            &outputs,
-            Some(CaretRect {
-                x: 2100,
-                y: 300,
-                h: 22,
-            }),
-        );
-        assert_eq!(out_name, Some(20));
-        assert_eq!((lw, lh, scale), (1920, 1080, 2));
-        assert_eq!(
-            local,
-            Some(CaretRect {
-                x: 180,
-                y: 300,
-                h: 22
-            })
-        );
-
-        // Rotated 90-degree left monitor (negative x, swapped 1080x1920 logical bounds)
-        let (rot_name, rlw, rlh, rscale, rlocal) = select_output_and_local_caret(
-            &outputs,
-            Some(CaretRect {
-                x: -500,
-                y: 1600,
-                h: 20,
-            }),
-        );
-        assert_eq!(rot_name, Some(30));
-        assert_eq!((rlw, rlh, rscale), (1080, 1920, 1));
-        assert_eq!(
-            rlocal,
-            Some(CaretRect {
-                x: 580,
-                y: 1600,
-                h: 20
-            })
-        );
-
-        // Fractional 150% monitor: caret at global (4900, 620) is local (1060, 620)
-        // which would have fallen outside `1920 / 2 = 960` without zxdg_output_v1.
-        let (frac_name, flw, flh, fscale, flocal) = select_output_and_local_caret(
-            &outputs,
-            Some(CaretRect {
-                x: 4900,
-                y: 620,
-                h: 20,
-            }),
-        );
-        assert_eq!(frac_name, Some(40));
-        assert_eq!((flw, flh, fscale), (1280, 720, 2));
-        assert_eq!(
-            flocal,
-            Some(CaretRect {
-                x: 1060,
-                y: 620,
-                h: 20
-            })
-        );
-    }
-}
+#[path = "wayland_layer_tests.rs"]
+mod tests;

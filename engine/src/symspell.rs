@@ -45,6 +45,7 @@ fn symspell_index() -> &'static SymSpellIndex {
 pub fn warm_up() {
     let _ = crate::engine::english_dict();
     let _ = crate::spelling::is_in_vietnamese_dictionary("a");
+    let _ = crate::spelling::is_bare_vietnamese_syllable("a");
     let _ = symspell_index();
 }
 

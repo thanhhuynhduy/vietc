@@ -750,7 +750,12 @@ impl Engine {
             && !self.macros.keys().any(|k| k.starts_with(&ch.to_string()))
         {
             self.auto_cap.reset();
-            self.prev_context = LanguageContext::None;
+            // Preserve active English clause momentum across digits (`for 2 days`,
+            // `top 10 lists`) while allowing numbered Vietnamese lists (`số 1 test`)
+            // to restore English-dominant labels cleanly.
+            if self.prev_context != LanguageContext::English {
+                self.prev_context = LanguageContext::None;
+            }
             self.ring_buffer.clear();
             self.last_dot_stem = None;
             self.last_boundary_char = None;

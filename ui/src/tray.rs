@@ -503,13 +503,17 @@ impl Tray for VietTray {
                 submenu: vec![RadioGroup {
                     selected: selected_layout,
                     select: Box::new(|this: &mut VietTray, idx: usize| {
-                        let layout = match idx {
-                            1 => "dvorak",
-                            2 => "colemak",
-                            _ => "us",
+                        let (layout, label) = match idx {
+                            1 => ("dvorak", "US Dvorak"),
+                            2 => ("colemak", "US Colemak"),
+                            _ => ("us", "US QWERTY"),
                         };
+                        if this.keyboard_layout.eq_ignore_ascii_case(layout) {
+                            return;
+                        }
                         if Self::save_config_update(|cfg| cfg.keyboard_layout = layout.into()) {
                             this.keyboard_layout = layout.into();
+                            crate::restart_daemon_for_layout(label);
                         }
                     }),
                     options: vec![

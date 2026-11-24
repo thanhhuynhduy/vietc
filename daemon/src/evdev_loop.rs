@@ -29,6 +29,26 @@ pub struct EvdevSharedState {
     pub pointer_activity: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// Absorbs a single trailing `pointer_watcher` increment arriving within 80ms
+/// of a `dboard-popup` click (e.g. touchpad tap-to-click release) so chained
+/// next-word prediction is preserved without suppressing genuine mouse clicks.
+fn absorb_trailing_popup_pointer_activity(
+    pointer_now: u64,
+    last_pointer_activity: &mut u64,
+    last_popup_click_at: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    if pointer_now == *last_pointer_activity {
+        return true;
+    }
+    let is_trailing_popup_tap = pointer_now == last_pointer_activity.wrapping_add(1)
+        && last_popup_click_at.take().is_some_and(|at| {
+            now.saturating_duration_since(at) < std::time::Duration::from_millis(80)
+        });
+    *last_pointer_activity = pointer_now;
+    is_trailing_popup_tap
+}
+
 fn clear_omnibox_shield(
     injector: &dyn dboard_protocol::inject::KeyInjector,
     shared_focus: &SharedFocusSnapshot,
@@ -270,6 +290,7 @@ pub fn run_with_evdev(
     let mut last_terminal_enter_at: Option<std::time::Instant> = None;
     let mut last_pty_refresh_at: Option<std::time::Instant> = None;
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
+    let mut last_popup_click_at: Option<std::time::Instant> = None;
     let mut last_idle_suggestion_seq = key_activity_seq.load(Ordering::Acquire);
     let mut hotplug_state = crate::hotplug::HotplugState::new();
 
@@ -423,9 +444,11 @@ pub fn run_with_evdev(
                 {
                     let commands = daemon.select_candidate(idx);
                     crate::focus::clear_surrounding_word(&shared_focus);
-                    // Absorb the popup's own BTN_LEFT click so the next keypress does not
-                    // reset `ring_buffer` and break chained next-word prediction.
+                    // Absorb the popup's own BTN_LEFT / touchpad tap click (including a
+                    // trailing pointer_watcher increment arriving within 80ms) so the next
+                    // keypress does not reset `ring_buffer` and break chained prediction.
                     last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
+                    last_popup_click_at = Some(std::time::Instant::now());
                     if !commands.is_empty() {
                         let mut combined_keys = evdev::AttributeSet::<evdev::KeyCode>::new();
                         for ds in &device_states {
@@ -542,8 +565,12 @@ pub fn run_with_evdev(
                 if value == 1 {
                     key_activity_seq.fetch_add(1, Ordering::AcqRel);
                     let pointer_now = pointer_activity.load(Ordering::SeqCst);
-                    if pointer_now != last_pointer_activity {
-                        last_pointer_activity = pointer_now;
+                    if !absorb_trailing_popup_pointer_activity(
+                        pointer_now,
+                        &mut last_pointer_activity,
+                        &mut last_popup_click_at,
+                        std::time::Instant::now(),
+                    ) {
                         daemon.reset_composition_state();
                         clear_omnibox_shield(&*injector, &shared_focus);
                     }

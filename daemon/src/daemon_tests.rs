@@ -419,3 +419,46 @@ fn continuous_gboard_daemon_stress_without_reset_stays_exact() {
         assert!(daemon.caret_reselection.is_some());
     }
 }
+
+#[test]
+fn reload_config_keeps_active_session_spatial_layout_aligned_with_boot_keymap() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        "input_method = \"telex\"\nautocorrect = true\nkeyboard_layout = \"us\"\n",
+    )
+    .unwrap();
+    let initial_cfg = Config::load_from(&cfg_path).unwrap();
+    let mut daemon = Daemon::new(
+        initial_cfg,
+        cfg_path.clone(),
+        Arc::new(AtomicBool::new(true)),
+    );
+    daemon.config_modified = std::time::UNIX_EPOCH;
+
+    // User edits config.toml to Dvorak while daemon is still running on a QWERTY XKB keymap.
+    std::fs::write(
+        &cfg_path,
+        "input_method = \"telex\"\nautocorrect = true\nkeyboard_layout = \"dvorak\"\n",
+    )
+    .unwrap();
+    assert!(daemon.reload_config());
+    assert_eq!(daemon.config.keyboard_layout, "dvorak");
+
+    // Engine spatial autocorrect must stay on US QWERTY (`h` adjacent to `g` -> `khoonh` => `không`)
+    // until daemon restarts and uploads the Dvorak XKB keymap (Invariant §4.2).
+    let mut screen = String::new();
+    for ch in "khoonh ".chars() {
+        let cmds = daemon.process_key(ch);
+        if cmds.is_empty() {
+            screen.push(ch);
+        } else {
+            apply(&mut screen, &cmds);
+            if dboard_engine::is_flush_char(ch) {
+                screen.push(ch);
+            }
+        }
+    }
+    assert_eq!(screen, "không ");
+}

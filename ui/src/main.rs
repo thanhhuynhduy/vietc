@@ -157,9 +157,7 @@ pub fn owns_daemon_child() -> bool {
     DAEMON_PID.load(Ordering::SeqCst) != 0
 }
 
-pub fn stop_daemon() {
-    STOPPING.store(true, Ordering::SeqCst);
-    let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+fn stop_owned_daemon_child_locked() {
     // Take ownership of the un-reaped `Child` handle so the kernel cannot
     // recycle its PID until after we finish signaling and reaping it.
     let mut child_guard = DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner());
@@ -187,6 +185,73 @@ pub fn stop_daemon() {
     // Still alive and un-reaped: PID belongs exclusively to our child.
     let _ = child.kill();
     let _ = child.wait();
+}
+
+pub fn stop_daemon() {
+    STOPPING.store(true, Ordering::SeqCst);
+    let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    stop_owned_daemon_child_locked();
+}
+
+/// Restart the daemon after a `keyboard_layout` change so `evdev_loop`,
+/// `WaylandVirtualKeyboard` (single-upload XKB keymap), and `Engine` stay 100%
+/// synchronized. Runs off the D-Bus tray callback thread.
+pub fn restart_daemon_for_layout(layout_label: &str) {
+    let label = layout_label.to_string();
+    std::thread::spawn(move || {
+        let restarted = if owns_daemon_child() {
+            let _launch = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            if STOPPING.load(Ordering::SeqCst) {
+                return;
+            }
+            stop_owned_daemon_child_locked();
+            let daemon_bin = find_daemon_binary();
+            match std::process::Command::new(&daemon_bin).spawn() {
+                Ok(child) => {
+                    supervise_daemon(child);
+                    true
+                }
+                Err(err) => {
+                    eprintln!("[dboard-tray] Failed to restart daemon: {err}");
+                    false
+                }
+            }
+        } else {
+            let is_systemd = std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "--quiet", "dboard.service"])
+                .status()
+                .is_ok_and(|s| s.success());
+            if is_systemd {
+                std::process::Command::new("systemctl")
+                    .args(["--user", "restart", "dboard.service"])
+                    .status()
+                    .is_ok_and(|s| s.success())
+            } else {
+                false
+            }
+        };
+
+        let body = if restarted {
+            format!("Keyboard layout switched to {label}")
+        } else {
+            format!("Layout set to {label}. Restart dboard-daemon to apply XKB keymap.")
+        };
+        if let Ok(mut child) = std::process::Command::new("notify-send")
+            .args([
+                "-t",
+                "2000",
+                "-h",
+                "string:x-canonical-private-synchronous:dboard-osd",
+                "-a",
+                "Dboard",
+                "Dboard",
+                &body,
+            ])
+            .spawn()
+        {
+            let _ = child.wait();
+        }
+    });
 }
 
 fn ensure_single_instance(name: &str) {
@@ -255,10 +320,34 @@ mod startup_tests {
 
     #[test]
     fn stop_daemon_is_noop_when_managed_by_systemd_service() {
+        let _guard = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         DAEMON_PID.store(0, Ordering::SeqCst);
-        stop_daemon();
+        stop_owned_daemon_child_locked();
         assert_eq!(DAEMON_PID.load(Ordering::SeqCst), 0);
         STOPPING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn stop_owned_daemon_child_reaps_without_setting_stopping() {
+        let _guard = LAUNCH_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        STOPPING.store(false, Ordering::SeqCst);
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        DAEMON_PID.store(pid, Ordering::SeqCst);
+        *DAEMON_CHILD.lock().unwrap_or_else(|p| p.into_inner()) = Some(child);
+
+        stop_owned_daemon_child_locked();
+
+        assert_eq!(DAEMON_PID.load(Ordering::SeqCst), 0);
+        assert!(!STOPPING.load(Ordering::SeqCst));
+        assert!(DAEMON_CHILD.lock().unwrap().is_none());
+        assert_eq!(
+            unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+            -1
+        );
     }
 
     #[test]

@@ -574,3 +574,77 @@ fn invalidate_clears_last_boundary_char_and_seed_sets_space_boundary() {
     }
     assert_eq!(screen, "chá");
 }
+
+#[test]
+fn bare_vietnamese_checked_syllables_are_not_mangled_by_spatial_autocorrect() {
+    // Regression for audit Finding 2: unmarked bare checked syllables (-p/-t/-c/-ch)
+    // in both Telex & VNI and Title-case must NOT be spatially corrupted (`biet -> bít`).
+    assert_eq!(
+        simulate_autocorrect("khoog biet lamf sao "),
+        "không biet làm sao "
+    );
+    assert_eq!(
+        simulate_autocorrect(
+            "viet duoc truoc cuoc thuoc khac chac nhac ngot giot thiet nhiet phap hop gach sach tach "
+        ),
+        "viet duoc truoc cuoc thuoc khac chac nhac ngot giot thiet nhiet phap hop gach sach tach "
+    );
+    assert_eq!(
+        simulate_autocorrect("Biet Viet Duoc Truoc "),
+        "Biet Viet Duoc Truoc "
+    );
+    assert_eq!(
+        simulate_autocorrect_with_method(InputMethod::Vni, "biet viet duoc truoc cuoc thuoc "),
+        "biet viet duoc truoc cuoc thuoc "
+    );
+    // Genuine VN & EN typos still autocorrect normally.
+    assert_eq!(simulate_autocorrect("xin chaod "), "xin chào ");
+    assert_eq!(simulate_autocorrect("khoongbieets "), "không biết ");
+    assert_eq!(
+        simulate_autocorrect("recive funtion progam "),
+        "receive function program "
+    );
+}
+
+#[test]
+fn bilingual_code_switching_preserves_context_across_digits_and_auxiliary_pairs() {
+    // Regression for audit Finding 3:
+    // 1. Standalone digits preserve active English clause momentum (`for 2 days`,
+    //    `top 10 lists`, `last 3 posts`, `after 5 tests`) while letting numbered
+    //    Vietnamese lists restore English labels (`số 1 test`) and keep VN prose (`2 con mèo`).
+    assert_eq!(
+        simulate_autocorrect("anh ta has been working on this feature for 2 days. "),
+        "anh ta has been working on this feature for 2 days. "
+    );
+    assert_eq!(
+        simulate_autocorrect("check top 10 lists and last 3 posts after 5 tests. "),
+        "check top 10 lists and last 3 posts after 5 tests. "
+    );
+    assert_eq!(
+        simulate_autocorrect("howpj ddoongf soos 1 test "),
+        "hợp đồng số 1 test "
+    );
+    assert_eq!(
+        simulate_autocorrect("nhaf cos 2 con meof vaf mua 3 cais basnh test "),
+        "nhà có 2 con mèo và mua 3 cái bánh tét "
+    );
+
+    // 2. Auxiliary pairs (`has been`, `had been`) after Vietnamese subject rewrite cleanly,
+    //    while explicit user tone-strip override (`hasz`) is respected.
+    assert_eq!(
+        simulate_autocorrect("coo aays had been waiting for 2 days "),
+        "cô ấy had been waiting for 2 days "
+    );
+    assert_eq!(simulate_autocorrect("anh ta hasz been "), "anh ta ha bên ");
+
+    // 3. `cost` stays English in bilingual prose, and One-Tap Undo (`Backspace` after Space)
+    //    still allows typing rare Vietnamese `cót`.
+    assert_eq!(
+        simulate_autocorrect("tooi caafn more info veef case nafy vaf cost cuar server. "),
+        "tôi cần more info về case này và cost của server. "
+    );
+    assert_eq!(
+        simulate_autocorrect("tooi thichs cost \x08 "),
+        "tôi thích cót "
+    );
+}

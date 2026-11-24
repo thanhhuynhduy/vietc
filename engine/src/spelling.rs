@@ -50,6 +50,47 @@ fn vietnamese_dict() -> &'static HashSet<String> {
     })
 }
 
+fn fold_vietnamese_to_ascii(word: &str) -> String {
+    word.chars()
+        .map(|c| match c.to_lowercase().next().unwrap_or(c) {
+            'a' | 'à' | 'á' | 'ả' | 'ã' | 'ạ' | 'ă' | 'ằ' | 'ắ' | 'ẳ' | 'ẵ' | 'ặ' | 'â' | 'ầ'
+            | 'ấ' | 'ẩ' | 'ẫ' | 'ậ' => 'a',
+            'e' | 'è' | 'é' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ề' | 'ế' | 'ể' | 'ễ' | 'ệ' => {
+                'e'
+            }
+            'i' | 'ì' | 'í' | 'ỉ' | 'ĩ' | 'ị' => 'i',
+            'o' | 'ò' | 'ó' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ồ' | 'ố' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ờ'
+            | 'ớ' | 'ở' | 'ỡ' | 'ợ' => 'o',
+            'u' | 'ù' | 'ú' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ừ' | 'ứ' | 'ử' | 'ữ' | 'ự' => {
+                'u'
+            }
+            'y' | 'ỳ' | 'ý' | 'ỷ' | 'ỹ' | 'ỵ' => 'y',
+            'đ' => 'd',
+            other => other,
+        })
+        .collect()
+}
+
+fn bare_vietnamese_dict() -> &'static HashSet<String> {
+    static BARE_DICT: OnceLock<HashSet<String>> = OnceLock::new();
+    BARE_DICT.get_or_init(|| {
+        VIETNAMESE_DICT_RAW
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(fold_vietnamese_to_ascii)
+            .collect()
+    })
+}
+
+/// Returns `true` if a pure-ASCII lowercase token is the diacritic-stripped form
+/// of a valid Vietnamese dictionary syllable (e.g. `biet` for `biết`/`biệt`,
+/// `viet` for `viết`/`việt`, `duoc` for `được`). Prevents edit-1 autocorrect
+/// from mangling bare/unmarked checked syllables into unrelated words (`biet -> bít`).
+pub(crate) fn is_bare_vietnamese_syllable(word_lower: &str) -> bool {
+    word_lower.is_ascii() && bare_vietnamese_dict().contains(word_lower)
+}
+
 fn is_common_vietnamese_shorthand(lower: &str) -> bool {
     matches!(lower, "đc" | "đk" | "đh" | "đt" | "đn" | "đv" | "đb" | "đm")
 }

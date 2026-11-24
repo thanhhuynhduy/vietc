@@ -21,7 +21,7 @@ const EXTENDED_ENGLISH_WORDS_RAW: &str = include_str!("english_extended.txt");
 /// Users who genuinely want the rare Vietnamese bound syllable (e.g. `"lét"` in
 /// `"lét đét"`) can press Backspace once after Space (Gboard undo) to keep it.
 const UNCONDITIONAL_ENGLISH_COLLISIONS: &[&str] = &[
-    "of", "lets", "ops", "bots", "dots", "pets", "kits", "puts", "pats", "pits",
+    "of", "lets", "ops", "bots", "dots", "pets", "kits", "puts", "pats", "pits", "cost",
 ];
 
 const ENGLISH_DOMINANT_COLLISIONS: &[&str] = &[

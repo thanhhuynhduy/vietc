@@ -76,6 +76,18 @@ pub(crate) fn decide_should_restore(
         return false;
     }
     let (prev3, prev2, prev1) = last_three;
+    // Unambiguous English auxiliary pair across a Vietnamese-to-English code switch
+    // (`"anh ta has been"` where `"has"` was temporarily composed as `"há"`):
+    // restore `"been"` so retroactive 2-word correction rewrites `"há been" -> "has been"`.
+    if raw.eq_ignore_ascii_case("been")
+        && prev1.is_some_and(|e| {
+            !e.user_override_vn
+                && (e.raw_keys.eq_ignore_ascii_case("has")
+                    || e.raw_keys.eq_ignore_ascii_case("had"))
+        })
+    {
+        return true;
+    }
     if let Some(decision) = evaluate_trigram(
         prev2.map(|e| e.visible_word.as_str()),
         prev1.map(|e| e.visible_word.as_str()),

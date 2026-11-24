@@ -275,10 +275,12 @@ impl Daemon {
     pub fn reload_config(&mut self) -> bool {
         // Promote ~/.config/dboard/config.toml if the user created/saved it after
         // the daemon initially booted from /etc/dboard/config.toml (.deb install).
-        if let Some(user_cfg) = crate::config::user_config_path() {
-            if user_cfg != self.config_path && user_cfg.exists() {
-                self.config_path = user_cfg;
-                self.config_modified = std::time::UNIX_EPOCH;
+        if self.config_path.starts_with("/etc/") {
+            if let Some(user_cfg) = crate::config::user_config_path() {
+                if user_cfg != self.config_path && user_cfg.exists() {
+                    self.config_path = user_cfg;
+                    self.config_modified = std::time::UNIX_EPOCH;
+                }
             }
         }
         let modified = fs::metadata(&self.config_path)
@@ -294,16 +296,24 @@ impl Daemon {
                 self.engine
                     .set_auto_restore(new_config.auto_restore.enabled);
                 self.engine.set_autocorrect(new_config.autocorrect);
-                self.engine
-                    .set_keyboard_layout_name(&new_config.keyboard_layout);
                 if !new_config
                     .keyboard_layout
                     .eq_ignore_ascii_case(&self.config.keyboard_layout)
                 {
+                    // Keep `engine.keyboard_layout` aligned with the active session's
+                    // single-upload Wayland XKB keymap (`evdev_loop::active_layout`) until
+                    // the daemon restarts, preventing QWERTY/Dvorak spatial mismatch.
                     log_info(&format!(
-                        "[dboard] keyboard_layout changed '{}' -> '{}': autocorrect updated immediately; restart dboard.service to reload Wayland XKB keymap",
+                        "[dboard] keyboard_layout changed '{}' -> '{}': restart dboard.service to reload Wayland XKB keymap",
                         self.config.keyboard_layout, new_config.keyboard_layout
                     ));
+                    show_osd(
+                        "Dboard",
+                        &format!(
+                            "Layout '{}' saved — restart dboard.service to apply.",
+                            new_config.keyboard_layout
+                        ),
+                    );
                 }
                 self.engine.set_auto_capitalize(
                     new_config.auto_capitalize && !self.app_state.is_terminal_app(),

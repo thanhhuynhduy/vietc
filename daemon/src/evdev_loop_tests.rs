@@ -523,3 +523,49 @@ fn repeated_spaces_keep_ring_buffer_synced_on_backspace() {
     assert_eq!(daemon.engine.buffer(), "chào");
     assert!(!cmds.is_empty());
 }
+
+#[test]
+fn popup_click_pointer_absorption_guards_trailing_tap_without_hiding_real_clicks() {
+    let base = std::time::Instant::now();
+    let mut last_ptr = 10u64;
+    let mut last_popup_click = Some(base);
+
+    // 1. Single trailing +1 increment within 80ms is absorbed once
+    assert!(absorb_trailing_popup_pointer_activity(
+        11,
+        &mut last_ptr,
+        &mut last_popup_click,
+        base + std::time::Duration::from_millis(25),
+    ));
+    assert_eq!(last_ptr, 11);
+    assert!(last_popup_click.is_none());
+
+    // 2. Subsequent click immediately after absorption MUST reset composition
+    assert!(!absorb_trailing_popup_pointer_activity(
+        12,
+        &mut last_ptr,
+        &mut last_popup_click,
+        base + std::time::Duration::from_millis(30),
+    ));
+    assert_eq!(last_ptr, 12);
+
+    // 3. Increment >= 80ms after popup click MUST reset composition
+    let mut late_popup_click = Some(base);
+    assert!(!absorb_trailing_popup_pointer_activity(
+        13,
+        &mut last_ptr,
+        &mut late_popup_click,
+        base + std::time::Duration::from_millis(80),
+    ));
+    assert_eq!(last_ptr, 13);
+
+    // 4. Multi-click (+2) even within 80ms MUST reset composition
+    let mut multi_popup_click = Some(base);
+    assert!(!absorb_trailing_popup_pointer_activity(
+        15,
+        &mut last_ptr,
+        &mut multi_popup_click,
+        base + std::time::Duration::from_millis(10),
+    ));
+    assert_eq!(last_ptr, 15);
+}

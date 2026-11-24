@@ -499,6 +499,13 @@ pub(crate) fn suggest_correction_with_context(
         }
     }
 
+    // Protect pure-ASCII bare Vietnamese syllables (especially checked syllables
+    // ending in -p/-t/-c/-ch such as `biet`, `viet`, `duoc`, `truoc`, `cuoc`)
+    // from being spatially mangled into unrelated edit-1 words (`biet -> bít`).
+    if composed.is_ascii() && crate::spelling::is_bare_vietnamese_syllable(&raw_lower) {
+        return None;
+    }
+
     let chars: Vec<char> = raw_lower.chars().collect();
 
     // When already in English context, never corrupt OOV English/dev tokens into Vietnamese.
