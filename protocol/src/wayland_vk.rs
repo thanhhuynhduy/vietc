@@ -135,9 +135,25 @@ fn roundtrip_with_timeout(
                     format!("{label} timed out"),
                 ));
             }
-            if let Err(wayland_client::backend::WaylandError::Io(e)) = guard.read() {
-                if e.kind() != io::ErrorKind::WouldBlock {
-                    return Err(e);
+            if (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("{label} disconnected"),
+                ));
+            }
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(wayland_client::backend::WaylandError::Io(e)) => return Err(e),
+                Err(wayland_client::backend::WaylandError::Protocol(e)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!("{label} protocol error: {e}"),
+                    ));
                 }
             }
         }
@@ -477,14 +493,22 @@ impl WaylandVirtualKeyboard {
 
         match value {
             1 => {
+                let needs_sync = !sess.keymap_synced;
+                let lck = sess.phys_locked();
+                let dep = sess.phys_depressed();
+                if needs_sync && (lck & XKB_MOD_LOCK) != 0 {
+                    // Apply CapsLock before the key press so compositors that
+                    // honor `modifiers` immediately decode the first letter uppercase.
+                    sess.vk.modifiers(dep, 0, lck, 0);
+                }
                 let ts = sess.next_timestamp_ms();
                 sess.set_bit(keycode, true);
                 sess.vk.key(ts, keycode as u32, 1);
-                if !sess.keymap_synced {
+                if needs_sync {
                     sess.keymap_synced = true;
-                    let lck = sess.phys_locked();
                     if lck != 0 {
-                        let dep = sess.phys_depressed();
+                        // Also re-apply after the first key press for Smithay/COSMIC,
+                        // which resets `mods_locked` when swapping back to the VK keymap.
                         sess.vk.modifiers(dep, 0, lck, 0);
                     }
                 }

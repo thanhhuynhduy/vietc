@@ -316,7 +316,15 @@ pub(crate) fn adapt_macro_casing(raw_shortcut: &str, expansion: &str) -> String 
 pub(crate) fn is_vn_d_abbreviation(composed: &str, raw_lower: &str) -> bool {
     if (!composed.contains('Đ') && !composed.contains('đ'))
         || raw_lower == "ddos"
-        || raw_lower.bytes().any(|b| b.is_ascii_digit())
+        || composed.chars().any(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    if raw_lower.bytes().any(|b| b.is_ascii_digit())
+        && (!raw_lower.contains("d9")
+            || !raw_lower
+                .bytes()
+                .all(|b| b.is_ascii_alphabetic() || b == b'9'))
     {
         return false;
     }
@@ -393,7 +401,6 @@ pub(crate) fn resolve_coda_edit_canon(
 
 pub(crate) enum RehydrationDecision {
     Keep,
-    ReplaceRaw(String),
     ClearWord,
 }
 
@@ -414,12 +421,6 @@ pub(crate) fn evaluate_guarded_rehydration(
         && (is_tone_strip || crate::spelling::is_in_vietnamese_dictionary_or_prefix(&cand));
     if is_valid_mod {
         return RehydrationDecision::Keep;
-    }
-    if let Some(resolved) = resolve_coda_edit_canon(raw_buffer, ch, method, &compose) {
-        let edited = compose(&format!("{resolved}{ch}"));
-        if crate::spelling::is_in_vietnamese_dictionary_or_prefix(&edited) {
-            return RehydrationDecision::ReplaceRaw(resolved);
-        }
     }
     RehydrationDecision::ClearWord
 }

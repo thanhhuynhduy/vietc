@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMethod {
@@ -37,6 +38,15 @@ fn mark_rule(pattern: &str, result: &str, undo_behavior: Option<UndoBehavior>) -
 
 fn tone_map(entries: &[(char, char, &'static str)]) -> HashMap<char, (char, &'static str)> {
     entries.iter().map(|&(k, t, n)| (k, (t, n))).collect()
+}
+
+pub fn get_rules_ref(method: InputMethod) -> &'static InputMethodRules {
+    static TELEX_RULES: OnceLock<InputMethodRules> = OnceLock::new();
+    static VNI_RULES: OnceLock<InputMethodRules> = OnceLock::new();
+    match method {
+        InputMethod::Telex => TELEX_RULES.get_or_init(|| get_rules(InputMethod::Telex)),
+        InputMethod::Vni => VNI_RULES.get_or_init(|| get_rules(InputMethod::Vni)),
+    }
 }
 
 pub fn get_rules(method: InputMethod) -> InputMethodRules {

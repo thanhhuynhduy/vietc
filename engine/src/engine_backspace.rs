@@ -34,7 +34,8 @@ impl Engine {
     pub(super) fn handle_backspace(&mut self) -> Option<EngineEvent> {
         self.auto_cap.reset();
         self.last_dot_stem = None;
-        if self.saturated_until_flush {
+        if self.saturated_len > 0 {
+            self.saturated_len -= 1;
             self.previous_screen_len = None;
             return None;
         }

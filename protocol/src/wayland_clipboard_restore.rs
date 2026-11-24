@@ -120,12 +120,19 @@ fn roundtrip_with_deadline(
                     "Wayland compositor disconnected during restore",
                 ));
             }
-            if let Err(WaylandError::Io(e)) = guard.read() {
-                if !matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) {
-                    return Err(e);
+            match guard.read() {
+                Ok(_) => {}
+                Err(WaylandError::Io(e))
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(WaylandError::Io(e)) => return Err(e),
+                Err(WaylandError::Protocol(e)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!("Wayland protocol error during restore: {e}"),
+                    ));
                 }
             }
         }
@@ -426,11 +433,9 @@ fn serve_multi_mime_connection(
     }
     let _ = ready_tx.send(Ok(()));
 
-    let max_lifetime = Instant::now() + Duration::from_secs(300);
     while !state.cancelled
         && !aborted.load(Ordering::Acquire)
         && ACTIVE_RESTORE_GEN.load(Ordering::Acquire) == generation
-        && Instant::now() < max_lifetime
     {
         let _ = queue.flush();
         let Some(guard) = queue.prepare_read() else {

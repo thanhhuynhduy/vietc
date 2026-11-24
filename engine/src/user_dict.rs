@@ -206,7 +206,9 @@ impl UserDict {
             return;
         }
         if !self.learned_words.contains_key(&lower) {
-            while self.learned_words.len() >= MAX_USER_DICT_ENTRIES * 2 {
+            while self.pending_once.len() >= MAX_USER_DICT_ENTRIES * 2
+                || self.learned_words.len() >= MAX_USER_DICT_ENTRIES * 2
+            {
                 let Some(oldest) = self.pending_once.pop_front() else {
                     break;
                 };
@@ -242,7 +244,9 @@ impl UserDict {
         }
         let key = (l1, l2);
         if !self.personal_bigrams.contains_key(&key) {
-            while self.personal_bigrams.len() >= MAX_PERSONAL_BIGRAMS * 2 {
+            while self.pending_bigram_once.len() >= MAX_PERSONAL_BIGRAMS * 2
+                || self.personal_bigrams.len() >= MAX_PERSONAL_BIGRAMS * 2
+            {
                 let Some(oldest) = self.pending_bigram_once.pop_front() else {
                     break;
                 };
@@ -330,10 +334,17 @@ impl UserDict {
 
     pub fn record_keep_vn(&mut self, raw: &str) {
         let lower = raw.to_ascii_lowercase();
-        if !is_learnable_token(&lower) || self.len() >= MAX_USER_DICT_ENTRIES {
+        if !is_learnable_token(&lower) {
             return;
         }
-        self.keep_raw.remove(&lower);
+        if self.keep_vn.contains(&lower) {
+            return;
+        }
+        let freed = self.keep_raw.remove(&lower);
+        if !freed && self.len() >= MAX_USER_DICT_ENTRIES && !self.evict_lowest_promoted_word(&lower)
+        {
+            return;
+        }
         if self.keep_vn.insert(lower) {
             self.dirty = true;
         }
@@ -341,10 +352,17 @@ impl UserDict {
 
     pub fn record_keep_raw(&mut self, raw: &str) {
         let lower = raw.to_ascii_lowercase();
-        if !is_learnable_token(&lower) || self.len() >= MAX_USER_DICT_ENTRIES {
+        if !is_learnable_token(&lower) {
             return;
         }
-        self.keep_vn.remove(&lower);
+        if self.keep_raw.contains(&lower) {
+            return;
+        }
+        let freed = self.keep_vn.remove(&lower);
+        if !freed && self.len() >= MAX_USER_DICT_ENTRIES && !self.evict_lowest_promoted_word(&lower)
+        {
+            return;
+        }
         if self.keep_raw.insert(lower) {
             self.dirty = true;
         }
@@ -603,5 +621,27 @@ mod tests {
         ud.record_bigram_usage("freshpair", "learned");
         ud.record_bigram_usage("freshpair", "learned");
         assert!(ud.personal_bigram_bonus("freshpair", "learned") > 0);
+
+        // Long-session stress: pending queues stay strictly bounded and explicit
+        // One-Tap Undo overrides (`keep_vn`/`keep_raw`) evict auto-learned words.
+        for i in 0..5_000usize {
+            let mut w = String::from("q");
+            let mut n = i;
+            for _ in 0..5 {
+                w.push((b'a' + (n % 26) as u8) as char);
+                n /= 26;
+            }
+            ud.record_word_usage(&w);
+            ud.record_bigram_usage(&w, "next");
+        }
+        assert!(ud.pending_once.len() <= super::MAX_USER_DICT_ENTRIES * 2);
+        assert!(ud.pending_bigram_once.len() <= super::MAX_PERSONAL_BIGRAMS * 2);
+
+        ud.record_keep_vn("myoverridevn");
+        assert!(ud.is_keep_vn("myoverridevn"));
+        ud.record_keep_raw("myoverridevn");
+        assert!(ud.is_keep_raw("myoverridevn"));
+        assert!(!ud.is_keep_vn("myoverridevn"));
+        assert!(ud.len() <= super::MAX_USER_DICT_ENTRIES);
     }
 }

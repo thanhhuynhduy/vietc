@@ -120,27 +120,45 @@ impl TapTracker {
 
 fn scan_new(
     open_paths: &mut HashSet<std::path::PathBuf>,
+    rejected_cache: &mut std::collections::HashMap<std::path::PathBuf, (u64, i64)>,
 ) -> Vec<(std::path::PathBuf, evdev::Device, TapTracker)> {
+    use std::os::unix::fs::MetadataExt;
+
     let mut found = Vec::new();
     let Ok(entries) = std::fs::read_dir("/dev/input") else {
         return found;
     };
+    let mut seen_paths = HashSet::new();
     for entry in entries.flatten() {
         let path = entry.path();
         let is_event = path
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("event"));
-        if !is_event || open_paths.contains(&path) {
+        if !is_event {
             continue;
+        }
+        seen_paths.insert(path.clone());
+        if open_paths.contains(&path) {
+            continue;
+        }
+        let stamp = std::fs::metadata(&path).ok().map(|m| (m.ino(), m.ctime()));
+        if let Some(st) = stamp {
+            if rejected_cache.get(&path).copied() == Some(st) {
+                continue;
+            }
         }
         if let Ok(device) = evdev::Device::open(&path) {
             if is_pointer_device(&device) {
+                rejected_cache.remove(&path);
                 open_paths.insert(path.clone());
                 found.push((path, device, TapTracker::default()));
+            } else if let Some(st) = stamp {
+                rejected_cache.insert(path, st);
             }
         }
     }
+    rejected_cache.retain(|p, _| seen_paths.contains(p));
     found
 }
 
@@ -153,6 +171,8 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
     let shared = counter.clone();
     std::thread::spawn(move || {
         let mut open_paths: HashSet<std::path::PathBuf> = HashSet::new();
+        let mut rejected_cache: std::collections::HashMap<std::path::PathBuf, (u64, i64)> =
+            std::collections::HashMap::new();
         let mut devices: Vec<(std::path::PathBuf, evdev::Device, TapTracker)> = Vec::new();
         let mut last_scan: Option<Instant> = None;
         loop {
@@ -161,7 +181,7 @@ pub fn spawn_pointer_watcher(shared_focus: crate::focus::SharedFocusSnapshot) ->
             }
             if last_scan.is_none_or(|t| t.elapsed() >= RESCAN_INTERVAL) {
                 last_scan = Some(Instant::now());
-                devices.extend(scan_new(&mut open_paths));
+                devices.extend(scan_new(&mut open_paths, &mut rejected_cache));
             }
             if devices.is_empty() {
                 std::thread::sleep(Duration::from_millis(500));

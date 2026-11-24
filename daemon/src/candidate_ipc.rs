@@ -169,6 +169,7 @@ pub struct CandidateBroadcaster {
 
 impl Drop for CandidateBroadcaster {
     fn drop(&mut self) {
+        self.hide();
         if let Some(path) = self.select_path.take() {
             let _ = std::fs::remove_file(path);
         }
@@ -434,5 +435,34 @@ mod tests {
         assert_eq!(current_caret_rect(), Some((0, 0, 18)));
         record_caret_rect(None);
         assert_eq!(current_caret_rect(), None);
+    }
+
+    #[test]
+    fn drop_broadcaster_hides_visible_popup() {
+        let dir = std::env::temp_dir().join(format!("dboard_cand_drop_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let sock_path = dir.join("candidates.sock");
+        let _ = std::fs::remove_file(&sock_path);
+        let receiver = UnixDatagram::bind(&sock_path).unwrap();
+        receiver.set_nonblocking(true).unwrap();
+
+        let mut buf = [0u8; 256];
+        {
+            let mut bc = CandidateBroadcaster::with_path(true, sock_path.clone());
+            bc.sync_from_engine(false, "tiếng", "tieengs", None);
+            let n = receiver.recv(&mut buf).unwrap();
+            assert!(std::str::from_utf8(&buf[..n])
+                .unwrap()
+                .contains("\"visible\":true"));
+        }
+        // Dropping the broadcaster on daemon shutdown MUST emit a Hide packet.
+        let n = receiver.recv(&mut buf).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&buf[..n]).unwrap(),
+            r#"{"v":1,"visible":false,"candidates":[]}"#
+        );
+
+        drop(receiver);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -395,28 +395,33 @@ pub fn resolve(raw: &[char]) -> MarkResolution {
         .enumerate()
         .filter_map(|(i, &ch)| (lower(ch) == 'w').then_some(i))
         .collect::<Vec<_>>();
-    if w_positions.len() >= 2 && consumed[w_positions[0]] && w_positions[0] + 1 == w_positions[1] {
+    if let Some((pair_idx, pair)) = w_positions
+        .windows(2)
+        .enumerate()
+        .find(|(_, pair)| pair[0] + 1 == pair[1] && consumed[pair[0]])
+    {
+        let first_w = pair[0];
         let last_applies_distinct_mark = marks
             .iter()
             .enumerate()
-            .any(|(index, mark)| index > w_positions[0] && *mark != VowelMark::None);
+            .any(|(index, mark)| index > first_w && *mark != VowelMark::None);
         if !last_applies_distinct_mark {
             for (v_idx, mark) in marks.iter_mut().enumerate() {
                 if matches!(mark, VowelMark::Breve | VowelMark::Horn) {
                     *mark = VowelMark::None;
-                    // If a duplicate vowel between `v_idx` and `w_positions[0]`
+                    // If a duplicate vowel between `v_idx` and `first_w`
                     // was consumed by an earlier circumflex overridden by `w`
                     // (e.g. `aaww` -> `aaw`, `ooww` -> `oow`), restore it.
                     let base = lower(raw[v_idx]);
-                    for k in (v_idx + 1)..w_positions[0] {
+                    for k in (v_idx + 1)..first_w {
                         if lower(raw[k]) == base && consumed[k] {
                             consumed[k] = false;
                         }
                     }
                 }
             }
-            consumed[w_positions[0]] = true;
-            for &pos in &w_positions[1..] {
+            consumed[first_w] = true;
+            for &pos in &w_positions[pair_idx + 1..] {
                 consumed[pos] = false;
             }
             mark_undone = true;

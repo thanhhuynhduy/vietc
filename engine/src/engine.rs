@@ -76,7 +76,7 @@ pub struct Engine {
     boundary: BoundaryState,
     last_transition: Option<TransitionKind>,
     last_boundary_char: Option<char>,
-    pub(super) saturated_until_flush: bool,
+    pub(super) saturated_len: usize,
 }
 
 impl Engine {
@@ -121,7 +121,7 @@ impl Engine {
             boundary: BoundaryState::Committed,
             last_transition: None,
             last_boundary_char: None,
-            saturated_until_flush: false,
+            saturated_len: 0,
         }
     }
 
@@ -260,7 +260,7 @@ impl Engine {
         self.last_dot_stem = None;
         self.pending_restore_undo = None;
         self.last_boundary_char = None;
-        self.saturated_until_flush = false;
+        self.saturated_len = 0;
         self.auto_cap.reset();
     }
 
@@ -275,7 +275,7 @@ impl Engine {
         self.clear_word_only();
         self.last_dot_stem = None;
         self.pending_restore_undo = None;
-        self.saturated_until_flush = false;
+        self.saturated_len = 0;
         if chosen.is_empty() {
             return;
         }
@@ -363,7 +363,7 @@ impl Engine {
         self.last_dot_stem = None;
         self.last_boundary_char = None;
         self.pending_restore_undo = None;
-        self.saturated_until_flush = false;
+        self.saturated_len = 0;
         self.auto_cap.reset();
         self.boundary = BoundaryState::Invalidated;
         self.last_transition = Some(TransitionKind::Invalidate);
@@ -443,7 +443,7 @@ impl Engine {
         self.pending_restore_undo = None;
 
         if is_flush_char(ch) {
-            self.saturated_until_flush = false;
+            self.saturated_len = 0;
             let prev_boundary = self.last_boundary_char;
             self.last_boundary_char = Some(ch);
             let prev_word = (!self.raw_buffer.is_empty()).then_some(self.raw_buffer.as_str());
@@ -516,6 +516,8 @@ impl Engine {
             let user_override = self.override_keep_vietnamese;
             let prior_context = self.prev_context;
             let had_pasted_prefix = !self.pasted_prefix.is_empty();
+            let was_undone = self.bamboo.was_undone_in_word()
+                || self.last_transition == Some(TransitionKind::UndoActive);
             self.clear_word_only();
             self.last_transition = Some(TransitionKind::Commit);
 
@@ -536,6 +538,7 @@ impl Engine {
                     && ch == ' '
                     && !had_pasted_prefix
                     && !user_override
+                    && !was_undone
                     && !self.user_dict.is_keep_raw(&raw)
                     && !matches!(prev_boundary, Some('_' | '/' | '\\' | '.'))
                 {
@@ -756,10 +759,6 @@ impl Engine {
                     |r| self.compose_candidate(r),
                 ) {
                     crate::engine_helpers::RehydrationDecision::Keep => {}
-                    crate::engine_helpers::RehydrationDecision::ReplaceRaw(resolved) => {
-                        self.raw_buffer = resolved;
-                        self.replay_bamboo_from_raw();
-                    }
                     crate::engine_helpers::RehydrationDecision::ClearWord => {
                         self.clear_word_only();
                     }
@@ -786,15 +785,17 @@ impl Engine {
             return None;
         }
 
-        if self.saturated_until_flush {
+        if self.saturated_len > 0 {
+            self.saturated_len = self.saturated_len.saturating_add(1);
             self.previous_screen_len = None;
             return None;
         }
 
         if self.raw_buffer.chars().count() >= 64 {
+            let current_len = self.composed_tail().chars().count();
             self.clear_word_only();
             self.ring_buffer.clear();
-            self.saturated_until_flush = true;
+            self.saturated_len = current_len.saturating_add(1);
             return None;
         }
 

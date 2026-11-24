@@ -348,6 +348,18 @@ impl Daemon {
                     new_config.password_detection.password_apps.clone(),
                 );
 
+                if new_config.app_state.enabled {
+                    let desired =
+                        self.app_state.get_default_state() && !self.app_state.is_password_active();
+                    if self.engine.is_enabled() != desired {
+                        self.engine.set_enabled(desired);
+                        self.write_status();
+                    }
+                } else if self.app_state.is_password_active() && self.engine.is_enabled() {
+                    self.engine.set_enabled(false);
+                    self.write_status();
+                }
+
                 self.grab_enabled = new_config.grab;
                 if new_config.candidate_bar != self.config.candidate_bar {
                     self.candidate_ipc.hide();

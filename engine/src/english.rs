@@ -482,7 +482,8 @@ pub(crate) fn should_restore_word_decision(
     }
 
     if has_mixed_internal_caps(raw, composed)
-        || is_alphanumeric_tech_token(raw)
+        || (is_alphanumeric_tech_token(raw)
+            && !crate::engine_helpers::is_vn_d_abbreviation(composed, &raw_lower))
         || is_english_allcaps_acronym(raw, &raw_lower)
         || has_multi_tone_overwrite_anomaly(raw, composed)
     {

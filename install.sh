@@ -133,6 +133,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 INSTALLING_USER="${SUDO_USER:-$USER}"
+U_UID="$(id -u "$INSTALLING_USER" 2>/dev/null || true)"
 
 cleanup_legacy_uinput_socket() {
     local user_home
@@ -401,8 +402,8 @@ else
 fi
 
 # Stop systemd service & running processes before replacing binaries
-if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && [ -n "${U_UID:-}" ] && [ -S "/run/user/$U_UID/bus" ]; then
-    sudo -u "$REAL_USER" XDG_RUNTIME_DIR="/run/user/$U_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
+if [ -n "$INSTALLING_USER" ] && [ "$INSTALLING_USER" != "root" ] && [ -n "${U_UID:-}" ] && [ -S "/run/user/$U_UID/bus" ]; then
+    sudo -u "$INSTALLING_USER" XDG_RUNTIME_DIR="/run/user/$U_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$U_UID/bus" \
         systemctl --user stop dboard.service 2>/dev/null || true
 fi
 pkill -x dboard-tray 2>/dev/null || true

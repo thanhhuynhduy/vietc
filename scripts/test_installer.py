@@ -73,6 +73,20 @@ class InstallerPathTests(unittest.TestCase):
         )
         self.assertIn('env PATH="$CARGO_HOME/bin:$PATH"', source)
 
+    def test_installer_stops_systemd_service_with_initialized_user_and_uid(self):
+        source = (ROOT / "install.sh").read_text()
+        uid_init = source.find('U_UID="$(id -u "$INSTALLING_USER"')
+        stop_pos = source.find("systemctl --user stop dboard.service")
+        self.assertGreater(uid_init, 0, "U_UID must be resolved from INSTALLING_USER")
+        self.assertGreater(stop_pos, uid_init, "U_UID must be initialized before stopping dboard.service")
+        stop_block = source[stop_pos - 260 : stop_pos + 80]
+        self.assertIn("$INSTALLING_USER", stop_block)
+        self.assertNotIn("$REAL_USER", stop_block)
+
+    def test_uninstaller_cleans_popup_lock_file(self):
+        source = (ROOT / "uninstall.sh").read_text()
+        self.assertIn('"/run/user/$U_UID/dboard-popup.lock"', source)
+
 
 class StartupFileTests(unittest.TestCase):
     def test_installer_does_not_modify_shell_startup_files_as_root(self):

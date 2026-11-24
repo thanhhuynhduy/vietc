@@ -15,6 +15,14 @@ const PASTE_OBSERVATION_DELAY: Duration = Duration::from_millis(20);
 const CLIPBOARD_TRACE_LIMIT: usize = 128;
 static CLIPBOARD_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(feature = "wayland-protocol")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreOutcome {
+    Restored,
+    Superseded,
+    Failed,
+}
+
 pub(super) fn trace_clipboard(sequence_id: u64, phase: &str, detail: &str) {
     let trace_index = CLIPBOARD_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
     if trace_index < CLIPBOARD_TRACE_LIMIT {
@@ -207,21 +215,13 @@ impl UinputInjector {
                 let Ok(mut cmd) = Self::user_cmd("wl-copy") else {
                     return false;
                 };
-                use std::io::Write;
-                cmd.args(["--type", mime])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                let Ok(mut child) = cmd.spawn() else {
-                    return false;
+                cmd.args(["--type", mime]);
+                let timeout = if bytes.len() >= 1024 * 1024 {
+                    Duration::from_millis(1500)
+                } else {
+                    Duration::from_millis(250)
                 };
-                if let Some(mut stdin) = child.stdin.take() {
-                    let _ = stdin.write_all(bytes);
-                }
-                std::thread::spawn(move || {
-                    let _ = child.wait();
-                });
-                true
+                crate::clipboard_command::run_copy(cmd, bytes, timeout)
             }
         }
     }
@@ -523,44 +523,64 @@ impl UinputInjector {
 
     #[cfg(feature = "wayland-protocol")]
     fn restore_wayland_clipboard(backup: &WaylandClipboardBackup) -> bool {
-        Self::restore_wayland_clipboard_guarded(backup, || true)
+        Self::restore_wayland_clipboard_guarded(backup, || true) == RestoreOutcome::Restored
     }
 
     #[cfg(feature = "wayland-protocol")]
     fn restore_wayland_clipboard_guarded(
         backup: &WaylandClipboardBackup,
         should_proceed: impl Fn() -> bool,
-    ) -> bool {
+    ) -> RestoreOutcome {
         use crate::clipboard_command::run_copy;
         const RESTORE_STEP_TIMEOUT: Duration = Duration::from_millis(250);
         if !should_proceed() {
-            return true;
+            return RestoreOutcome::Superseded;
         }
+        let step_result = |ok: bool| {
+            if ok {
+                RestoreOutcome::Restored
+            } else if !should_proceed() {
+                RestoreOutcome::Superseded
+            } else {
+                RestoreOutcome::Failed
+            }
+        };
         match backup {
             WaylandClipboardBackup::Text(text) => {
-                Self::user_cmd("wl-copy").ok().is_some_and(|mut command| {
-                    if !should_proceed() {
-                        return true;
-                    }
-                    command.args(["--type", "text/plain;charset=utf-8"]);
-                    run_copy(command, text.as_bytes(), RESTORE_STEP_TIMEOUT)
-                        && (!should_proceed() || Self::wait_for_clipboard_value(text))
-                })
+                let Ok(mut command) = Self::user_cmd("wl-copy") else {
+                    return RestoreOutcome::Failed;
+                };
+                if !should_proceed() {
+                    return RestoreOutcome::Superseded;
+                }
+                command.args(["--type", "text/plain;charset=utf-8"]);
+                if !run_copy(command, text.as_bytes(), RESTORE_STEP_TIMEOUT) {
+                    return step_result(false);
+                }
+                if !should_proceed() {
+                    return RestoreOutcome::Superseded;
+                }
+                step_result(Self::wait_for_clipboard_value(text))
             }
             WaylandClipboardBackup::NonText(NonTextClipboard::Empty) => {
-                Self::user_cmd("wl-copy").ok().is_some_and(|mut command| {
-                    if !should_proceed() {
-                        return true;
-                    }
-                    command.arg("--clear");
-                    run_copy(command, &[], RESTORE_STEP_TIMEOUT)
-                        && (!should_proceed()
-                            || Self::clipboard_types().is_some_and(|types| types.is_empty()))
-                })
+                let Ok(mut command) = Self::user_cmd("wl-copy") else {
+                    return RestoreOutcome::Failed;
+                };
+                if !should_proceed() {
+                    return RestoreOutcome::Superseded;
+                }
+                command.arg("--clear");
+                if !run_copy(command, &[], RESTORE_STEP_TIMEOUT) {
+                    return step_result(false);
+                }
+                if !should_proceed() {
+                    return RestoreOutcome::Superseded;
+                }
+                step_result(Self::clipboard_types().is_some_and(|types| types.is_empty()))
             }
             WaylandClipboardBackup::NonText(NonTextClipboard::MultiMime(entries)) => {
                 if !should_proceed() {
-                    return true;
+                    return RestoreOutcome::Superseded;
                 }
                 if crate::wayland_clipboard_restore::restore_multi_mime_native(
                     entries.clone(),
@@ -568,30 +588,37 @@ impl UinputInjector {
                 )
                 .is_ok()
                 {
-                    return true;
+                    return RestoreOutcome::Restored;
                 }
                 if !should_proceed() {
-                    return true;
+                    return RestoreOutcome::Superseded;
                 }
                 let Some((mime, bytes)) = entries.first() else {
-                    return false;
+                    return RestoreOutcome::Failed;
                 };
                 let Ok(mut command) = Self::user_cmd("wl-copy") else {
-                    return false;
+                    return RestoreOutcome::Failed;
                 };
                 command.args(["--type", mime]);
-                if !run_copy(command, bytes, RESTORE_STEP_TIMEOUT) {
-                    return false;
+                let step_timeout = if bytes.len() >= 1024 * 1024 {
+                    Duration::from_millis(1500)
+                } else {
+                    RESTORE_STEP_TIMEOUT
+                };
+                if !run_copy(command, bytes, step_timeout) {
+                    return step_result(false);
                 }
                 if !should_proceed() {
-                    return true;
+                    return RestoreOutcome::Superseded;
                 }
                 let Ok(mut verify) = Self::user_cmd("wl-paste") else {
-                    return false;
+                    return RestoreOutcome::Failed;
                 };
                 verify.args(["--no-newline", "--type", mime]);
-                Self::run_cmd_with_timeout(verify, RESTORE_STEP_TIMEOUT)
-                    .is_some_and(|output| output.status.success() && output.stdout == *bytes)
+                step_result(
+                    Self::run_cmd_with_timeout(verify, step_timeout)
+                        .is_some_and(|output| output.status.success() && output.stdout == *bytes),
+                )
             }
         }
     }
@@ -764,27 +791,42 @@ impl UinputInjector {
                                 restore_gen.load(Ordering::Acquire) == expected_gen
                                     && entry.offer.ownership() == Ownership::Owned
                             };
-                            let ok = match entry.offer.ownership() {
+                            let outcome = match entry.offer.ownership() {
                                 Ownership::Owned => Self::restore_wayland_clipboard_guarded(
                                     &entry.backup,
                                     should_proceed,
                                 ),
-                                Ownership::Replaced => true,
-                                Ownership::Unavailable => false,
+                                Ownership::Replaced => RestoreOutcome::Restored,
+                                Ownership::Unavailable => RestoreOutcome::Failed,
                             };
-                            if ok {
-                                entry.offer.request_retire();
-                                let mut retired =
-                                    retired_slot.lock().unwrap_or_else(|p| p.into_inner());
-                                retired.retain(|offer| !offer.is_finished());
-                                retired.push(entry.offer);
-                                return;
-                            }
-                            let mut slot = paste_slot.lock().unwrap_or_else(|p| p.into_inner());
-                            if slot.is_none() {
-                                *slot = Some(entry);
-                            } else {
-                                return;
+                            match outcome {
+                                RestoreOutcome::Restored => {
+                                    entry.offer.request_retire();
+                                    let mut retired =
+                                        retired_slot.lock().unwrap_or_else(|p| p.into_inner());
+                                    retired.retain(|offer| !offer.is_finished());
+                                    retired.push(entry.offer);
+                                    return;
+                                }
+                                RestoreOutcome::Superseded => {
+                                    // A newer paste superseded this restore while we held `io_lock`:
+                                    // put `entry` back so the newer paste reuses the original backup.
+                                    let mut slot =
+                                        paste_slot.lock().unwrap_or_else(|p| p.into_inner());
+                                    if slot.is_none() {
+                                        *slot = Some(entry);
+                                    }
+                                    return;
+                                }
+                                RestoreOutcome::Failed => {
+                                    let mut slot =
+                                        paste_slot.lock().unwrap_or_else(|p| p.into_inner());
+                                    if slot.is_none() {
+                                        *slot = Some(entry);
+                                    } else {
+                                        return;
+                                    }
+                                }
                             }
                         }
                     });

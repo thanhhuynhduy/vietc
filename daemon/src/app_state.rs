@@ -248,11 +248,24 @@ fn parse_wlrctl_focused_app_id(stdout: &str) -> Option<String> {
 }
 
 fn get_wayland_window_class() -> Option<String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WLRCTL_MISSING: AtomicBool = AtomicBool::new(false);
+    if WLRCTL_MISSING.load(Ordering::Relaxed) {
+        return None;
+    }
     // Try wlr-foreign-toplevel-management protocol via wlrctl filtered to focused toplevel
-    let output = Command::new("wlrctl")
+    let output = match Command::new("wlrctl")
         .args(["toplevel", "list", "state:focused"])
         .output()
-        .ok()?;
+    {
+        Ok(out) => out,
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                WLRCTL_MISSING.store(true, Ordering::Relaxed);
+            }
+            return None;
+        }
+    };
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);

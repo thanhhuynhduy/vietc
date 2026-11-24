@@ -193,7 +193,8 @@ if [ -n "$U_UID" ]; then
     rm -f "/tmp/dboard-daemon-$U_UID.lock" "/tmp/dboard-tray-$U_UID.lock" \
           "/tmp/dboard-status-$U_UID" "/tmp/dboard-method-$U_UID" \
           "/tmp/dboard-$U_UID.log" "/tmp/dboard-$U_UID.log.old"
-    rm -f "/run/user/$U_UID/dboard-daemon.lock" "/run/user/$U_UID/dboard-tray.lock"
+    rm -f "/run/user/$U_UID/dboard-daemon.lock" "/run/user/$U_UID/dboard-tray.lock" \
+          "/run/user/$U_UID/dboard-popup.lock"
     rm -rf "/run/user/$U_UID/dboard"
 fi
 

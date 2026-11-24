@@ -288,6 +288,7 @@ pub fn run_with_evdev(
     let key_activity_seq = initial_focus.key_activity_signal();
     let mut focus_sync = crate::focus_sync::FocusSyncState::from_initial(initial_focus);
     let mut last_terminal_enter_at: Option<std::time::Instant> = None;
+    let mut last_terminal_key_at: Option<std::time::Instant> = None;
     let mut last_pty_refresh_at: Option<std::time::Instant> = None;
     let mut toggle_consumed_keys: HashSet<u16> = HashSet::new();
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
@@ -411,6 +412,16 @@ pub fn run_with_evdev(
 
         if poll_ret == 0 {
             focus_sync.sync_on_idle(daemon, &*injector, &shared_focus);
+            let pointer_now = pointer_activity.load(Ordering::SeqCst);
+            if !absorb_trailing_popup_pointer_activity(
+                pointer_now,
+                &mut last_pointer_activity,
+                &mut last_popup_click_at,
+                std::time::Instant::now(),
+            ) {
+                daemon.reset_composition_state();
+                clear_omnibox_shield(&*injector, &shared_focus);
+            }
             if daemon.config.candidate_bar && daemon.engine.is_enabled() {
                 if daemon.engine.buffer().is_empty() {
                     let surrounding = crate::focus::peek_surrounding_context(
@@ -445,6 +456,7 @@ pub fn run_with_evdev(
                     && daemon.engine.is_enabled()
                     && !injector.has_uncertain_edit()
                 {
+                    key_activity_seq.fetch_add(1, Ordering::AcqRel);
                     let buf_before = daemon.engine.buffer().chars().count();
                     let commands = daemon.select_candidate(idx);
                     crate::focus::clear_surrounding_word(&shared_focus);
@@ -602,20 +614,31 @@ pub fn run_with_evdev(
                     if daemon.config.password_detection.enabled
                         && daemon.app_state.is_terminal_app()
                     {
+                        let now = std::time::Instant::now();
                         if matches!(key, evdev::KeyCode::KEY_ENTER | evdev::KeyCode::KEY_KPENTER) {
-                            last_terminal_enter_at = Some(std::time::Instant::now());
+                            last_terminal_enter_at = Some(now);
                             last_pty_refresh_at = None;
-                        } else if !crate::password_detector::cached_pty_no_echo()
-                            && last_terminal_enter_at.is_some_and(|at| {
-                                at.elapsed() < std::time::Duration::from_millis(2000)
-                            })
-                            && last_pty_refresh_at.is_none_or(|at| {
-                                at.elapsed() >= std::time::Duration::from_millis(20)
-                            })
-                        {
-                            last_pty_refresh_at = Some(std::time::Instant::now());
-                            crate::password_detector::refresh_pty_no_echo_now();
+                        } else if !crate::password_detector::cached_pty_no_echo() {
+                            let post_enter = last_terminal_enter_at.is_some_and(|at| {
+                                now.saturating_duration_since(at)
+                                    < std::time::Duration::from_millis(2000)
+                            }) && last_pty_refresh_at.is_none_or(|at| {
+                                now.saturating_duration_since(at)
+                                    >= std::time::Duration::from_millis(20)
+                            });
+                            let after_pause = last_terminal_key_at.is_none_or(|at| {
+                                now.saturating_duration_since(at)
+                                    >= std::time::Duration::from_millis(150)
+                            }) && last_pty_refresh_at.is_none_or(|at| {
+                                now.saturating_duration_since(at)
+                                    >= std::time::Duration::from_millis(50)
+                            });
+                            if post_enter || after_pause {
+                                last_pty_refresh_at = Some(now);
+                                crate::password_detector::refresh_pty_no_echo_now();
+                            }
                         }
+                        last_terminal_key_at = Some(now);
                     }
                     focus_sync.sync_on_key_press(daemon, &*injector, &shared_focus);
                 }
@@ -647,6 +670,9 @@ pub fn run_with_evdev(
 
                 // Completely bypass all IME processing for remote desktops, VM viewers and games
                 if daemon.is_current_app_bypassed() {
+                    if value == 0 {
+                        toggle_consumed_keys.remove(&keycode);
+                    }
                     if consume_released_or_repeated_key(&mut consumed_keys, keycode, value) {
                         continue;
                     }
@@ -910,6 +936,7 @@ pub fn run_with_evdev(
                                     focus_sync.last_focus_generation,
                                     &key_state,
                                 );
+                                clear_omnibox_shield(&*injector, &shared_focus);
                                 daemon.handle_transaction_outcome(outcome);
                             }
                         }
@@ -973,22 +1000,24 @@ pub fn run_with_evdev(
                                     focus_sync.last_focus_generation,
                                     &key_state,
                                 );
-                                if !daemon.handle_transaction_outcome(outcome) {
+                                clear_omnibox_shield(&*injector, &shared_focus);
+                                let tx_ok = daemon.handle_transaction_outcome(outcome);
+                                if !tx_ok {
                                     log_info("[dboard] grabbed injection failed");
                                 }
 
-                                if key == evdev::KeyCode::KEY_SPACE
-                                    && !is_modifier_held_shift(&key_state)
-                                    && daemon.engine.is_enabled()
-                                {
-                                    clear_omnibox_shield(&*injector, &shared_focus);
-                                    let _ = injector.send_char(' ');
-                                    consumed_keys.insert(keycode);
-                                } else if is_flush_char(ch) && daemon.engine.is_enabled() {
-                                    clear_omnibox_shield(&*injector, &shared_focus);
-                                    injector.send_key_event(keycode, 1);
-                                    injector.send_key_event(keycode, 0);
-                                    consumed_keys.insert(keycode);
+                                if tx_ok && !injector.has_uncertain_edit() {
+                                    if key == evdev::KeyCode::KEY_SPACE
+                                        && !is_modifier_held_shift(&key_state)
+                                        && daemon.engine.is_enabled()
+                                    {
+                                        let _ = injector.send_char(' ');
+                                        consumed_keys.insert(keycode);
+                                    } else if is_flush_char(ch) && daemon.engine.is_enabled() {
+                                        injector.send_key_event(keycode, 1);
+                                        injector.send_key_event(keycode, 0);
+                                        consumed_keys.insert(keycode);
+                                    }
                                 }
                             } else if daemon.engine.is_enabled()
                                 && is_vn_control_key(daemon.app_state.effective_method(), ch)

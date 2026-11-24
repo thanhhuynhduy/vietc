@@ -339,6 +339,24 @@ pub(crate) fn atspi_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(test)]
+pub(crate) fn set_atspi_password_focused_for_test(active: bool, age_ms: u64) {
+    ATSPI_OBSERVED_FOCUS.store(true, Ordering::Release);
+    ATSPI_FOCUSED_IS_PASSWORD.store(active, Ordering::Release);
+    if let Ok(mut guard) = atspi_password_set_at().lock() {
+        *guard = if active {
+            Instant::now().checked_sub(Duration::from_millis(age_ms))
+        } else {
+            None
+        };
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn is_atspi_password_focused_for_test() -> bool {
+    ATSPI_FOCUSED_IS_PASSWORD.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

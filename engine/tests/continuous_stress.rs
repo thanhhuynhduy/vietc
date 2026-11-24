@@ -217,27 +217,30 @@ fn continuous_50k_keystrokes_without_reset_zero_drift_telex_and_vni() {
     );
 
     latencies_ns.sort_unstable();
+    vni_latencies.sort_unstable();
     let p50_us = latencies_ns[latencies_ns.len() / 2] as f64 / 1_000.0;
     let p99_us = latencies_ns[(latencies_ns.len() * 99) / 100] as f64 / 1_000.0;
+    let vni_p50_us = vni_latencies[vni_latencies.len() / 2] as f64 / 1_000.0;
+    let vni_p99_us = vni_latencies[(vni_latencies.len() * 99) / 100] as f64 / 1_000.0;
     eprintln!(
-        "[dboard continuous_stress] total_keys={total_keys} (0 resets) telex_p50={p50_us:.2}us telex_p99={p99_us:.2}us"
+        "[dboard continuous_stress] total_keys={total_keys} (0 resets) telex_p50={p50_us:.2}us telex_p99={p99_us:.2}us vni_p50={vni_p50_us:.2}us vni_p99={vni_p99_us:.2}us"
     );
 
     // Performance gate matching docs/dboard-gboard-parity-plan.md (Section 0.6):
     // Release builds must stay strictly below `p50 < 2.0us` and `p99 < 10.0us`.
     if cfg!(debug_assertions) {
         assert!(
-            p99_us <= 2_000.0,
-            "debug continuous un-reset p99 latency {p99_us:.2}us exceeded 2000.0us"
+            p99_us <= 2_000.0 && vni_p99_us <= 2_000.0,
+            "debug continuous un-reset p99 latency exceeded 2000.0us (telex={p99_us:.2}us, vni={vni_p99_us:.2}us)"
         );
     } else {
         assert!(
-            p50_us < 2.0,
-            "release continuous un-reset p50 latency {p50_us:.2}us exceeded 2.0us gate"
+            p50_us < 2.0 && vni_p50_us < 2.0,
+            "release continuous un-reset p50 latency exceeded 2.0us gate (telex={p50_us:.2}us, vni={vni_p50_us:.2}us)"
         );
         assert!(
-            p99_us < 10.0,
-            "release continuous un-reset p99 latency {p99_us:.2}us exceeded 10.0us gate"
+            p99_us < 10.0 && vni_p99_us < 10.0,
+            "release continuous un-reset p99 latency exceeded 10.0us gate (telex={p99_us:.2}us, vni={vni_p99_us:.2}us)"
         );
     }
 }
@@ -292,8 +295,29 @@ fn adversarial_chaos_stress_eviction_overflow_paste_and_vni_ac() {
     run_segment(
         &mut engine,
         &mut lat,
-        "chay5 test1 last1 cast1 best1 rest1 log1 host1 ban1 can61 tieng71 khonhg6 ",
-        "chạy test1 last1 cast1 best1 rest1 log1 host1 bán cấn tiếng không ",
+        "chay5 test1 last1 cast1 best1 rest1 log1 host1 ban1 can61 tieng71 khonhg6 huou77 QD9-TTg ",
+        "chạy test1 last1 cast1 best1 rest1 log1 host1 bán cấn tiếng không huou7 QĐ-TTg ",
         "vni_ac_dev_tokens_and_typos",
+    );
+
+    // 3. Guarded rehydration after Space-only Backspace on `n`/`c`-ending words (Invariant 1),
+    //    64-char overflow + full Backspace recovery, and `uwoww` horn undo.
+    engine.set_method(InputMethod::Telex);
+    engine.reset();
+    run_segment(
+        &mut engine,
+        &mut lat,
+        "caanf \x08ms uwoww ",
+        "cầnms uow ",
+        "telex_rehydration_boundary_and_uwoww_undo",
+    );
+
+    let overflow_then_erase = format!("{}{}vieetj ", "a".repeat(65), "\x08".repeat(65));
+    run_segment(
+        &mut engine,
+        &mut lat,
+        &overflow_then_erase,
+        "việt ",
+        "telex_overflow_full_backspace_recovers_composition",
     );
 }

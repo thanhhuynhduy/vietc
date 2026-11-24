@@ -136,10 +136,10 @@ impl FocusSyncState {
                 new_target,
             ));
             self.last_focus_target = new_target;
+            crate::password_detector::clear_atspi_password_flag_if_non_atspi(
+                focus.identity.as_deref(),
+            );
             if class_changed {
-                crate::password_detector::clear_atspi_password_flag_if_non_atspi(
-                    focus.identity.as_deref(),
-                );
                 self.last_window_class = active_window_class.clone();
             }
             daemon.reset_composition_state();
@@ -459,6 +459,37 @@ mod tests {
         assert!(
             daemon.engine.is_enabled(),
             "leaving password dialog with app_state.enabled=false must restore global state"
+        );
+    }
+
+    #[test]
+    fn same_class_focus_switch_clears_stale_atspi_password_flag() {
+        let _guard = crate::password_detector::atspi_test_lock();
+        let cfg = crate::config::Config::default();
+        let enabled = Arc::new(AtomicBool::new(true));
+        let mut daemon = Daemon::new(cfg, std::path::PathBuf::from("test.toml"), enabled);
+        let shared = Arc::new(Mutex::new(FocusSnapshot::default()));
+        let mut sync = FocusSyncState::from_initial(FocusSnapshot::default());
+        let inj = CountingInjector::new();
+
+        // Focus Firefox window A and simulate an expired AT-SPI password flag.
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("poller:win1".into()), Some("firefox".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        crate::password_detector::set_atspi_password_focused_for_test(true, 500);
+        assert!(crate::password_detector::is_atspi_password_focused_for_test());
+
+        // Switch to Firefox window B (same class, new focus identity -> focus_changed && !class_changed).
+        shared
+            .lock()
+            .unwrap()
+            .observe(Some("poller:win2".into()), Some("firefox".into()));
+        sync.sync_on_key_press(&mut daemon, &inj, &shared);
+        assert!(
+            !crate::password_detector::is_atspi_password_focused_for_test(),
+            "same-class non-AT-SPI focus switch must clear stale AT-SPI password flag"
         );
     }
 }

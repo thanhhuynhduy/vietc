@@ -462,3 +462,48 @@ fn reload_config_keeps_active_session_spatial_layout_aligned_with_boot_keymap() 
     }
     assert_eq!(screen, "không ");
 }
+
+#[test]
+fn reload_config_reevaluates_engine_enabled_for_active_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        "[app_state]\nenabled = true\nenglish_apps = []\nvietnamese_apps = [\"notepad\"]\n",
+    )
+    .unwrap();
+    let initial_cfg = Config::load_from(&cfg_path).unwrap();
+    let mut daemon = Daemon::new(
+        initial_cfg,
+        cfg_path.clone(),
+        Arc::new(AtomicBool::new(true)),
+    );
+    daemon.check_app_change_with("notepad".to_string());
+    assert!(daemon.engine.is_enabled());
+
+    // Add active app to english_apps and reload -> engine must disable immediately.
+    daemon.config_modified = std::time::UNIX_EPOCH;
+    std::fs::write(
+        &cfg_path,
+        "[app_state]\nenabled = true\nenglish_apps = [\"notepad\"]\nvietnamese_apps = []\n",
+    )
+    .unwrap();
+    assert!(daemon.reload_config());
+    assert!(
+        !daemon.engine.is_enabled(),
+        "reload_config must disable VN immediately when active app is added to english_apps"
+    );
+
+    // Remove active app from english_apps and reload -> engine must re-enable immediately.
+    daemon.config_modified = std::time::UNIX_EPOCH;
+    std::fs::write(
+        &cfg_path,
+        "[app_state]\nenabled = true\nenglish_apps = []\nvietnamese_apps = [\"notepad\"]\n",
+    )
+    .unwrap();
+    assert!(daemon.reload_config());
+    assert!(
+        daemon.engine.is_enabled(),
+        "reload_config must re-enable VN immediately when active app is removed from english_apps"
+    );
+}

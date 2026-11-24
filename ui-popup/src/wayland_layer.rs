@@ -515,9 +515,25 @@ fn roundtrip_with_timeout(
                     format!("{label} timed out"),
                 ));
             }
-            if let Err(wayland_client::backend::WaylandError::Io(e)) = guard.read() {
-                if e.kind() != io::ErrorKind::WouldBlock {
-                    return Err(e);
+            if (pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    format!("{label} disconnected"),
+                ));
+            }
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(wayland_client::backend::WaylandError::Io(e)) => return Err(e),
+                Err(wayland_client::backend::WaylandError::Protocol(e)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        format!("{label} protocol error: {e}"),
+                    ));
                 }
             }
         }
@@ -546,9 +562,30 @@ pub struct WaylandLayerBar {
     bound_output_name: Option<u32>,
 }
 
+fn connect_wayland_display() -> io::Result<Connection> {
+    if let Ok(conn) = Connection::connect_to_env() {
+        return Ok(conn);
+    }
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR not set"))?;
+    let runtime_path = std::path::Path::new(&runtime_dir);
+    for idx in 0..=10 {
+        let candidate = runtime_path.join(format!("wayland-{idx}"));
+        if let Ok(stream) = std::os::unix::net::UnixStream::connect(&candidate) {
+            if let Ok(conn) = Connection::from_socket(stream) {
+                return Ok(conn);
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no live Wayland display socket found",
+    ))
+}
+
 impl WaylandLayerBar {
     pub fn connect() -> io::Result<Self> {
-        let connection = Connection::connect_to_env().map_err(io::Error::other)?;
+        let connection = connect_wayland_display()?;
         let mut queue = connection.new_event_queue::<LayerState>();
         let qh = queue.handle();
         let _registry = connection.display().get_registry(&qh, ());

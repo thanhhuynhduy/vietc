@@ -568,4 +568,23 @@ fn popup_click_pointer_absorption_guards_trailing_tap_without_hiding_real_clicks
         base + std::time::Duration::from_millis(10),
     ));
     assert_eq!(last_ptr, 15);
+
+    // 5. Clicking a committed word (idle tick consumes pointer_activity, then
+    //    caret_reselection is populated): the subsequent Alt keypress sees
+    //    pointer_now == last_ptr and MUST NOT wipe caret_reselection.
+    let mut click_ptr = 20u64;
+    let mut no_popup_click = None;
+    assert!(!absorb_trailing_popup_pointer_activity(
+        21,
+        &mut click_ptr,
+        &mut no_popup_click,
+        base + std::time::Duration::from_millis(100),
+    ));
+    assert_eq!(click_ptr, 21);
+    assert!(absorb_trailing_popup_pointer_activity(
+        21,
+        &mut click_ptr,
+        &mut no_popup_click,
+        base + std::time::Duration::from_millis(120),
+    ));
 }

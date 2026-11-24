@@ -316,16 +316,16 @@ fn main() {
             }
             continue;
         }
-        if rc == 0 {
-            if last_visible_at.is_some_and(|at| at.elapsed() >= STALE_OVERLAY_TIMEOUT) {
-                last_visible_at = None;
-                if let Some(bar) = wayland_bar.as_mut() {
-                    if bar.hide().is_err() {
-                        wayland_bar = None;
-                        last_reconnect_attempt = std::time::Instant::now();
-                    }
+        if last_visible_at.is_some_and(|at| at.elapsed() >= STALE_OVERLAY_TIMEOUT) {
+            last_visible_at = None;
+            if let Some(bar) = wayland_bar.as_mut() {
+                if bar.hide().is_err() {
+                    wayland_bar = None;
+                    last_reconnect_attempt = std::time::Instant::now();
                 }
             }
+        }
+        if rc == 0 {
             continue;
         }
         if (fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)) != 0 {
@@ -337,9 +337,22 @@ fn main() {
             last_visible_at = None;
             last_reconnect_attempt = std::time::Instant::now();
         }
+        // Dispatch pending Wayland pointer events BEFORE applying a new daemon
+        // update so a simultaneous click is hit-tested against the candidate
+        // slots currently visible on screen.
+        if nfds == 2 && (fds[1].revents & libc::POLLIN) != 0 {
+            if let Some(bar) = wayland_bar.as_mut() {
+                if bar.dispatch_pending().is_err() {
+                    wayland_bar = None;
+                    last_visible_at = None;
+                    last_reconnect_attempt = std::time::Instant::now();
+                } else if let Some(clicked_idx) = bar.take_clicked_slot() {
+                    send_click_selection(&sock, sel_path.as_deref(), clicked_idx);
+                }
+            }
+        }
         // Drain and coalesce daemon updates before rendering so rapid bursts
-        // (100+ keystrokes/sec) never trigger redundant SHM/SDF frames, and any
-        // queued Hide/Update is applied before stale Wayland pointer clicks.
+        // (100+ keystrokes/sec) never trigger redundant SHM/SDF frames.
         if (fds[0].revents & libc::POLLIN) != 0 {
             let mut latest_pkt: Option<CandidatePacket> = None;
             while let Ok(len) = sock.recv(&mut buf) {
@@ -372,17 +385,7 @@ fn main() {
                 }
             }
         }
-        if nfds == 2 && (fds[1].revents & libc::POLLIN) != 0 {
-            if let Some(bar) = wayland_bar.as_mut() {
-                if bar.dispatch_pending().is_err() {
-                    wayland_bar = None;
-                    last_visible_at = None;
-                    last_reconnect_attempt = std::time::Instant::now();
-                }
-            }
-        }
-        // Drain clicks after both `show()` (which may roundtrip during output rebind)
-        // and `dispatch_pending()` so no pointer click is ever lost.
+        // Also drain any click queued during `show()`'s output-rebind roundtrip.
         if let Some(bar) = wayland_bar.as_mut() {
             if let Some(clicked_idx) = bar.take_clicked_slot() {
                 send_click_selection(&sock, sel_path.as_deref(), clicked_idx);

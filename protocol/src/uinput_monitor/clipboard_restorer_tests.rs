@@ -155,3 +155,24 @@ fn user_clipboard_change_during_restore_io_is_not_overwritten() {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .is_empty());
 }
+
+#[cfg(feature = "wayland-protocol")]
+#[test]
+fn superseded_wayland_clipboard_restore_returns_superseded_not_restored() {
+    let backups = [
+        WaylandClipboardBackup::Text("original user text".to_string()),
+        WaylandClipboardBackup::NonText(NonTextClipboard::Empty),
+        WaylandClipboardBackup::NonText(NonTextClipboard::MultiMime(vec![(
+            "text/html".to_string(),
+            b"<b>hello</b>".to_vec(),
+        )])),
+    ];
+    for backup in &backups {
+        let outcome = UinputInjector::restore_wayland_clipboard_guarded(backup, || false);
+        assert_eq!(
+            outcome,
+            RestoreOutcome::Superseded,
+            "superseded restore must never report Restored and drop original backup"
+        );
+    }
+}

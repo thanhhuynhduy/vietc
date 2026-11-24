@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-use crate::input_method::{get_rules, InputMethod, InputMethodRules, UndoBehavior};
+use crate::input_method::{get_rules_ref, InputMethod, InputMethodRules, UndoBehavior};
 
 #[derive(Debug, Clone)]
 struct Transformation {
@@ -30,7 +30,7 @@ impl Mode {
 #[derive(Clone)]
 pub struct BambooEngine {
     composition: Vec<Transformation>,
-    rules: InputMethodRules,
+    rules: &'static InputMethodRules,
     mode: Mode,
     undone_in_word: bool,
 }
@@ -39,14 +39,14 @@ impl BambooEngine {
     pub fn new(method: InputMethod) -> Self {
         Self {
             composition: Vec::new(),
-            rules: get_rules(method),
+            rules: get_rules_ref(method),
             mode: Mode::Vietnamese,
             undone_in_word: false,
         }
     }
 
     pub fn set_method(&mut self, method: InputMethod) {
-        self.rules = get_rules(method);
+        self.rules = get_rules_ref(method);
         self.reset();
     }
 
@@ -63,6 +63,10 @@ impl BambooEngine {
 
     pub fn is_enabled(&self) -> bool {
         self.mode.is_vn()
+    }
+
+    pub fn was_undone_in_word(&self) -> bool {
+        self.undone_in_word
     }
 
     pub fn reset(&mut self) {
@@ -650,6 +654,17 @@ impl BambooEngine {
                             'u'
                         };
                         self.composition[idx - 1].mark_applied = None;
+                    } else if result == 'ư'
+                        && idx + 1 < self.composition.len()
+                        && self.composition[idx + 1].mark_applied == Some('ơ')
+                    {
+                        self.composition[idx + 1].base_char = if self.composition[idx + 1].is_upper
+                        {
+                            'O'
+                        } else {
+                            'o'
+                        };
+                        self.composition[idx + 1].mark_applied = None;
                     }
                     self.undone_in_word = true;
                     return Some(match undo_behavior {

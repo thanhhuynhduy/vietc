@@ -398,3 +398,91 @@ fn stalled_compositor_roundtrip_times_out_instead_of_hanging_evdev_loop() {
         "bounded roundtrip took too long: {elapsed:?}"
     );
 }
+
+#[test]
+fn disconnected_compositor_roundtrip_fails_immediately_without_spinning() {
+    let (client, server) = UnixStream::pair().unwrap();
+    client.set_nonblocking(true).unwrap();
+    drop(server);
+    let conn = Connection::from_socket(client).unwrap();
+    let start = Instant::now();
+    let err = match WaylandVirtualKeyboard::from_connection(conn, false, false) {
+        Ok(_) => panic!("disconnected compositor must fail immediately"),
+        Err(err) => err,
+    };
+    assert_ne!(err.kind(), io::ErrorKind::TimedOut);
+    assert!(
+        start.elapsed() < Duration::from_millis(100),
+        "disconnected roundtrip must not spin until timeout: {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn capslock_modifier_is_emitted_before_first_vk_key_after_uinput_activity() {
+    let (client, mut server) = UnixStream::pair().unwrap();
+    client.set_nonblocking(true).unwrap();
+    server
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    server
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+
+    let server_thread = thread::spawn(move || {
+        let (_, _, reg_args) = read_msg(&mut server);
+        let registry_id = u32_ne(&reg_args);
+        let (_, _, sync1_args) = read_msg(&mut server);
+        let sync1_id = u32_ne(&sync1_args);
+
+        let mut seat_global = 10u32.to_ne_bytes().to_vec();
+        seat_global.extend(wl_string("wl_seat"));
+        seat_global.extend(7u32.to_ne_bytes());
+        send_event(&mut server, registry_id, 0, &seat_global);
+
+        let mut vk_global = 20u32.to_ne_bytes().to_vec();
+        vk_global.extend(wl_string("zwp_virtual_keyboard_manager_v1"));
+        vk_global.extend(1u32.to_ne_bytes());
+        send_event(&mut server, registry_id, 0, &vk_global);
+
+        send_event(&mut server, sync1_id, 0, &1u32.to_ne_bytes());
+        send_event(&mut server, 1, 1, &sync1_id.to_ne_bytes());
+
+        let _ = read_msg(&mut server);
+        let _ = read_msg(&mut server);
+        let (_, _, create_args) = read_msg(&mut server);
+        let vk_id = u32_ne(&create_args[4..]);
+        let _ = read_msg(&mut server);
+        let _ = read_msg(&mut server);
+        let (_, _, sync2_args) = read_msg(&mut server);
+        let sync2_id = u32_ne(&sync2_args);
+        send_event(&mut server, sync2_id, 0, &2u32.to_ne_bytes());
+        send_event(&mut server, 1, 1, &sync2_id.to_ne_bytes());
+
+        let mut events = Vec::new();
+        loop {
+            let (obj, op, args) = read_msg(&mut server);
+            if obj == vk_id && op == 3 {
+                break;
+            }
+            if obj == vk_id && op == 1 {
+                events.push(("key", u32_ne(&args[4..]), u32_ne(&args[8..])));
+            } else if obj == vk_id && op == 2 {
+                events.push(("mod", u32_ne(&args[0..4]), u32_ne(&args[8..12])));
+            }
+        }
+        events
+    });
+
+    let conn = Connection::from_socket(client).unwrap();
+    let vk = WaylandVirtualKeyboard::from_connection(conn, true, false).unwrap();
+    vk.mark_uinput_activity();
+    assert!(vk.send_key_event(30, 1, false));
+    assert!(vk.send_key_event(30, 0, false));
+    drop(vk);
+
+    let events = server_thread.join().unwrap();
+    assert_eq!(events[0], ("mod", 0, XKB_MOD_LOCK));
+    assert_eq!(events[1], ("key", 30, 1));
+    assert_eq!(events[2], ("mod", 0, XKB_MOD_LOCK));
+}

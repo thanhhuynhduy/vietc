@@ -151,3 +151,28 @@ fn roundtrip_with_timeout_returns_timed_out_on_stalled_compositor() {
         "roundtrip timeout must return promptly"
     );
 }
+
+#[test]
+fn roundtrip_with_timeout_fails_fast_on_disconnected_compositor() {
+    use std::os::unix::net::UnixStream;
+    let (client_sock, server_sock) = UnixStream::pair().unwrap();
+    drop(server_sock);
+    let conn = Connection::from_socket(client_sock).unwrap();
+    let mut queue = conn.new_event_queue::<LayerState>();
+    let mut state = LayerState::default();
+    let start = Instant::now();
+    let err = roundtrip_with_timeout(
+        &conn,
+        &mut queue,
+        &mut state,
+        Duration::from_millis(500),
+        "disconnected test",
+    )
+    .expect_err("disconnected compositor socket must fail immediately");
+    assert_ne!(err.kind(), io::ErrorKind::TimedOut);
+    assert!(
+        start.elapsed() < Duration::from_millis(100),
+        "disconnected roundtrip must not spin until timeout: {:?}",
+        start.elapsed()
+    );
+}

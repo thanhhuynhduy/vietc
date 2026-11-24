@@ -296,7 +296,7 @@ impl UinputInjector {
 
         let v_keycode = paste_v_keycode(self.layout);
 
-        serialize_transaction(&self.transaction_lock, || {
+        let res = serialize_transaction(&self.transaction_lock, || {
             if !is_terminal {
                 self.send_uinput_event_unlocked(EV_KEY, 42, 0)?;
                 self.send_uinput_event_unlocked(EV_KEY, 54, 0)?;
@@ -325,7 +325,10 @@ impl UinputInjector {
             std::thread::sleep(std::time::Duration::from_millis(3));
 
             self.clear_modifiers_unlocked()
-        })?
+        })?;
+        self.mark_vk_uinput_activity();
+        self.record_mod_release();
+        res
     }
 }
 
