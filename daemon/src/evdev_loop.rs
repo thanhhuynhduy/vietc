@@ -293,6 +293,8 @@ pub fn run_with_evdev(
     let mut toggle_consumed_keys: HashSet<u16> = HashSet::new();
     let mut last_pointer_activity = pointer_activity.load(Ordering::SeqCst);
     let mut last_popup_click_at: Option<std::time::Instant> = None;
+    let mut last_lock_key_at: Option<std::time::Instant> = None;
+    let mut last_numlock_resync_at: Option<std::time::Instant> = None;
     let mut last_idle_suggestion_seq = key_activity_seq.load(Ordering::Acquire);
     let mut hotplug_state = crate::hotplug::HotplugState::new();
 
@@ -412,6 +414,31 @@ pub fn run_with_evdev(
 
         if poll_ret == 0 {
             focus_sync.sync_on_idle(daemon, &*injector, &shared_focus);
+            // Zero-sleep post-uinput NumLock self-heal (COSMIC/Smithay):
+            // If `libinput` processed a `/dev/uinput` event after our immediate
+            // `vk.modifiers` call and reset `mods_locked` to 0, re-apply NumLock
+            // once `/dev/uinput` has settled on the 50ms idle tick.
+            if global_num_lock
+                && !daemon.is_current_app_bypassed()
+                && !device_states.iter().any(|st| is_modifier_pressed(&st.keys))
+            {
+                let now = std::time::Instant::now();
+                let lock_settled = last_lock_key_at
+                    .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(100));
+                let resync_ready = last_numlock_resync_at
+                    .is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_millis(200));
+                if lock_settled
+                    && resync_ready
+                    && devices.iter().any(|(d, _)| {
+                        d.supported_leds()
+                            .is_some_and(|leds| leds.contains(evdev::LedCode::LED_NUML))
+                    })
+                    && !devices.iter().any(|(d, _)| is_num_lock_on(d))
+                {
+                    last_numlock_resync_at = Some(now);
+                    injector.sync_locked_modifiers();
+                }
+            }
             let pointer_now = pointer_activity.load(Ordering::SeqCst);
             if !absorb_trailing_popup_pointer_activity(
                 pointer_now,
@@ -539,8 +566,34 @@ pub fn run_with_evdev(
 
                 // Update per-device modifier and shared lock state, then OR-union
                 // modifiers across all connected keyboards (split keyboards / numpads).
-                let prev_caps = global_caps_lock;
-                let prev_num = global_num_lock;
+                let orig_caps = global_caps_lock;
+                let orig_num = global_num_lock;
+                if matches!(
+                    key,
+                    evdev::KeyCode::KEY_CAPSLOCK | evdev::KeyCode::KEY_NUMLOCK
+                ) {
+                    last_lock_key_at = Some(std::time::Instant::now());
+                    if value == 1 && !is_modifier_pressed(&dev_key_state) {
+                        // Ground the toggle on the actual hardware LED state so a
+                        // compositor-side lock reset can never permanently invert
+                        // `dboard`'s tracked NumLock/CapsLock against the desktop.
+                        if key == evdev::KeyCode::KEY_NUMLOCK
+                            && devices.iter().any(|(d, _)| {
+                                d.supported_leds()
+                                    .is_some_and(|leds| leds.contains(evdev::LedCode::LED_NUML))
+                            })
+                        {
+                            global_num_lock = devices.iter().any(|(d, _)| is_num_lock_on(d));
+                        } else if key == evdev::KeyCode::KEY_CAPSLOCK
+                            && devices.iter().any(|(d, _)| {
+                                d.supported_leds()
+                                    .is_some_and(|leds| leds.contains(evdev::LedCode::LED_CAPSL))
+                            })
+                        {
+                            global_caps_lock = devices.iter().any(|(d, _)| is_caps_lock_on(d));
+                        }
+                    }
+                }
                 update_keyboard_state(
                     &mut dev_key_state,
                     &mut global_caps_lock,
@@ -564,17 +617,17 @@ pub fn run_with_evdev(
                             evdev::KeyCode::KEY_CAPSLOCK | evdev::KeyCode::KEY_NUMLOCK
                         )
                     {
-                        global_caps_lock = prev_caps;
-                        global_num_lock = prev_num;
+                        global_caps_lock = orig_caps;
+                        global_num_lock = orig_num;
                     }
                     combined
                 } else {
                     dev_key_state.clone()
                 };
-                if global_caps_lock != prev_caps {
+                if global_caps_lock != orig_caps {
                     injector.set_caps_lock(global_caps_lock);
                 }
-                if global_num_lock != prev_num {
+                if global_num_lock != orig_num {
                     injector.set_num_lock(global_num_lock);
                 }
                 // Complete a stroke already forwarded during uncertainty before

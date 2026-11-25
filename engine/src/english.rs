@@ -28,17 +28,17 @@ const ENGLISH_DOMINANT_COLLISIONS: &[&str] = &[
     "test", "rust", "this", "has", "his", "how", "now", "low", "see", "tree", "most", "host",
     "cost", "lost", "post", "list", "last", "past", "cast", "must", "dust", "trust", "rest",
     "best", "nest", "vest", "turn", "burn", "born", "corn", "horn", "form", "term", "arm", "bar",
-    "or", "as", "is", "us", "os", "if", "bus", "gas", "six", "mix", "box", "tax", "max", "own",
-    "down", "town", "room", "noon", "soon", "seen", "lawn", "dawn", "more", "core", "lose", "rose",
-    "nose", "chose", "those", "these", "here", "there", "where", "were", "care", "share", "base",
-    "case", "use", "pure", "cure", "hire", "fire", "user", "laser", "server", "order", "border",
-    "sister", "todo", "logo", "solo", "photo", "auto", "demo", "repo", "sudo", "cargo", "macro",
-    "docs", "bits", "add", "odd", "odds", "beef", "beer", "boost", "deer", "door", "keen", "leer",
-    "loom", "moor", "queen", "reef", "roof", "seer", "tee", "var", "usr", "res", "ref", "pos",
-    "eof",
+    "or", "is", "us", "os", "if", "bus", "gas", "six", "mix", "box", "tax", "max", "own", "down",
+    "town", "room", "noon", "soon", "seen", "lawn", "dawn", "more", "core", "lose", "rose", "nose",
+    "chose", "those", "these", "here", "there", "where", "were", "care", "share", "base", "case",
+    "use", "pure", "cure", "hire", "fire", "user", "laser", "server", "order", "border", "sister",
+    "todo", "logo", "solo", "photo", "auto", "demo", "repo", "sudo", "cargo", "macro", "docs",
+    "bits", "add", "odd", "odds", "beef", "beer", "boost", "deer", "door", "keen", "leer", "loom",
+    "moor", "queen", "reef", "roof", "seer", "tee", "var", "usr", "res", "ref", "pos", "eof",
 ];
 
 const VIETNAMESE_DOMINANT_COLLISIONS: &[&str] = &[
+    "as",   // á ("á", "á?", "á!", "á à" vs "as soon", "as a", "run as root")
     "car",  // cả ("tất cả", "cả nhà" vs "my car")
     "been", // bên ("bên cạnh", "hai bên" vs "have been")
     "too",  // tô ("tô phở", "ô tô" vs "me too")

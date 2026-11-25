@@ -132,7 +132,7 @@ Vòng lặp chính duy trì một bộ hẹn giờ định kỳ kiểm tra các 
 Mỗi sự kiện phím thô bao gồm: `keycode` (mã phím phần cứng), `value` (0 = KeyUp, 1 = KeyDown, 2 = KeyRepeat).
 Cấu trúc [`KeyboardState`](file:///home/thanhhd/Git-projects/vietc/daemon/src/evdev_loop.rs#L178-L194) theo dõi trạng thái phím trên từng thiết bị cùng trạng thái khóa toàn cục:
 - Các phím Modifier vật lý: `Shift_L` (42), `Shift_R` (54), `Ctrl_L` (29), `Ctrl_R` (97), `Alt_L` (56), `Alt_R` (100), `Super_L` (125), `Super_R` (126).
-- Trạng thái khóa: `CapsLock` (58, `XKB_MOD_LOCK`) và `NumLock` (69, `XKB_MOD_MOD2`) được đồng bộ từ LED phần cứng (`LED_CAPSL`, `LED_NUML`) lúc khởi động/hotplug và bảo toàn trên virtual keyboard để không ghi đè mất trạng thái NumLock của người dùng khi thực hiện giao dịch thay thế.
+- Trạng thái khóa: `CapsLock` (58, `XKB_MOD_LOCK`) và `NumLock` (69, `XKB_MOD_MOD2`) được đồng bộ từ LED phần cứng (`LED_CAPSL`, `LED_NUML`) lúc khởi động/hotplug và ngay trước khi lật phím khóa (bảo toàn tổ hợp modifier đa bàn phím để không bao giờ đảo pha với compositor), kết hợp tự phục hồi **zero-sleep** trên tick rảnh `50ms` (bỏ qua trong `bypass_mode`) để giữ `NumLock` bền vững sau các lần đổi keymap `/dev/uinput` trên COSMIC/Smithay.
 - Bộ lọc chống dội phím ([`DedupState`](file:///home/thanhhd/Git-projects/vietc/daemon/src/key_dedup.rs)): Loại bỏ các sự kiện trùng lặp bất thường do switch bàn phím cơ chập chờn.
 
 ### 2.4. Phím tắt Chuyển đổi Bộ gõ (`Toggle Method`) và Nuốt phím

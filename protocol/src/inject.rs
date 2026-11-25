@@ -70,6 +70,12 @@ pub trait KeyInjector {
         InjectResult::Success
     }
 
+    /// Re-apply tracked locked modifiers (`NumLock` / `CapsLock`) on the active
+    /// virtual keyboard after `/dev/uinput` has settled, without touching bypass mode.
+    fn sync_locked_modifiers(&self) -> InjectResult {
+        InjectResult::Success
+    }
+
     /// Whether the focused window is a terminal emulator (pastes with
     /// Ctrl+Shift+V instead of Ctrl+V).
     fn set_terminal_app(&self, _is_terminal: bool) -> InjectResult {

@@ -310,6 +310,48 @@ pub(crate) fn is_english_retroactive_phrase(w1_raw: &str, w2_final: &str, w2_raw
         return false;
     };
     match w1_raw {
+        "as" => matches!(
+            w2,
+            "a" | "an"
+                | "the"
+                | "soon"
+                | "well"
+                | "if"
+                | "in"
+                | "of"
+                | "long"
+                | "much"
+                | "far"
+                | "expected"
+                | "usual"
+                | "shown"
+                | "follows"
+                | "needed"
+                | "required"
+                | "root"
+                | "default"
+                | "possible"
+                | "many"
+                | "few"
+                | "fast"
+                | "early"
+                | "late"
+                | "always"
+                | "before"
+                | "above"
+                | "below"
+                | "such"
+                | "per"
+                | "for"
+                | "to"
+                | "it"
+                | "we"
+                | "you"
+                | "they"
+                | "he"
+                | "she"
+                | "i"
+        ),
         "lots" | "sets" | "tops" | "cups" | "cuts" | "nuts" | "bats" | "cats" | "hats" | "mats"
         | "rats" | "nets" => {
             matches!(w2, "of" | "for" | "from" | "with" | "and" | "are" | "were")

@@ -536,7 +536,9 @@ impl KeyInjector for UinputInjector {
             let _ = self.with_wayland_vk(|vk| vk.mark_uinput_activity());
             if value == 0 && self.uinput_mod_mask.load(Ordering::Acquire) == 0 {
                 let is_lock_key = keycode == 69 || keycode == 58;
-                let _ = self.with_wayland_vk(|vk| vk.sync_locked_modifiers(is_lock_key));
+                if !is_lock_key {
+                    let _ = self.with_wayland_vk(|vk| vk.sync_locked_modifiers(false));
+                }
             }
         }
         if matches!(result, Ok(Ok(()))) {
@@ -704,6 +706,23 @@ impl KeyInjector for UinputInjector {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(vk) = slot.vk.as_ref().filter(|vk| vk.is_healthy()) {
                 vk.set_num_lock(enabled);
+            }
+        }
+        InjectResult::Success
+    }
+
+    fn sync_locked_modifiers(&self) -> InjectResult {
+        #[cfg(feature = "wayland-protocol")]
+        if !self.bypass_mode.load(Ordering::Acquire)
+            && self.uinput_mod_mask.load(Ordering::Acquire) == 0
+            && !self.is_in_mod_release_cooldown()
+        {
+            let slot = self
+                .wayland_vk
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(vk) = slot.vk.as_ref().filter(|vk| vk.is_healthy()) {
+                vk.sync_locked_modifiers(false);
             }
         }
         InjectResult::Success
