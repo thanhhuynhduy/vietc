@@ -11,4 +11,4 @@ bamboo-telex-rollback = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
