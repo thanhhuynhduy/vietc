@@ -305,11 +305,15 @@ mod tests {
                 ((w * scale) * (BAR_HEIGHT * scale) * 4) as usize,
                 "SHM buffer byte length must match Wayland create_buffer dimensions at scale={scale}"
             );
+            // Count crisp foreground glyph pixels (opaque bitmap `#CDD6F4` and
+            // high-coverage anti-aliased TrueType strokes over the 0xF0-alpha
+            // pill background), while strictly excluding bg/pill/border/badge
+            // (all of which have red channel `px[2] <= 0x89`).
             let fg_pixels = pixels
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .filter(|px| px[0] == 0xF4 && px[1] == 0xD6 && px[2] == 0xCD && px[3] == 0xFF)
+                .filter(|px| px[0] >= 0xB0 && px[1] >= 0xA0 && px[2] >= 0x98 && px[3] >= 0xF0)
                 .count();
             assert!(
                 fg_pixels > 50,

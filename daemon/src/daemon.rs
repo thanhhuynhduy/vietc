@@ -699,6 +699,5 @@ impl Daemon {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 #[path = "daemon_tests.rs"]
 mod tests;

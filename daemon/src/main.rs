@@ -234,10 +234,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 window_check_counter += 1;
                 if window_check_counter >= 6 {
                     window_check_counter = 0;
-                    if let Some(ref user_cfg) = user_config_candidate {
-                        if *user_cfg != watched_config_path && user_cfg.exists() {
-                            watched_config_path = user_cfg.clone();
-                            last_modified = std::time::UNIX_EPOCH;
+                    if watched_config_path.starts_with("/etc/") {
+                        if let Some(ref user_cfg) = user_config_candidate {
+                            if *user_cfg != watched_config_path && user_cfg.exists() {
+                                watched_config_path = user_cfg.clone();
+                                last_modified = std::time::UNIX_EPOCH;
+                            }
                         }
                     }
                     if let Ok(metadata) = std::fs::metadata(&watched_config_path) {
