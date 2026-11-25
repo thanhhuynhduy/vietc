@@ -12,7 +12,7 @@ name = "dboard-tray"
 path = "src/main.rs"
 
 [dependencies]
-ksni = "0.2"
+ksni = "0.3"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 dirs = "5"
